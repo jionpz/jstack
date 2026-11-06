@@ -1,0 +1,216 @@
+#!/usr/bin/env bash
+# jstack：维护并安装 jstack marketplace（原版 pstack 的 Claude Code 版）。
+#
+#   ./jstack install [--scope user|project|local]  安装 pstack@jstack，已装则刷新
+#   ./jstack sync [ref]                            拉取上游 pstack（默认 main），然后 build
+#   ./jstack build                                 用 upstream/ + patches/ 重建 plugins/
+#   ./jstack check                                 校验构建产物、脚本和 frontmatter 里的 Cursor 残留、manifest
+#
+# upstream/pstack 是上游原样副本，plugins/pstack 是构建产物，两者都不要手改。
+# 要改 pstack，就在 patches/pstack/ 下加补丁。
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+UPSTREAM_REPO=https://github.com/cursor/plugins.git
+UPSTREAM_PATH=harness/pstack/claude-code
+MARKETPLACE=jstack
+PLUGIN=pstack
+VENDOR="$ROOT/upstream/$PLUGIN"
+PATCHES="$ROOT/patches/$PLUGIN"
+OUT="$ROOT/plugins/$PLUGIN"
+LOCK="$ROOT/upstream.lock.json"
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+
+die() { printf 'jstack: %s\n' "$*" >&2; exit 1; }
+say() { printf '%s\n' "$*"; }
+json_get() { sed -n "s/^ *\"$1\": *\"\([^\"]*\)\".*/\1/p" "$2" | head -1; }
+
+# 列出文件 frontmatter 里不在名单 $1 中的顶层键，每行"文件: 键"。
+fm_unknown_keys() {
+	local allow=$1 f
+	shift
+	for f in "$@"; do
+		awk 'NR==1 && $0!="---"{exit} NR>1 && /^---$/{exit} NR>1 && /^[A-Za-z_][A-Za-z0-9_-]*:/{sub(/:.*/,""); print}' "$f" |
+			grep -vxE "$allow" | sed "s|^|${f#"$ROOT"/}: |" || true
+	done
+}
+
+# 把 upstream/ 加补丁构建到 $1。版本号写成 <上游版本>+jstack.<内容哈希>：
+# 内容一变版本就变，从 GitHub 安装的机器才收得到更新。
+build_into() {
+	local dest=$1 patch manifest version hash
+	[ -f "$VENDOR/.claude-plugin/plugin.json" ] || die "缺少 upstream/$PLUGIN，先运行 ./jstack sync"
+	mkdir -p "$dest"
+	rsync -a --delete --exclude node_modules "$VENDOR/" "$dest/"
+	for patch in "$PATCHES"/*.patch; do
+		[ -e "$patch" ] || continue
+		(cd "$dest" && git apply --check "$patch" 2>/dev/null && git apply "$patch") ||
+			die "补丁 $(basename "$patch") 打不上，说明上游改了这段。对照 upstream/$PLUGIN 重做这个补丁；如果上游已经修好，就删掉它。"
+	done
+	manifest="$dest/.claude-plugin/plugin.json"
+	version=$(json_get version "$manifest")
+	[ -n "$version" ] || die "$manifest 里没有 version"
+	hash=$(cd "$dest" && find . -type f ! -path ./.claude-plugin/plugin.json ! -path '*/node_modules/*' -print0 |
+		LC_ALL=C sort -z | xargs -0 shasum -a 256 | shasum -a 256 | cut -c1-7)
+	sed "s/^\( *\"version\": *\"\)[^\"]*\"/\1${version%%+jstack.*}+jstack.$hash\"/" "$manifest" >"$manifest.tmp"
+	mv "$manifest.tmp" "$manifest"
+}
+
+cmd_build() {
+	build_into "$WORK/build"
+	mkdir -p "$OUT"
+	# 插件从这里原地加载，只改动内容变了的文件；node_modules 是 bun 在运行时装的，保留。
+	rsync -rlpc --delete --exclude node_modules "$WORK/build/" "$OUT/"
+	local patches=("$PATCHES"/*.patch)
+	[ -e "${patches[0]}" ] || patches=()
+	say "✓ 已构建 plugins/$PLUGIN，版本 $(json_get version "$OUT/.claude-plugin/plugin.json")，打了 ${#patches[@]} 个补丁"
+}
+
+cmd_sync() {
+	local ref=${1:-main} src="$WORK/upstream" sha version changed
+	say "拉取 $UPSTREAM_REPO @ $ref ..."
+	git -C "$WORK" init -q upstream
+	git -C "$src" remote add origin "$UPSTREAM_REPO"
+	git -C "$src" sparse-checkout set "$UPSTREAM_PATH"
+	git -C "$src" fetch -q --depth 1 --filter=blob:none origin "$ref"
+	git -C "$src" -c advice.detachedHead=false checkout -q FETCH_HEAD
+	sha=$(git -C "$src" rev-parse HEAD)
+	[ -f "$src/$UPSTREAM_PATH/.claude-plugin/plugin.json" ] ||
+		die "上游 ${sha:0:7} 里没有 $UPSTREAM_PATH，可能上游改了目录结构"
+	mkdir -p "$VENDOR"
+	# 按内容比对（-c），不同步 mtime：新 clone 的文件时间都是当前时间，按时间比会把每个文件都算成变化。
+	changed=$(rsync -rlpci --delete "$src/$UPSTREAM_PATH/" "$VENDOR/" | wc -l | tr -d ' ')
+	version=$(json_get version "$VENDOR/.claude-plugin/plugin.json")
+	cat >"$LOCK" <<EOF
+{
+  "repo": "$UPSTREAM_REPO",
+  "path": "$UPSTREAM_PATH",
+  "ref": "$ref",
+  "sha": "$sha",
+  "version": "$version",
+  "synced": "$(date -u +%Y-%m-%d)"
+}
+EOF
+	if [ "$changed" = 0 ]; then
+		say "上游 pstack 没有变化（$version @ ${sha:0:7}）"
+	else
+		printf '| %s | %s | `%s` | %s 处文件变化 |\n' "$(date -u +%Y-%m-%d)" "$version" "${sha:0:7}" "$changed" >>"$ROOT/SYNC-LOG.md"
+		say "上游 pstack 有 $changed 处文件变化（$version @ ${sha:0:7}），已记入 SYNC-LOG.md"
+	fi
+	cmd_build
+}
+
+cmd_check() {
+	local rc=0 hits
+	build_into "$WORK/check"
+	if diff -rq -x node_modules "$WORK/check" "$OUT" >"$WORK/diff" 2>&1 &&
+		diff <(cd "$WORK/check" && find . -type f -perm -u+x ! -path '*/node_modules/*' | sort) \
+			<(cd "$OUT" && find . -type f -perm -u+x ! -path '*/node_modules/*' | sort) >/dev/null; then
+		say "✓ plugins/$PLUGIN 与 upstream/ 加 patches/ 的构建结果一致（$(json_get version "$OUT/.claude-plugin/plugin.json")）"
+	else
+		say "✗ plugins/$PLUGIN 与构建结果不一致：可能被手改过，或改了补丁后没有运行 ./jstack build"
+		sed 's/^/  /' "$WORK/diff" | head -20
+		rc=1
+	fi
+	if [ "$(json_get version "$LOCK")" = "$(json_get version "$VENDOR/.claude-plugin/plugin.json")" ]; then
+		say "✓ upstream.lock.json 与 upstream/$PLUGIN 一致（$(json_get version "$LOCK") @ $(json_get sha "$LOCK" | cut -c1-7)）"
+	else
+		say "✗ upstream.lock.json 与 upstream/$PLUGIN 的版本对不上"
+		rc=1
+	fi
+	# 上游 adapter 只翻译 Markdown 里的 Cursor 名称，脚本里写死的 Cursor 路径要靠补丁修。
+	if hits=$(grep -rnIE '(\$HOME|~)/\.cursor/|agent-transcripts' --exclude='*.md' --exclude-dir=node_modules "$OUT"); then
+		say "✗ 脚本里还有写死的 Cursor 路径，需要补丁："
+		printf '%s\n' "$hits" | sed "s|$ROOT/||; s/^/  /" | head -20
+		rc=1
+	else
+		say "✓ 脚本里没有写死的 Cursor 路径"
+	fi
+	# frontmatter 由 Claude Code 自己解析，也不经过 adapter。不认识的键会被静默忽略，claude plugin validate
+	# 也不报，例如 Cursor 的 is_background。名单取自 https://code.claude.com/docs/en/claude-directory，
+	# 插件 agent 会忽略的 permissionMode、hooks、mcpServers、initialPrompt 不在名单里。
+	# skill 名单多放了 icon 和 color：它们是 Cursor 界面用的，Claude Code 忽略了也不影响行为。
+	hits=$(
+		fm_unknown_keys 'name|description|when_to_use|argument-hint|arguments|disable-model-invocation|user-invocable|allowed-tools|disallowed-tools|model|effort|context|agent|background|hooks|paths|shell|metadata|license|compatibility|icon|color' \
+			"$OUT"/skills/*/SKILL.md
+		fm_unknown_keys 'name|description|tools|disallowedTools|model|maxTurns|autoCompactWindow|skills|memory|background|effort|isolation|color|omitClaudeMd|experimental' \
+			"$OUT"/agents/*.md
+	)
+	if [ -n "$hits" ]; then
+		say "✗ frontmatter 里有 Claude Code 不认识的键，会被静默忽略，需要补丁："
+		printf '%s\n' "$hits" | sed 's/^/  /' | head -20
+		rc=1
+	else
+		say "✓ skill 和 agent 的 frontmatter 都是 Claude Code 认识的键"
+	fi
+	if command -v claude >/dev/null; then
+		if claude plugin validate "$ROOT" >"$WORK/validate" 2>&1 && claude plugin validate "$OUT" >>"$WORK/validate" 2>&1; then
+			say "✓ claude plugin validate 通过（marketplace 和 plugin）"
+		else
+			say "✗ claude plugin validate 未通过："
+			sed 's/^/  /' "$WORK/validate"
+			rc=1
+		fi
+	else
+		say "- 没找到 claude CLI，跳过 manifest 校验"
+	fi
+	return $rc
+}
+
+cmd_install() {
+	local scope=user other tool installed markets
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--scope) scope=${2:?--scope 后面要跟 user、project 或 local}; shift 2 ;;
+		--scope=*) scope=${1#*=}; shift ;;
+		*) die "未知参数：$1" ;;
+		esac
+	done
+	command -v claude >/dev/null || die "需要 Claude Code CLI（claude）"
+	[ -f "$OUT/.claude-plugin/plugin.json" ] || cmd_build
+	# 先存进变量再 grep：直接用管道接 grep -q，grep 提前退出会让 claude 收到 SIGPIPE，在 pipefail 下误判。
+	installed=$(claude plugin list --json 2>/dev/null || true)
+	markets=$(claude plugin marketplace list --json 2>/dev/null || true)
+	# 所有 pstack 移植版的命令都是 /pstack:*，同时装两个会冲突。
+	other=$(grep -o "\"id\": *\"$PLUGIN@[^\"]*\"" <<<"$installed" | sed 's/.*"\([^"]*\)"$/\1/' | grep -v "@$MARKETPLACE\$" || true)
+	[ -z "$other" ] || die "已经装了 $other，它和 $PLUGIN@$MARKETPLACE 都使用 /$PLUGIN: 前缀。先运行：claude plugin uninstall $other"
+	if grep -q "\"name\": *\"$MARKETPLACE\"" <<<"$markets"; then
+		claude plugin marketplace update "$MARKETPLACE"
+	else
+		claude plugin marketplace add "$ROOT" --scope "$scope"
+	fi
+	if grep -q "\"id\": *\"$PLUGIN@$MARKETPLACE\"" <<<"$installed"; then
+		claude plugin enable "$PLUGIN@$MARKETPLACE" --scope "$scope" >/dev/null 2>&1 || true
+		# 本地 marketplace 的插件本来就从源目录加载；update 让 claude plugin list 里记的版本号跟上，
+		# marketplace 来自 GitHub 时则真正拉取新版本。
+		claude plugin update "$PLUGIN@$MARKETPLACE" --scope "$scope" >/dev/null 2>&1 || true
+		say "✓ $PLUGIN@$MARKETPLACE 已是最新，重开会话或运行 /reload-plugins 生效。"
+	else
+		claude plugin install "$PLUGIN@$MARKETPLACE" --scope "$scope"
+	fi
+	for tool in bun gh rg jq; do
+		command -v "$tool" >/dev/null || case $tool in
+			bun) say "! 没找到 bun：poteto-mode 的 watch-pr 和 statechart 脚本要用它" ;;
+			gh) say "! 没找到 gh：开 PR、看 CI 的流程要用它" ;;
+			rg) say "! 没找到 rg：搜索代码和 worktree-audit 要用它" ;;
+			jq) say "! 没找到 jq：worktree-audit 要用它" ;;
+			esac
+	done
+	cat <<'EOF'
+
+接下来在 Claude Code 里：
+  1. 运行 /reload-plugins，或新开一个会话
+  2. 运行 /pstack:setup-pstack，写入模型角色表 ~/.claude/rules/pstack-models.md（只需一次）
+  3. 运行 /pstack:poteto-mode <任务描述> 开始工作
+EOF
+}
+
+case "${1:-}" in
+install) shift; cmd_install "$@" ;;
+sync) shift; cmd_sync "$@" ;;
+build) cmd_build ;;
+check) cmd_check ;;
+"" | -h | --help | help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
+*) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//' >&2; exit 2 ;;
+esac

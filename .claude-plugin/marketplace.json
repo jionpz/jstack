@@ -1,0 +1,22 @@
+{
+  "name": "jstack",
+  "owner": {
+    "name": "jionpz"
+  },
+  "metadata": {
+    "description": "jionpz 的 AI 工程工作流：原版 pstack（cursor/plugins 官方 Claude Code 版，锁定上游提交，另加 jstack 补丁）。"
+  },
+  "plugins": [
+    {
+      "name": "pstack",
+      "source": "./plugins/pstack",
+      "description": "Lauren Tan (poteto) 的 pstack：先吃透再动手，写更少但更高质量的代码。来源 cursor/plugins，版本见 upstream.lock.json。",
+      "author": {
+        "name": "Lauren Tan"
+      },
+      "homepage": "https://github.com/cursor/plugins/tree/main/pstack",
+      "license": "MIT",
+      "keywords": ["pstack", "poteto-mode", "workflow", "subagents"]
+    }
+  ]
+}
