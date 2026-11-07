@@ -1,0 +1,37 @@
+diff --git a/README.md b/README.md
+index b399290..320fd77 100644
+--- a/README.md
++++ b/README.md
+@@ -5,6 +5,7 @@ A tiny command-line todo list. Tasks live in `tasks.json` in the current directo
+ ```sh
+ tasknotes add "Buy milk" --due 2026-11-10
+ tasknotes list
++tasknotes list --json
+ tasknotes done 1
+ tasknotes rm 1
+ ```
+diff --git a/src/cli.js b/src/cli.js
+index 3a370b6..cbd5ded 100644
+--- a/src/cli.js
++++ b/src/cli.js
+@@ -3,7 +3,7 @@ const { addTask, completeTask, removeTask } = require('./tasks');
+ 
+ const USAGE = `Usage:
+   tasknotes add <title> [--due YYYY-MM-DD]
+-  tasknotes list
++  tasknotes list [--json]
+   tasknotes done <id>
+   tasknotes rm <id>`;
+ 
+@@ -49,6 +49,11 @@ function run(command, args) {
+       return;
+     }
+     case 'list': {
++      if (args.includes('--json')) {
++        const rows = tasks.map(({ id, title, done, due }) => ({ id, title, done, due: due ?? null }));
++        console.log(JSON.stringify(rows, null, 2));
++        return;
++      }
+       if (tasks.length === 0) {
+         console.log('Nothing to do.');
+         return;

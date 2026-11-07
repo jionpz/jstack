@@ -1,0 +1,31 @@
+diff --git a/src/tasks.js b/src/tasks.js
+index 89fcb06..951fb98 100644
+--- a/src/tasks.js
++++ b/src/tasks.js
+@@ -10,9 +10,8 @@ function findIndex(tasks, id) {
+ }
+ 
+ function completeTask(tasks, id) {
+-  const task = tasks[id - 1];
+-  if (!task) throw new Error(`No task with id ${id}`);
+-  return tasks.map((t) => (t === task ? { ...t, done: true } : t));
++  const index = findIndex(tasks, id);
++  return tasks.map((t, i) => (i === index ? { ...t, done: true } : t));
+ }
+ 
+ function removeTask(tasks, id) {
+diff --git a/test/tasks.test.js b/test/tasks.test.js
+index 07fc146..0a187bf 100644
+--- a/test/tasks.test.js
++++ b/test/tasks.test.js
+@@ -29,3 +29,10 @@ test('unknown ids are rejected', () => {
+   assert.throws(() => completeTask([], 3), /No task with id 3/);
+   assert.throws(() => removeTask([], 3), /No task with id 3/);
+ });
++
++test('completeTask finds tasks by id after a removal', () => {
++  let tasks = [];
++  for (const title of ['A', 'B', 'C', 'D']) tasks = addTask(tasks, { title });
++  tasks = completeTask(removeTask(tasks, 2), 3);
++  assert.deepStrictEqual(tasks.map((t) => [t.id, t.done]), [[1, false], [3, true], [4, false]]);
++});

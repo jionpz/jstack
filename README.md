@@ -171,7 +171,12 @@ upstream/pstack.lock.json        锁定的 pstack（Claude Code 树）上游：�
 upstream/pstack-cursor.lock.json 锁定的 pstack（Cursor 原生树）上游，字段同上
 upstream/spec.lock.json          锁定的 spec 上游，字段同上
 SYNC-LOG.md                      上游同步记录
-jstack                           维护脚本：install / install-pi / install-cursor / sync / build / check / smoke
+evals/run.sh                     评测 runner（./jstack eval）
+evals/fixture/                   评测用的种子项目，每个样本复制一份
+evals/tasks/<任务>/              评测任务：prompt.md、check.sh、solution.patch 或 answer.md、可选的 seed/
+evals/results.jsonl              评测记录，每个样本一行，只追加
+evals/reports/<日期>.md          评测报告，每次运行追加一节
+jstack                           维护脚本：install / install-pi / install-cursor / sync / build / check / smoke / eval
 ```
 
 ## 当前补丁
@@ -226,6 +231,7 @@ git diff -- upstream/     # 看上游改了什么
 7. `plugins/pstack-cursor` 是否是 Cursor 插件 `pstack`，skills 和 agents 是否齐全
 8. 根目录 `package.json` 是否把三个插件的 skills 都暴露给 Pi
 9. `claude plugin validate` 是否通过（marketplace 和全部插件）
+10. 评测任务自检（`./jstack eval --selftest`）：每个任务的 check 在初始状态下失败、在参考解下通过
 
 第 3、4、5 项专门查 adapter 管不到的地方：脚本和 frontmatter 都不经过模型，上游新引入的 Cursor 依赖在同步时就能发现；第 5 项查的是 spec 这种"只收一部分 skill"的插件有没有漏掉依赖。`claude plugin validate` 不查 frontmatter 键，也不查插件内部 skill 之间的调用关系。全部通过才提交。
 
@@ -258,6 +264,65 @@ git diff --no-index --src-prefix= --dst-prefix= a/<路径> b/<路径> > patches/
 本机的 marketplace 是从本地路径添加的，会话直接从 `plugins/<插件>` 加载。Claude Code 在缓存里也复制了一份，但不读它（2026-11-06 用 `claude --debug-file` 看启动日志确认）。所以 `build` 之后，重开会话或运行 `/reload-plugins` 就生效。再跑一次 `./jstack install`，`claude plugin list` 里的版本号也会跟上。
 
 其他机器从 GitHub 安装，插件复制进缓存，只有版本号变了才会更新。更新命令：`claude plugin marketplace update jstack && claude plugin update pstack@jstack && claude plugin update spec@jstack && claude plugin update flow@jstack`。
+
+## 评测
+
+`./jstack eval` 衡量工作流本身。它把一批固定任务交给 headless 的 Claude Code，后者加载仓库里的 pstack、spec、flow，再看三件事：做成了没有、要人插手几次、花了多少。smoke 只证明调用链跑得通。改了工作流以后是变好还是变差，要靠评测回答。
+
+每个任务在 `evals/tasks/<名字>/` 下，包括 `prompt.md`（原样作为第一条用户消息）、`check.sh`（判定是否完成）、`solution.patch` 或 `answer.md`（参考解），以及可选的 `seed/`。每个样本都有自己的工作目录 `<临时目录>/<随机>/tasknotes`：先复制 `evals/fixture/`，再叠加 `seed/`，然后 `git init` 并提交一次。路径里不出现 eval、test 这类词，被测 agent 不知道自己在被评测。
+
+```bash
+./jstack eval list                           # 列出任务
+./jstack eval --selftest                     # 不调模型：初始状态 check 必须失败，参考解下必须通过（check 也跑这一项）
+./jstack eval                                # 全部任务，各 1 个样本
+./jstack eval --samples 3 --jobs 3           # 每个任务 3 个样本，3 个并发
+./jstack eval --model <模型> --max-nudges 1 --keep xs-empty-message
+```
+
+每轮结束后跑 `check.sh`，cwd 是工作目录，`ANSWER_FILE` 指向 agent 最后一条回复。check 没通过，runner 就用 `--resume` 发一条固定的催促消息："我现在不在电脑前，回答不了问题。需要决定的地方按你推荐的方案处理，把这件事做完。"每个样本最多催 `--max-nudges` 次，默认 2 次。每轮的时限是 `JSTACK_EVAL_TIMEOUT` 秒，默认 1800。超时的样本直接判失败，不再催促。评测是测量，任务失败不影响退出码，只有参数错误或缺少依赖才非 0。
+
+每个样本记一行 JSON，字段如下：
+
+| 字段 | 含义 |
+|---|---|
+| `pass` | 最终 check 是否通过 |
+| `nudges` | **打断次数**，等于实际发出的催促次数。agent 每停下一次（提问、等确认，或自认为做完但 check 不通过）就会被催一次，对应真实使用中人要回来插手一次。0 表示一次做完 |
+| `rounds` | 跑了几轮 claude，等于 `nudges + 1` |
+| `turns` | 各轮 `num_turns` 之和 |
+| `wall_s` | 样本从开始到结束的秒数，包括 check |
+| `tokens` | input、output、cache read、cache creation 四类 token 之和，覆盖全部模型和子 agent |
+| `premium_tokens` | 只算模型名匹配 `JSTACK_PREMIUM_MODELS` 的部分，默认正则 `(^|/)(claude|anthropic)|opus`。两层模型（#11）以后会换成配置 |
+| `cost_usd` | Claude Code 报告的费用 |
+| `route` / `poteto` | 主会话有没有调 `route` skill，有没有进入 poteto-mode（调 skill 或读它的 `SKILL.md`） |
+| `subagents` | 主会话派出的 `Agent` / `Task` 次数 |
+| `timed_out` / `error` | 是否超时；某轮没有 `result` 事件或 `result` 报错时，`error` 写明是哪一轮、什么错。出错的样本不等于工作流退化，先看 `error` |
+| `model` / `commit` | init 事件里的模型；仓库提交号，工作区有改动时带 `-dirty` |
+
+`--resume` 之后，`result` 事件里的 `modelUsage` 和 `total_cost_usd` 是整个会话的累计值，而 `num_turns` 只算本轮（2026-11-07 实测）。所以 runner 按轮取 token 和费用的增量，不会重复计算。
+
+隔离方式：
+
+- `env -i` 只传 `HOME`、`USER`、`PATH`、`LANG`、`LC_ALL`、`TMPDIR`、`SHELL`。不这样做的话，claude 会继承宿主（桌面 App、外层 Claude 会话）的变量，报 "Not logged in"
+- `--plugin-dir` 从仓库的 `plugins/` 加载三个插件，同时在 `--settings` 里关掉已安装的 `pstack@jstack`、`spec@jstack`、`flow@jstack`。测的是当前工作区，不是已安装版本
+- `disableAllHooks: true` 关掉全部 hooks。issue #12 给 flow 加自带的 hook 时，要改成只关用户 hooks，否则评测量不到那个 hook
+- `--strict-mcp-config` 不加载任何 MCP，被测 agent 写不进 gbrain 这类用户记忆
+- 没有隔离的部分：用户级 `~/.claude/CLAUDE.md` 和 `~/.claude/rules/`（包括 `/pstack:setup-pstack` 写的模型角色表）、其他已安装的插件、用户 skills 仍然会加载；会话记录写进 `~/.claude/projects/`。基线要在同一台机器、同一套用户配置下对比
+
+产物：
+
+- `evals/results.jsonl`：每个样本一行，只追加，和代码一起提交，当作基线
+- `evals/reports/<日期>.md`：每次运行追加一节，包括 commit、model、样本数、max-nudges，以及按任务汇总的表。这一节同时打印到终端
+- `.scratch/evals/<run_id>/<任务>-<n>/`：原始材料，不提交。包括每轮的 `round-<k>.jsonl` 和 `.err`、`answer-<k>.txt`、`check-<k>.txt`、最终的 `diff.patch`、`record.json`。工作目录默认跑完就删，加 `--keep` 会保留并打印路径
+
+下面这些改动必须先跑 `./jstack eval`，再和 `evals/results.jsonl` 里最近一次同模型的基线对比：
+
+- 改 `src/flow`
+- 增删或修改 `patches/` 下的补丁，包括 adapter `docs/harness/agents.md`
+- 同步上游（`./jstack sync`）
+- 改模型配置（模型角色表、默认模型、两层模型）
+- 改 hooks
+
+退化要么修掉，要么在提交说明里写明理由。单个样本的噪声很大，判断退化至少用 `--samples 3`。差距小于同一提交多次运行之间的波动时，不算退化。改了 `evals/` 本身（runner、任务、fixture）以后，旧基线就不能直接比了，要先重跑一份新基线。
 
 ## 推广到团队项目
 

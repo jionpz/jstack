@@ -12,9 +12,13 @@
 #                                                  （Cursor 拒绝指向该目录之外的符号链接，所以只复制）
 #   ./jstack sync [插件 [ref]]                     拉取上游（不写插件就全部同步，ref 默认 main），然后 build
 #   ./jstack build                                 用 upstream/ + patches/（flow 用 src/flow）重建 plugins/
-#   ./jstack check [--smoke]                       校验构建产物、锁文件、Cursor 残留、frontmatter、skill 依赖、manifest、Pi package；
+#   ./jstack check [--smoke]                       校验构建产物、锁文件、Cursor 残留、frontmatter、skill 依赖、manifest、Pi package、评测题；
 #                                                  --smoke 额外跑已安装 harness 的 headless smoke（需要模型和网络）
 #   ./jstack smoke [pi|omp|cursor|all]             跑 Pi/OMP/Cursor 的 headless smoke；Cursor 只做加载器和 route 检查
+#   ./jstack eval [--samples N] [--jobs N] [--model M] [--max-nudges N] [--keep] [任务名...]
+#                                                  用 claude -p 跑 evals/tasks 的固定任务，衡量工作流本身（需要模型和网络）；
+#                                                  结果追加到 evals/results.jsonl 和 evals/reports/<日期>.md
+#   ./jstack eval list | --selftest [任务名...]    列出任务；不调模型地校验每个任务的 check（check 也会跑）
 #
 # upstream/<插件> 是上游原样副本，plugins/<插件> 是构建产物，两者都不要手改。
 # 要改 pstack 或 spec，就在 patches/<插件>/ 下加补丁；flow 没有上游，直接改 src/flow。
@@ -551,6 +555,16 @@ cmd_check() {
 	else
 		say "- 没找到 claude CLI，跳过 manifest 校验"
 	fi
+	# 评测题自检不调模型：初始状态下 check 必须失败，打上参考解后必须通过。
+	if [ -d "$ROOT/evals" ]; then
+		if "$ROOT/evals/run.sh" --selftest >"$WORK/selftest" 2>&1; then
+			say "✓ evals/tasks 的 $(grep -c '^✓' "$WORK/selftest") 个任务自检通过（初始状态失败，参考解通过）"
+		else
+			say "✗ evals 自检未通过："
+			grep -v '^✓' "$WORK/selftest" | sed 's/^/  /'
+			rc=1
+		fi
+	fi
 	if [ -n "$smoke" ]; then
 		cmd_smoke all || rc=1
 	fi
@@ -698,6 +712,7 @@ sync) shift; cmd_sync "$@" ;;
 build) cmd_build ;;
 check) shift; cmd_check "$@" ;;
 smoke) shift; cmd_smoke "$@" ;;
+eval) shift; "$ROOT/evals/run.sh" "$@" ;;
 "" | -h | --help | help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
 *) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//' >&2; exit 2 ;;
 esac

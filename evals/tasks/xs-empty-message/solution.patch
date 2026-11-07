@@ -1,0 +1,13 @@
+diff --git a/src/cli.js b/src/cli.js
+index 3a370b6..94bd412 100644
+--- a/src/cli.js
++++ b/src/cli.js
+@@ -50,7 +50,7 @@ function run(command, args) {
+     }
+     case 'list': {
+       if (tasks.length === 0) {
+-        console.log('Nothing to do.');
++        console.log('No tasks yet. Add one with: tasknotes add <title>');
+         return;
+       }
+       for (const task of tasks) console.log(formatTask(task));

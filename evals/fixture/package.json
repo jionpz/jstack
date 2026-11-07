@@ -1,0 +1,15 @@
+{
+  "name": "tasknotes",
+  "version": "0.1.0",
+  "description": "A tiny command-line todo list.",
+  "license": "MIT",
+  "bin": {
+    "tasknotes": "bin/tasknotes.js"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,129 @@
+diff --git a/README.md b/README.md
+index b399290..64b47ad 100644
+--- a/README.md
++++ b/README.md
+@@ -4,7 +4,9 @@ A tiny command-line todo list. Tasks live in `tasks.json` in the current directo
+ 
+ ```sh
+ tasknotes add "Buy milk" --due 2026-11-10
++tasknotes add "Write report" --tag work --tag urgent
+ tasknotes list
++tasknotes list --tag work
+ tasknotes done 1
+ tasknotes rm 1
+ ```
+diff --git a/src/cli.js b/src/cli.js
+index 3a370b6..1964b69 100644
+--- a/src/cli.js
++++ b/src/cli.js
+@@ -2,33 +2,39 @@ const store = require('./store');
+ const { addTask, completeTask, removeTask } = require('./tasks');
+ 
+ const USAGE = `Usage:
+-  tasknotes add <title> [--due YYYY-MM-DD]
+-  tasknotes list
++  tasknotes add <title> [--due YYYY-MM-DD] [--tag <name>]...
++  tasknotes list [--tag <name>]
+   tasknotes done <id>
+   tasknotes rm <id>`;
+ 
+ function formatTask(task) {
+   const box = task.done ? '[x]' : '[ ]';
+   const due = task.due ? ` (due ${task.due})` : '';
+-  return `${box} ${task.id} ${task.title}${due}`;
++  const tags = task.tags.map((tag) => ` #${tag}`).join('');
++  return `${box} ${task.id} ${task.title}${due}${tags}`;
+ }
+ 
+ function parseAdd(args) {
+   const words = [];
+   let due = null;
++  const tags = [];
+   for (let i = 0; i < args.length; i++) {
+     if (args[i] === '--due') {
+       due = args[++i];
+       if (!/^\d{4}-\d{2}-\d{2}$/.test(due || '')) {
+         throw new Error('--due expects a date like 2026-01-31');
+       }
++    } else if (args[i] === '--tag') {
++      const tag = args[++i];
++      if (!tag) throw new Error('--tag expects a name');
++      if (!tags.includes(tag)) tags.push(tag);
+     } else {
+       words.push(args[i]);
+     }
+   }
+   const title = words.join(' ').trim();
+   if (!title) throw new Error('add needs a title');
+-  return { title, due };
++  return { title, due, tags };
+ }
+ 
+ function parseId(arg) {
+@@ -49,6 +55,15 @@ function run(command, args) {
+       return;
+     }
+     case 'list': {
++      const tagIndex = args.indexOf('--tag');
++      if (tagIndex !== -1) {
++        const tag = args[tagIndex + 1];
++        if (!tag) throw new Error('--tag expects a name');
++        const tagged = tasks.filter((t) => t.tags.includes(tag));
++        if (tagged.length === 0) console.log(`No tasks tagged ${tag}.`);
++        for (const task of tagged) console.log(formatTask(task));
++        return;
++      }
+       if (tasks.length === 0) {
+         console.log('Nothing to do.');
+         return;
+diff --git a/src/store.js b/src/store.js
+index 386381f..9f22731 100644
+--- a/src/store.js
++++ b/src/store.js
+@@ -7,7 +7,8 @@ function defaultFile() {
+ 
+ function load(file = defaultFile()) {
+   try {
+-    return JSON.parse(fs.readFileSync(file, 'utf8'));
++    const tasks = JSON.parse(fs.readFileSync(file, 'utf8'));
++    return tasks.map((t) => ({ ...t, tags: t.tags ?? [] }));
+   } catch {
+     return [];
+   }
+diff --git a/src/tasks.js b/src/tasks.js
+index 951fb98..e078287 100644
+--- a/src/tasks.js
++++ b/src/tasks.js
+@@ -1,6 +1,6 @@
+-function addTask(tasks, { title, due = null }) {
++function addTask(tasks, { title, due = null, tags = [] }) {
+   const id = tasks.reduce((max, t) => Math.max(max, t.id), 0) + 1;
+-  return [...tasks, { id, title, done: false, due }];
++  return [...tasks, { id, title, done: false, due, tags }];
+ }
+ 
+ function findIndex(tasks, id) {
+diff --git a/test/tasks.test.js b/test/tasks.test.js
+index 07fc146..8ab5e31 100644
+--- a/test/tasks.test.js
++++ b/test/tasks.test.js
+@@ -5,8 +5,8 @@ const { addTask, completeTask, removeTask } = require('../src/tasks');
+ test('addTask numbers tasks from 1', () => {
+   const tasks = addTask(addTask([], { title: 'Buy milk' }), { title: 'Call mom', due: '2026-11-10' });
+   assert.deepStrictEqual(tasks, [
+-    { id: 1, title: 'Buy milk', done: false, due: null },
+-    { id: 2, title: 'Call mom', done: false, due: '2026-11-10' },
++    { id: 1, title: 'Buy milk', done: false, due: null, tags: [] },
++    { id: 2, title: 'Call mom', done: false, due: '2026-11-10', tags: [] },
+   ]);
+ });
+ 
+@@ -29,3 +29,8 @@ test('unknown ids are rejected', () => {
+   assert.throws(() => completeTask([], 3), /No task with id 3/);
+   assert.throws(() => removeTask([], 3), /No task with id 3/);
+ });
++
++test('addTask keeps the given tags', () => {
++  const [task] = addTask([], { title: 'Pack bag', tags: ['work', 'home'] });
++  assert.deepStrictEqual(task.tags, ['work', 'home']);
++});
