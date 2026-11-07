@@ -1,6 +1,6 @@
 ---
 name: route
-description: Entry point for software engineering work in a code repository. Use at the start of any task that would change code or answer a question about it, such as a feature, bug fix, refactor, migration, or investigation. It sizes the task and hands it to the right jstack workflow (spec for clarifying and breaking down, pstack poteto-mode for execution). Skip it for non-engineering requests, and skip it when the user has already typed a /pstack:* or /spec:* command.
+description: Entry point for software engineering work in a code repository. Use at the start of any task that would change code or answer a question about it, such as a feature, bug fix, refactor, migration, or investigation. It sizes the task and hands it to the right jstack workflow (spec for clarifying and breaking down, pstack poteto-mode for execution). Skip it for non-engineering requests, and skip it when the user has already invoked a pstack or spec entry skill directly.
 argument-hint: "<task description>"
 ---
 
@@ -10,7 +10,18 @@ You connect two plugins so the user does not have to pick commands. `spec` clari
 
 ## 1. Locate the entry skills
 
-Run `"${CLAUDE_SKILL_DIR}/locate.sh"`. It prints the absolute path of each entry SKILL.md. You cannot launch these skills with the Skill tool, because they are reserved for user invocation. Instead, read the SKILL.md at the printed path and follow it as if the user had typed that command, with the task as its argument. Relative links inside it resolve from that file's directory. If the script fails, tell the user which plugin is missing and stop.
+Run `locate.sh`, which sits next to this SKILL.md. In Claude Code, run `"${CLAUDE_SKILL_DIR}/locate.sh"`. In another harness, take the absolute path the harness gave for this SKILL.md and replace `SKILL.md` with `locate.sh`.
+
+It prints one line per entry skill, as `name<TAB>absolute path`. These skills are marked `disable-model-invocation: true`, so the harness will not let you launch them as model-invoked skills. Instead, read the SKILL.md at the printed path and follow it as if the user had invoked that skill, with the task as its argument. Relative links inside it resolve from that file's directory. If the script fails, tell the user which plugin is missing and stop.
+
+Every harness loads the same skill names but invokes them differently. Refer to skills by name in this workflow. Use this table when you tell the user how to invoke one directly.
+
+| Harness | Invocation |
+|---|---|
+| Claude Code | `/pstack:<name>` or `/spec:<name>` |
+| Pi | `/skill:<name>` |
+| OMP | `/skill:<name>` |
+| Cursor | `/<name>` |
 
 ## 2. Size the task
 

@@ -1,0 +1,9 @@
+{
+  "repo": "https://github.com/cursor/plugins.git",
+  "path": "pstack",
+  "ref": "main",
+  "sha": "8ecfb19f844b67a4bc7af7f66c366d57bc7b6d2b",
+  "version": "0.15.36",
+  "tree": "3b26e5ed348b53861ea8fee83af23506aedf464941ed2a50a178fd3eb0872943",
+  "synced": "2026-11-07"
+}

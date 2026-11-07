@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # Architect
 
-In Claude Code, read [the Claude Code adapter](../../docs/harness/claude-code.md) once per session before you follow this skill. It maps the Cursor names in pstack skills to Claude Code.
+If you are not in Cursor, read [the harness adapter](../../docs/harness/agents.md) once per session before you follow this skill. It maps the Cursor names in pstack skills to your harness.
 
 Sketch types, function signatures, class shapes, and module boundaries with `not implemented` bodies and pseudocode. Synthesize across multiple model perspectives, then fill in code against the chosen sketch.
 

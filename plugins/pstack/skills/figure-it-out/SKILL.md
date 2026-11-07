@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # Figure it out
 
-In Claude Code, read [the Claude Code adapter](../../docs/harness/claude-code.md) once per session before you follow this skill. It maps the Cursor names in pstack skills to Claude Code.
+If you are not in Cursor, read [the harness adapter](../../docs/harness/agents.md) once per session before you follow this skill. It maps the Cursor names in pstack skills to your harness.
 
 When the task matches no playbook, design one. The deliverable before any code is the workflow itself: a sequence of phases that scales rigor to the task, runs the scientific method, and leaves a decision trail a human can audit after stepping away.
 

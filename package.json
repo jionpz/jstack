@@ -1,0 +1,20 @@
+{
+  "name": "jstack",
+  "version": "0.1.0",
+  "description": "jstack：pstack、spec、flow 三个插件的多 harness 分发，支持 Claude Code、Pi、OMP、Cursor。",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "jstack",
+    "pstack",
+    "spec",
+    "flow"
+  ],
+  "pi": {
+    "skills": [
+      "./plugins/pstack/skills",
+      "./plugins/spec/skills",
+      "./plugins/flow/skills"
+    ]
+  }
+}

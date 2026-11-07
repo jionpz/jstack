@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # Automate me
 
-In Claude Code, read [the Claude Code adapter](../../docs/harness/claude-code.md) once per session before you follow this skill. It maps the Cursor names in pstack skills to Claude Code.
+If you are not in Cursor, read [the harness adapter](../../docs/harness/agents.md) once per session before you follow this skill. It maps the Cursor names in pstack skills to your harness.
 
 A guided flow for turning the user's working conventions into a skill agents will follow. The output is one `-mode` skill tailored to them (e.g. `jay-mode`, `priya-mode`).
 

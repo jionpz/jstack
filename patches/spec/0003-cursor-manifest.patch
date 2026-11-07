@@ -1,0 +1,34 @@
+diff --git a/.cursor-plugin/plugin.json b/.cursor-plugin/plugin.json
+new file mode 100644
+index 0000000..ef04490
+--- /dev/null
++++ b/.cursor-plugin/plugin.json
+@@ -0,0 +1,28 @@
++{
++  "name": "spec",
++  "displayName": "spec",
++  "version": "0.0.0",
++  "description": "Matt Pocock 的需求澄清和任务拆解 skills：grill-with-docs、to-spec、to-tickets、wayfinder、handoff，以及它们运行时调用的 skill。产出的 spec 和 tickets 交给 pstack 的 poteto-mode 执行，不含 implement 这类实现编排。",
++  "author": {
++    "name": "Matt Pocock",
++    "url": "https://www.aihero.dev"
++  },
++  "homepage": "https://github.com/mattpocock/skills",
++  "repository": "https://github.com/mattpocock/skills",
++  "license": "MIT",
++  "keywords": ["spec", "requirements", "grilling", "tickets", "planning", "handoff"],
++  "category": "developer-tools",
++  "tags": ["spec", "requirements", "planning", "tickets"],
++  "skills": [
++    "./skills/engineering/grill-with-docs",
++    "./skills/engineering/to-spec",
++    "./skills/engineering/to-tickets",
++    "./skills/engineering/wayfinder",
++    "./skills/productivity/handoff",
++    "./skills/productivity/grilling",
++    "./skills/engineering/domain-modeling",
++    "./skills/engineering/research",
++    "./skills/engineering/prototype",
++    "./skills/engineering/setup-matt-pocock-skills"
++  ]
++}

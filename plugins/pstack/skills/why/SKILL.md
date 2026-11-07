@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # Why
 
-In Claude Code, read [the Claude Code adapter](../../docs/harness/claude-code.md) once per session before you follow this skill. It maps the Cursor names in pstack skills to Claude Code.
+If you are not in Cursor, read [the harness adapter](../../docs/harness/agents.md) once per session before you follow this skill. It maps the Cursor names in pstack skills to your harness.
 
 Investigate the motivation and intent behind code. The companion `how` skill answers what the code does and how it works. `why` answers what forces led to its shape.
 

@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
-# jstack：维护并安装 jstack marketplace。它发布三个插件：
-#   pstack  原版 pstack 的 Claude Code 版（cursor/plugins）
+# jstack：维护并安装 jstack marketplace。Claude Code marketplace 发布三个插件：
+#   pstack  原版 pstack 的 Claude Code 版（cursor/plugins 的 harness/pstack/claude-code）
 #   spec    Matt Pocock skills 里负责需求澄清和任务拆解的几个（mattpocock/skills），产出交给 pstack 执行
 #   flow    jstack 自己写的衔接层（src/flow），按任务大小把 spec 和 pstack 接起来
+# 另外构建 Cursor 原生版 pstack（同一个上游的 pstack/ 树），单独放在 plugins/pstack-cursor，不进 Claude marketplace；
+# spec 和 flow 同时带 .claude-plugin 和 .cursor-plugin 两个 manifest，Claude Code 和 Cursor 共用同一份产物。
 #
-#   ./jstack install [--scope user|project|local]  安装全部插件，已装则刷新
+#   ./jstack install [--scope user|project|local]  安装全部 Claude Code 插件，已装则刷新
+#   ./jstack install-pi                            安装 Pi package，并把 pstack agents 接到 ~/.pi/agent/agents
+#   ./jstack install-cursor                        把 pstack、spec、flow 复制到 ~/.cursor/plugins/local/
+#                                                  （Cursor 拒绝指向该目录之外的符号链接，所以只复制）
 #   ./jstack sync [插件 [ref]]                     拉取上游（不写插件就全部同步，ref 默认 main），然后 build
 #   ./jstack build                                 用 upstream/ + patches/（flow 用 src/flow）重建 plugins/
-#   ./jstack check                                 校验构建产物、锁文件、Cursor 残留、frontmatter、skill 依赖、manifest
+#   ./jstack check [--smoke]                       校验构建产物、锁文件、Cursor 残留、frontmatter、skill 依赖、manifest、Pi package；
+#                                                  --smoke 额外跑已安装 harness 的 headless smoke（需要模型和网络）
+#   ./jstack smoke [pi|omp|cursor|all]             跑 Pi/OMP/Cursor 的 headless smoke；Cursor 只做加载器和 route 检查
 #
 # upstream/<插件> 是上游原样副本，plugins/<插件> 是构建产物，两者都不要手改。
 # 要改 pstack 或 spec，就在 patches/<插件>/ 下加补丁；flow 没有上游，直接改 src/flow。
@@ -18,22 +25,29 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 MARKETPLACE=jstack
 PLUGINS="pstack spec flow"
+CURSOR_PLUGINS="pstack-cursor"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
 die() { printf 'jstack: %s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
-json_get() { sed -n "s/^ *\"$1\": *\"\([^\"]*\)\".*/\1/p" "$2" | head -1; }
+json_get() { sed -n "s/^[[:space:]]*\"$1\":[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$2" | head -1; }
 
 # 切换到插件 $1：设置它的上游仓库、上游路径、只取哪些文件（PICK，空表示整个路径）和本地目录。
 use_plugin() {
-	PLUGIN=$1 PICK= OWN=
+	PLUGIN=$1 PICK= OWN= MANIFEST=.claude-plugin/plugin.json
 	VENDOR="$ROOT/upstream/$PLUGIN"
 	LOCK="$ROOT/upstream/$PLUGIN.lock.json"
 	case $PLUGIN in
 	pstack)
 		UPSTREAM_REPO=https://github.com/cursor/plugins.git
 		UPSTREAM_PATH=harness/pstack/claude-code
+		;;
+	pstack-cursor)
+		# Cursor 原生 pstack 树。manifest 是 .cursor-plugin/plugin.json，名字仍是 pstack。
+		UPSTREAM_REPO=https://github.com/cursor/plugins.git
+		UPSTREAM_PATH=pstack
+		MANIFEST=.cursor-plugin/plugin.json
 		;;
 	spec)
 		# 只取需求澄清、任务拆解的 5 个 skill（grill-with-docs 到 handoff），加上它们运行时要用的：
@@ -58,7 +72,7 @@ use_plugin() {
 		# jstack 自己的插件，没有上游：源码在 src/flow，版本基数取它自己的 plugin.json。
 		OWN=1 VENDOR="$ROOT/src/$PLUGIN" LOCK="$ROOT/src/$PLUGIN/.claude-plugin/plugin.json"
 		;;
-	*) die "没有插件 ${PLUGIN}，可选：$PLUGINS" ;;
+	*) die "没有插件 ${PLUGIN}，可选：$PLUGINS $CURSOR_PLUGINS" ;;
 	esac
 	PATCHES="$ROOT/patches/$PLUGIN"
 	OUT="$ROOT/plugins/$PLUGIN"
@@ -83,6 +97,13 @@ fm_unknown_keys() {
 	done
 }
 
+# 把 $1 manifest 里的 version 改成 $2。manifest 可以是 Claude 或 Cursor 方言。
+set_manifest_version() {
+	local manifest=$1 version=$2
+	sed "s/^\([[:space:]]*\"version\":[[:space:]]*\"\)[^\"]*\"/\1$version\"/" "$manifest" >"$manifest.tmp"
+	mv "$manifest.tmp" "$manifest"
+}
+
 # 把 upstream/ 加补丁构建到 $1。版本号写成 <上游版本>+jstack.<内容哈希>：
 # 内容一变版本就变，从 GitHub 安装的机器才收得到更新。上游版本取自锁文件，
 # 因为 spec 不收上游的 plugin.json，它的 manifest 由补丁新建。
@@ -97,11 +118,14 @@ build_into() {
 		(cd "$dest" && git apply --check "$patch" 2>/dev/null && git apply "$patch") ||
 			die "补丁 $(basename "$patch") 打不上，说明上游改了这段。对照 upstream/$PLUGIN 重做这个补丁；如果上游已经修好，就删掉它。"
 	done
-	manifest="$dest/.claude-plugin/plugin.json"
-	[ -f "$manifest" ] || die "upstream/$PLUGIN 里没有 .claude-plugin/plugin.json，patches/$PLUGIN 也没有新建它"
-	hash=$(tree_hash "$dest" ! -path ./.claude-plugin/plugin.json | cut -c1-7)
-	sed "s/^\( *\"version\": *\"\)[^\"]*\"/\1$version+jstack.$hash\"/" "$manifest" >"$manifest.tmp"
-	mv "$manifest.tmp" "$manifest"
+	manifest="$dest/$MANIFEST"
+	[ -f "$manifest" ] || die "upstream/$PLUGIN 里没有 $MANIFEST，patches/$PLUGIN 也没有新建它"
+	# 两个 manifest 都排除在哈希外，否则版本号会自我递归。spec/flow 同时带 Claude 和 Cursor 清单。
+	hash=$(tree_hash "$dest" ! -path "./.claude-plugin/plugin.json" ! -path "./.cursor-plugin/plugin.json" | cut -c1-7)
+	set_manifest_version "$manifest" "$version+jstack.$hash"
+	if [ "$MANIFEST" != .cursor-plugin/plugin.json ] && [ -f "$dest/.cursor-plugin/plugin.json" ]; then
+		set_manifest_version "$dest/.cursor-plugin/plugin.json" "$version+jstack.$hash"
+	fi
 	[ "$(json_get version "$manifest")" = "$version+jstack.$hash" ] || die "$PLUGIN 的 plugin.json 里没有 version"
 }
 
@@ -113,12 +137,12 @@ build_plugin() {
 	rsync -rlpc --delete --exclude node_modules "$WORK/build/$PLUGIN/" "$OUT/"
 	patches=("$PATCHES"/*.patch)
 	[ -e "${patches[0]}" ] || patches=()
-	say "✓ 已构建 plugins/${PLUGIN}，版本 $(json_get version "$OUT/.claude-plugin/plugin.json")，打了 ${#patches[@]} 个补丁"
+	say "✓ 已构建 plugins/${PLUGIN}，版本 $(json_get version "$OUT/$MANIFEST")，打了 ${#patches[@]} 个补丁"
 }
 
 cmd_build() {
 	local p
-	for p in $PLUGINS; do
+	for p in $PLUGINS $CURSOR_PLUGINS; do
 		use_plugin "$p"
 		build_plugin
 	done
@@ -134,9 +158,9 @@ sync_plugin() {
 	git -C "$src" -c advice.detachedHead=false checkout -q FETCH_HEAD
 	sha=$(git -C "$src" rev-parse HEAD)
 	src="$src/$UPSTREAM_PATH"
-	[ -f "$src/.claude-plugin/plugin.json" ] ||
-		die "上游 ${sha:0:7} 里没有 $UPSTREAM_PATH/.claude-plugin/plugin.json，可能上游改了目录结构"
-	version=$(json_get version "$src/.claude-plugin/plugin.json")
+	[ -f "$src/$MANIFEST" ] ||
+		die "上游 ${sha:0:7} 里没有 $UPSTREAM_PATH/$MANIFEST，可能上游改了目录结构"
+	version=$(json_get version "$src/$MANIFEST")
 	if [ -n "$PICK" ]; then
 		# 只取 PICK 列出的文件和目录，保留它们在上游的相对路径。
 		for path in $PICK; do
@@ -173,22 +197,241 @@ EOF
 cmd_sync() {
 	local p
 	[ $# -le 2 ] || die "用法：./jstack sync [插件 [ref]]"
-	for p in ${1:-$PLUGINS}; do
+	for p in ${1:-$PLUGINS $CURSOR_PLUGINS}; do
 		use_plugin "$p"
 		[ -z "$OWN" ] || { [ -z "${1:-}" ] || die "$p 没有上游，直接改 src/$p"; continue; }
 		sync_plugin "${2:-main}"
 	done
 }
 
+# 跑一条 headless 命令，把完整 JSON 留在 $2，失败时打印 stderr 末尾。
+smoke_run() {
+	local label=$1 out=$2
+	shift 2
+	if "$@" >"$out" 2>"$out.err"; then
+		return 0
+	fi
+	say "✗ $label 运行失败"
+	tail -10 "$out.err" | sed 's/^/  /'
+	return 1
+}
+
+smoke_pi() {
+	command -v pi >/dev/null || { say "- 没找到 Pi CLI，跳过 Pi smoke"; return 0; }
+	local dir="$WORK/smoke/pi" out skills s rc=0 bad=0 prompt
+	mkdir -p "$dir"
+	# 1. 系统提示里的 skill 目录：pstack 的 setup-pstack、spec 的 grilling、flow 的 route。
+	out="$dir/catalog.jsonl"
+	smoke_run "Pi skill catalog" "$out" pi -p --no-session --no-context-files --mode json "List the names of skills available to you that are named setup-pstack, grilling, or route, then stop." || return 1
+	skills=$(jq -r 'select(.type=="message_end" and .message.role=="system") | .message.sections.skills // empty' "$out")
+	for s in setup-pstack grilling route; do
+		if ! grep -q "<name>$s</name>" <<<"$skills"; then
+			say "✗ Pi skill catalog 缺少 $s"
+			rc=1 bad=1
+		fi
+	done
+	[ "$bad" -eq 0 ] && say "✓ Pi: 系统提示包含 pstack/spec/flow 的 skills"
+	# 2. 隐藏入口：pstack 的入口 skill 都是 disable-model-invocation，用 /skill: 显式加载。
+	out="$dir/hidden.jsonl"
+	if smoke_run "Pi /skill:poteto-mode" "$out" pi -p --no-session --no-context-files --no-tools --mode json "/skill:poteto-mode 只回复 PI-SKILL-OK 并停止。"; then
+		if grep -q 'poteto-mode/SKILL.md' "$out" && grep -q 'PI-SKILL-OK' "$out"; then
+			say "✓ Pi: /skill:poteto-mode 加载了隐藏入口"
+		else
+			say "✗ Pi: /skill:poteto-mode 没有加载或没有返回标记"
+			rc=1
+		fi
+	else
+		rc=1
+	fi
+	# 3. route 在 Pi 安装树下运行 locate.sh。
+	out="$dir/route.jsonl"
+	if smoke_run "Pi /skill:route" "$out" pi -p --no-session --no-context-files --mode json "/skill:route 只运行 locate.sh 并列出 7 个入口名字，然后停止。"; then
+		skills=$(jq -r 'select(.type=="tool_execution_end" and .toolName=="bash") | .result.content[]?.text' "$out" 2>/dev/null || true)
+		bad=0
+		for s in poteto-mode setup-matt-pocock-skills grill-with-docs to-spec to-tickets wayfinder handoff; do
+			if ! grep -q -- "$s" <<<"$skills"; then
+				say "✗ Pi route 输出缺少 $s"
+				rc=1 bad=1
+			fi
+		done
+		[ "$bad" -eq 0 ] && say "✓ Pi: route 定位到 7 个入口"
+	else
+		rc=1
+	fi
+	# 4. pstack 的 poteto-agent 后台派发。
+	out="$dir/subagent.jsonl"
+	prompt="Use the Agent tool exactly once with subagent_type \"poteto-agent\", description \"smoke\", prompt \"Read $ROOT/README.md and reply with its first line. Do not edit files.\" Then call get_subagent_result with wait true and report the result. Stop."
+	if smoke_run "Pi poteto-agent" "$out" pi -p --no-session --no-context-files --mode json "$prompt"; then
+		if jq -r 'select(.type=="tool_execution_start" and .toolName=="Agent") | .args.subagent_type // empty' "$out" | grep -qx poteto-agent &&
+			jq -r 'select(.type=="tool_execution_end" and .toolName=="get_subagent_result") | .result.content[]?.text // empty' "$out" | grep -q 'completed'; then
+			say "✓ Pi: poteto-agent 后台派发并返回结果"
+		else
+			say "✗ Pi: 没有看到 poteto-agent 或 get_subagent_result 结果"
+			rc=1
+		fi
+	else
+		rc=1
+	fi
+	return $rc
+}
+
+smoke_omp() {
+	command -v omp >/dev/null || { say "- 没找到 OMP CLI，跳过 OMP smoke"; return 0; }
+	if ! omp plugin list 2>/dev/null | grep -q 'pstack@jstack'; then
+		say "- OMP 没有安装 jstack 插件，跳过 OMP smoke（先 omp plugin marketplace add jionpz/jstack && omp plugin install pstack@jstack spec@jstack flow@jstack）"
+		return 0
+	fi
+	local dir="$WORK/smoke/omp" out text pstack_dir flow_dir s rc=0 bad=0 prompt
+	mkdir -p "$dir"
+	pstack_dir=$(ls -dt "$HOME/.omp/plugins/cache/plugins"/jstack___pstack___* 2>/dev/null | head -1 || true)
+	flow_dir=$(ls -dt "$HOME/.omp/plugins/cache/plugins"/jstack___flow___* 2>/dev/null | head -1 || true)
+	# 1. 三个插件的 skill URI。
+	out="$dir/skills.jsonl"
+	if smoke_run "OMP skill URIs" "$out" omp -p --no-session --mode json --auto-approve --tools=read "Read these three skill URIs with the read tool and report their paths, then stop: skill://setup-pstack, skill://grilling, skill://route"; then
+		text=$(jq -r 'select(.type=="tool_execution_end" and .toolName=="read") | .result.content[]?.text // empty' "$out" 2>/dev/null || true)
+		bad=0
+		for s in jstack___pstack___ jstack___spec___ jstack___flow___; do
+			if ! grep -q "$s" <<<"$text"; then
+				say "✗ OMP skill URI 没有解析到 $s"
+				rc=1 bad=1
+			fi
+		done
+		[ "$bad" -eq 0 ] && say "✓ OMP: pstack/spec/flow 的 skills 都能加载"
+	else
+		rc=1
+	fi
+	# 2. 隐藏入口按绝对路径读。
+	out="$dir/hidden.jsonl"
+	if [ -n "$pstack_dir" ] && smoke_run "OMP poteto-mode" "$out" omp -p --no-session --mode json --auto-approve --tools=read "Read the first five lines of $pstack_dir/skills/poteto-mode/SKILL.md and report the name field, then stop."; then
+		text=$(jq -r 'select(.type=="tool_execution_end" and .toolName=="read") | .result.content[]?.text // empty' "$out" 2>/dev/null || true)
+		if grep -q 'name: poteto-mode' <<<"$text"; then
+			say "✓ OMP: 隐藏入口可按路径读取"
+		else
+			say "✗ OMP: 没有读到 poteto-mode 的 frontmatter"
+			rc=1
+		fi
+	elif [ -z "$pstack_dir" ]; then
+		say "✗ OMP: 找不到 pstack 插件缓存"
+		rc=1
+	fi
+	# 3. route 在 OMP 缓存布局下运行 locate.sh。
+	out="$dir/route.jsonl"
+	if [ -n "$flow_dir" ] && smoke_run "OMP route" "$out" omp -p --no-session --mode json --auto-approve --tools=bash "Run bash $flow_dir/skills/route/locate.sh and list the seven entry names it prints, then stop."; then
+		text=$(jq -r 'select(.type=="tool_execution_end" and .toolName=="bash") | .result.content[]?.text // empty' "$out" 2>/dev/null || true)
+		bad=0
+		for s in poteto-mode setup-matt-pocock-skills grill-with-docs to-spec to-tickets wayfinder handoff; do
+			if ! grep -q -- "$s" <<<"$text"; then
+				say "✗ OMP route 输出缺少 $s"
+				rc=1 bad=1
+			fi
+		done
+		[ "$bad" -eq 0 ] && say "✓ OMP: route 定位到 7 个入口"
+	elif [ -z "$flow_dir" ]; then
+		say "✗ OMP: 找不到 flow 插件缓存"
+		rc=1
+	fi
+	# 4. poteto-agent 通过 task 工具派发。
+	out="$dir/subagent.jsonl"
+	prompt="Use the task tool exactly once with agent \"poteto-agent\", name \"SmokeRead\", and task \"Read $ROOT/plugins/pstack/skills/poteto-mode/SKILL.md in full first, then read the first line of $ROOT/README.md and reply with exactly that line. Do not modify any files.\" Then report the result and stop."
+	if smoke_run "OMP poteto-agent" "$out" omp -p --no-session --mode json --auto-approve --tools=task "$prompt"; then
+		if jq -r 'select(.type=="tool_execution_start" and .toolName=="task") | .args.tasks[]?.agent // empty' "$out" | grep -qx poteto-agent &&
+			jq -r 'select(.type=="message_end" and .message.role=="assistant") | .message.content[]?.text // empty' "$out" | grep -q '# jstack'; then
+			say "✓ OMP: poteto-agent 通过 task 派发并返回结果"
+		else
+			say "✗ OMP: 没有看到 poteto-agent 或 # jstack 结果"
+			rc=1
+		fi
+	else
+		rc=1
+	fi
+	return $rc
+}
+
+smoke_cursor() {
+	local loader=/Applications/Cursor.app/Contents/Resources/app/molten/dist/engine/plugins-loader.cjs
+	local root="$HOME/.cursor/plugins/local" out
+	[ -f "$loader" ] || { say "- 没找到 Cursor 插件加载器，跳过 Cursor smoke"; return 0; }
+	[ -f "$root/flow/.cursor-plugin/plugin.json" ] || {
+		say "- Cursor 本地插件未安装，跳过 Cursor smoke（先 ./jstack install-cursor）"
+		return 0
+	}
+	out="$WORK/smoke/cursor-loader.txt"
+	if ! node - "$HOME" "$loader" >"$out" 2>"$out.err" <<'JS'; then
+const home = process.argv[2];
+const loader = process.argv[3];
+const { loadPlugins } = require(loader);
+(async () => {
+  const r = await loadPlugins({roots:[process.cwd()], home, backend:null, userLocal:true, projectSettings:undefined});
+  const by = new Map(r.plugins.map(p => [p.identifier?.sourceInfo?.name, p]));
+  const names = [...by.keys()].sort().join(',');
+  if (r.failures.length || names !== 'flow,pstack,spec') {
+    console.error(`Cursor loader: plugins=${names} failures=${r.failures.length}`);
+    process.exit(1);
+  }
+  const has = (plugin, list, name) => (by.get(plugin)?.[list] || []).some(x => x.name === name);
+  if (!has('flow', 'skills', 'route') || !has('pstack', 'skills', 'poteto-mode') ||
+      !has('spec', 'skills', 'grill-with-docs') || !has('pstack', 'agents', 'poteto-agent')) {
+    console.error('Cursor loader: 缺少 route / poteto-mode / grill-with-docs / poteto-agent');
+    process.exit(1);
+  }
+  console.log(`plugins=${names} flow.skills=${by.get('flow').skills.length} pstack.skills=${by.get('pstack').skills.length} pstack.agents=${by.get('pstack').agents.length} spec.skills=${by.get('spec').skills.length}`);
+})();
+JS
+		say "✗ Cursor 插件加载器失败"
+		tail -10 "$out.err" | sed 's/^/  /'
+		return 1
+	fi
+	say "✓ Cursor: $(cat "$out")"
+	out="$WORK/smoke/cursor-route.txt"
+	if bash "$root/flow/skills/route/locate.sh" >"$out" 2>"$out.err"; then
+		if [ "$(wc -l <"$out" | tr -d ' ')" -eq 7 ]; then
+			say "✓ Cursor: route 在 Cursor 布局下定位到 7 个入口"
+		else
+			say "✗ Cursor: route 没有返回 7 个入口"
+			return 1
+		fi
+	else
+		say "✗ Cursor: locate.sh 运行失败"
+		tail -10 "$out.err" | sed 's/^/  /'
+		return 1
+	fi
+	say "- Cursor 的交互部分（/route、澄清轮、subagent 面板）按 docs/testing/cursor.md 手动验证"
+}
+
+cmd_smoke() {
+	local which=${1:-all} rc=0
+	command -v jq >/dev/null || die "smoke 需要 jq"
+	mkdir -p "$WORK/smoke"
+	case $which in
+	all)
+		smoke_pi || rc=1
+		smoke_omp || rc=1
+		smoke_cursor || rc=1
+		;;
+	pi) smoke_pi || rc=1 ;;
+	omp) smoke_omp || rc=1 ;;
+	cursor) smoke_cursor || rc=1 ;;
+	*) die "用法：./jstack smoke [pi|omp|cursor|all]" ;;
+	esac
+	[ "$rc" -eq 0 ] && say "✓ smoke 通过" || say "✗ smoke 未通过"
+	return $rc
+}
+
 cmd_check() {
-	local rc=0 p hits failed=
-	for p in $PLUGINS; do
+	local rc=0 p hits failed= smoke=
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--smoke) smoke=1; shift ;;
+		*) die "未知参数：$1（可用 --smoke）" ;;
+		esac
+	done
+	for p in $PLUGINS $CURSOR_PLUGINS; do
 		use_plugin "$p"
 		build_into "$WORK/check/$p"
 		if diff -rq -x node_modules "$WORK/check/$p" "$OUT" >"$WORK/diff" 2>&1 &&
 			diff <(cd "$WORK/check/$p" && find . -type f -perm -u+x ! -path '*/node_modules/*' | sort) \
 				<(cd "$OUT" && find . -type f -perm -u+x ! -path '*/node_modules/*' | sort) >/dev/null; then
-			say "✓ plugins/$PLUGIN 与 upstream/ 加 patches/ 的构建结果一致（$(json_get version "$OUT/.claude-plugin/plugin.json")）"
+			say "✓ plugins/$PLUGIN 与 upstream/ 加 patches/ 的构建结果一致（$(json_get version "$OUT/$MANIFEST")）"
 		else
 			say "✗ plugins/$PLUGIN 与构建结果不一致：可能被手改过，或改了补丁后没有运行 ./jstack build"
 			sed 's/^/  /' "$WORK/diff" | head -20
@@ -202,6 +445,21 @@ cmd_check() {
 		else
 			say "✗ upstream/$PLUGIN 与 upstream/$PLUGIN.lock.json 记录的内容对不上：副本只能由 ./jstack sync 写入"
 			rc=1
+		fi
+		if [ "$PLUGIN" = pstack-cursor ]; then
+			# Cursor 原生产物：manifest 用 .cursor-plugin，frontmatter 和脚本按 Cursor 约定，不做 Claude Code 检查。
+			hits=
+			[ -f "$OUT/.cursor-plugin/plugin.json" ] || hits="${hits:+$hits, }manifest"
+			[ "$(json_get name "$OUT/.cursor-plugin/plugin.json" 2>/dev/null || true)" = pstack ] || hits="${hits:+$hits, }name"
+			[ -f "$OUT/skills/poteto-mode/SKILL.md" ] || hits="${hits:+$hits, }skills"
+			[ -f "$OUT/agents/poteto-agent.md" ] || hits="${hits:+$hits, }agents"
+			if [ -n "$hits" ]; then
+				say "✗ plugins/$PLUGIN 不是完整的 Cursor pstack 产物：缺少 ${hits}。"
+				rc=1
+			else
+				say "✓ plugins/$PLUGIN 是 Cursor 插件 pstack（$(json_get version "$OUT/.cursor-plugin/plugin.json")），skills 和 agents 齐全"
+			fi
+			continue
 		fi
 		# 上游 adapter 只翻译 Markdown 里的 Cursor 名称，脚本里写死的 Cursor 路径要靠补丁修。
 		if hits=$(grep -rnIE '(\$HOME|~)/\.cursor/|agent-transcripts' --exclude='*.md' --exclude-dir=node_modules "$OUT"); then
@@ -241,7 +499,43 @@ cmd_check() {
 		else
 			say "✓ plugins/$PLUGIN 里的 skill 调用的 skill 都已收录"
 		fi
+		# spec/flow 同时发布给 Claude Code 和 Cursor：Cursor 清单的 name/version 必须与 Claude 清单一致。
+		if [ "$MANIFEST" != .cursor-plugin/plugin.json ] && [ -f "$OUT/.cursor-plugin/plugin.json" ]; then
+			hits=
+			[ "$(json_get name "$OUT/.cursor-plugin/plugin.json")" = "$PLUGIN" ] || hits="name"
+			[ "$(json_get version "$OUT/.cursor-plugin/plugin.json")" = "$(json_get version "$OUT/$MANIFEST")" ] ||
+				hits="${hits:+$hits, }version"
+			grep -q '"skills"[[:space:]]*:' "$OUT/.cursor-plugin/plugin.json" || hits="${hits:+$hits, }skills"
+			# spec 的两个 manifest 都列了 10 个 skill 路径，增删时不能只改一边。
+			if grep -q '"skills"[[:space:]]*:' "$OUT/$MANIFEST"; then
+				diff <(grep -o '"\./skills/[^"]*"' "$OUT/$MANIFEST" | sort) \
+					<(grep -o '"\./skills/[^"]*"' "$OUT/.cursor-plugin/plugin.json" | sort) >/dev/null ||
+					hits="${hits:+$hits, }skills 列表不一致"
+			fi
+			if [ -n "$hits" ]; then
+				say "✗ plugins/$PLUGIN 的 Cursor manifest 不完整：${hits}"
+				rc=1
+			else
+				say "✓ plugins/$PLUGIN 的 Cursor manifest 与 Claude manifest 一致（$(json_get version "$OUT/.cursor-plugin/plugin.json")）"
+			fi
+		fi
 	done
+	# Pi package：根 package.json 的 pi.skills 必须覆盖三个插件的 skill 目录，且目录真实存在。
+	hits=
+	if [ ! -f "$ROOT/package.json" ]; then
+		hits="package.json"
+	else
+		for rel in plugins/pstack/skills plugins/spec/skills plugins/flow/skills; do
+			grep -qF "\"./$rel\"" "$ROOT/package.json" || hits="${hits:+$hits, }$rel 未列出"
+			[ -d "$ROOT/$rel" ] || hits="${hits:+$hits, }$rel 不存在"
+		done
+	fi
+	if [ -n "$hits" ]; then
+		say "✗ Pi package manifest 不完整：${hits}"
+		rc=1
+	else
+		say "✓ Pi package manifest 暴露了 pstack、spec、flow 三个插件的 skills"
+	fi
 	if command -v claude >/dev/null; then
 		claude plugin validate "$ROOT" >"$WORK/validate" 2>&1 || failed=1
 		for p in $PLUGINS; do
@@ -256,6 +550,9 @@ cmd_check() {
 		fi
 	else
 		say "- 没找到 claude CLI，跳过 manifest 校验"
+	fi
+	if [ -n "$smoke" ]; then
+		cmd_smoke all || rc=1
 	fi
 	return $rc
 }
@@ -316,11 +613,91 @@ cmd_install() {
 EOF
 }
 
+cmd_install_cursor() {
+	local target_root="$HOME/.cursor/plugins/local" name src target missing= link
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--copy) shift ;;
+		--link) die "Cursor 的 user-local 插件加载器拒绝指向 ~/.cursor/plugins/local 之外的符号链接；install-cursor 只支持复制，去掉 --link 再运行" ;;
+		*) die "未知参数：$1（install-cursor 默认复制，--copy 可省略）" ;;
+		esac
+	done
+	# pstack 用 Cursor 原生树；spec 和 flow 用带双 manifest 的同一份产物。
+	for name in pstack spec flow; do
+		case $name in
+		pstack) src="$ROOT/plugins/pstack-cursor" ;;
+		*) src="$ROOT/plugins/$name" ;;
+		esac
+		[ -f "$src/.cursor-plugin/plugin.json" ] || missing=1
+	done
+	[ -z "$missing" ] || cmd_build
+	mkdir -p "$target_root"
+	for name in pstack spec flow; do
+		case $name in
+		pstack) src="$ROOT/plugins/pstack-cursor" ;;
+		*) src="$ROOT/plugins/$name" ;;
+		esac
+		[ -f "$src/.cursor-plugin/plugin.json" ] ||
+			die "构建后仍没有 ${src#"$ROOT"/}/.cursor-plugin/plugin.json"
+		target="$target_root/$name"
+		if [ -e "$target" ] || [ -L "$target" ]; then
+			if [ -f "$target/.cursor-plugin/plugin.json" ] &&
+				[ "$(json_get name "$target/.cursor-plugin/plugin.json")" = "$name" ]; then
+				:
+			else
+				die "$target 已存在且不是 $name Cursor 插件，先备份或移走再装"
+			fi
+		fi
+		# 旧版 install-cursor 建过指向仓库的符号链接；Cursor 会拒绝它，这里自动换成副本。
+		if [ -L "$target" ]; then
+			link=$(readlink "$target")
+			case $link in
+			"$ROOT"/plugins/*) rm "$target" ;;
+			*) die "$target 是指向 $link 的符号链接，不是 jstack 的构建产物；先移走再装" ;;
+			esac
+		fi
+		mkdir -p "$target"
+		rsync -a --delete "$src/" "$target/"
+		say "✓ 已复制 Cursor $name 到 $target"
+	done
+	say "在 Cursor 里重开窗口或运行 /reload；用 /poteto-mode、/route 验证。"
+}
+
+cmd_install_pi() {
+	local agents="$HOME/.pi/agent/agents" src spec
+	command -v pi >/dev/null || die "需要 Pi CLI（pi）"
+	[ -f "$ROOT/package.json" ] || die "缺少 package.json（Pi package manifest）"
+	for spec in poteto-agent comment-sicko; do
+		src="$ROOT/plugins/pstack/agents/$spec.md"
+		[ -f "$src" ] || die "缺少 $src，先运行 ./jstack build"
+		if [ -e "$agents/$spec.md" ] && ! grep -q 'generated by jstack install-pi' "$agents/$spec.md"; then
+			die "$agents/$spec.md 已存在且不是 jstack 生成的；先备份或移走"
+		fi
+	done
+	pi install "$ROOT" --approve
+	mkdir -p "$agents"
+	# Pi 的后台字段是 run_in_background，不是 Claude Code 的 background；装的时候转换。
+	sed 's/^background: true$/run_in_background: true/' "$ROOT/plugins/pstack/agents/poteto-agent.md" |
+		awk 'BEGIN{fm=0} /^---$/{fm++; print; if(fm==2) print "\n<!-- generated by jstack install-pi; source: plugins/pstack/agents/poteto-agent.md -->"; next} {print}' >"$agents/poteto-agent.md"
+	awk 'BEGIN{fm=0} /^---$/{fm++; print; if(fm==2) print "\n<!-- generated by jstack install-pi; source: plugins/pstack/agents/comment-sicko.md -->"; next} {print}' \
+		"$ROOT/plugins/pstack/agents/comment-sicko.md" >"$agents/comment-sicko.md"
+	grep -q '^run_in_background: true$' "$agents/poteto-agent.md" ||
+		die "poteto-agent 的 background 字段没有转成 run_in_background，检查上游 frontmatter"
+	say "✓ 已安装 Pi package 和 pstack agents 到 $agents"
+	say "重开 Pi 会话；用 /skill:poteto-mode 验证。"
+	if ! pi list 2>/dev/null | grep -q 'pi-subagents'; then
+		say "! 没找到 @tintinweb/pi-subagents：pstack 的子 agent 需要它，先运行 pi install npm:@tintinweb/pi-subagents"
+	fi
+}
+
 case "${1:-}" in
 install) shift; cmd_install "$@" ;;
+install-pi) cmd_install_pi ;;
+install-cursor) shift; cmd_install_cursor "$@" ;;
 sync) shift; cmd_sync "$@" ;;
 build) cmd_build ;;
-check) cmd_check ;;
+check) shift; cmd_check "$@" ;;
+smoke) shift; cmd_smoke "$@" ;;
 "" | -h | --help | help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
 *) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//' >&2; exit 2 ;;
 esac

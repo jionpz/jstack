@@ -2,7 +2,7 @@
 
 jionpz 的 AI 工程工作流 marketplace，发布三个插件：
 
-- **pstack**：原版 [pstack](https://github.com/cursor/plugins/tree/main/pstack)（Lauren Tan，MIT）的 Claude Code 版，负责执行。
+- **pstack**：原版 [pstack](https://github.com/cursor/plugins/tree/main/pstack)（Lauren Tan，MIT），负责执行。Claude Code 用上游的 Claude Code 树，Cursor 用上游原生树，Pi/OMP 通过 `docs/harness/agents.md` 在运行时映射工具名和模型。
 - **spec**：[Matt Pocock 的 skills](https://github.com/mattpocock/skills)（MIT）里负责需求澄清和任务拆解的几个，产出的 spec 和 tickets 交给 pstack 执行。
 - **flow**：jstack 自己写的衔接层，只有一个 `route` skill。工程任务进来时它自动分级，按大小把 spec 和 pstack 接起来，见下面"分工"一节。
 
@@ -25,6 +25,8 @@ pstack 和 spec 都锁定在上游某个提交，另外叠加了 jstack 自己�
 
 ## 安装
 
+### Claude Code
+
 本机已经有这个目录时，一条命令即可：
 
 ```bash
@@ -45,6 +47,42 @@ claude plugin marketplace add jionpz/jstack && claude plugin install pstack@jsta
 2. `/pstack:setup-pstack`：写入模型角色表 `~/.claude/rules/pstack-models.md`，只需要做一次。
 3. 在要用 spec 的仓库里运行一次 `/spec:setup-matt-pocock-skills`：选定 issue tracker 和领域文档的位置，写 `docs/agents/*.md` 和 `CLAUDE.md` 里的 `## Agent skills` 段。
 4. 直接描述任务即可。`flow:route` 会自动分级并选择流程；也可以显式运行 `/flow:route <任务描述>`。想跳过路由时，直接用 `/pstack:*` 或 `/spec:*` 命令，route 不会介入。
+
+### Pi
+
+仓库根目录本身是 Pi package：`package.json` 的 `pi.skills` 指向 `plugins/pstack/skills`、`plugins/spec/skills` 和 `plugins/flow/skills`。在仓库里运行：
+
+```bash
+./jstack install-pi
+```
+
+它会执行 `pi install <仓库> --approve`，并把 `plugins/pstack/agents/` 里的 `poteto-agent`、`comment-sicko` 转换后写到 `~/.pi/agent/agents/`（`background: true` 改成 Pi 的 `run_in_background: true`）。重复运行是幂等的；同名的非 jstack agent 文件不会被覆盖。
+
+在 Pi 里用 `/skill:poteto-mode`、`/skill:route` 这类命令调用入口。pstack 的入口 skill 都是 `disable-model-invocation: true`，不会出现在模型自动选择的 skill 列表里，这是正常的，`/skill:<名字>` 仍然能加载。子 agent 需要 `@tintinweb/pi-subagents`；`install-pi` 检测不到会提示安装命令。
+
+### OMP
+
+OMP 读 Claude Code 的 `.claude-plugin/marketplace.json`，所以可以直接添加 jstack marketplace 并安装三个插件：
+
+```bash
+omp plugin marketplace add jionpz/jstack        # 本机仓库用绝对路径也可以
+omp plugin install pstack@jstack spec@jstack flow@jstack
+```
+
+在 OMP 里用 `/skill:poteto-mode`、`/skill:route` 调用入口；pstack 的 `poteto-agent`、`comment-sicko` 会作为 `task` 工具的 agent 被发现。OMP 会丢弃 Claude 方言的 `model` frontmatter，模型角色用 `@slow` / `@plan` / `@smol` / `@task`，或在 OMP 配置里调整。更新插件用 `omp plugin upgrade pstack@jstack spec@jstack flow@jstack`。
+
+### Cursor
+
+Cursor 用上游原生的 pstack 树；spec 和 flow 与 Claude Code 共用同一份产物，只是额外带 `.cursor-plugin/plugin.json`：
+
+```bash
+./jstack build
+./jstack install-cursor        # 复制到 ~/.cursor/plugins/local/{pstack,spec,flow}
+```
+
+Cursor 的本地插件加载器只接受 `~/.cursor/plugins/local` 内的符号链接，指向仓库的链接会被拒绝，所以 `install-cursor` 默认复制。改了构建产物后重新运行一次即可。
+
+重开 Cursor 窗口。用 `/poteto-mode`、`/route`、`/grill-with-docs` 调用，不带插件前缀。`pstack` 保留 Cursor 原生的 `is_background: true` 等字段；spec/flow 的 Cursor manifest 和 Claude manifest 版本同步。完整检查清单见 `docs/testing/cursor.md`。
 
 不要同时装 `pstack@cursor-plugins` 以及其他 pstack 移植版：它们的命令都以 `/pstack:` 开头，会互相冲突。也不要装 `mattpocock-skills`（Matt 的完整版）：skill 和 `spec` 重复，还带 `implement` 编排。`./jstack install` 检测到这些会拒绝安装并给出卸载命令。
 
@@ -116,17 +154,22 @@ Matt 的 skills 本来就是 Claude Code 原生写法，不需要 adapter。它�
 ```text
 .claude-plugin/marketplace.json  marketplace 清单，名字是 jstack，发布 pstack、spec、flow
 upstream/pstack/                 pstack 上游原样副本（cursor/plugins 的 harness/pstack/claude-code），不要手改
+upstream/pstack-cursor/          pstack 上游原样副本（cursor/plugins 的原生 pstack/ 树），不要手改
 upstream/spec/                   spec 上游原样副本（mattpocock/skills 的 LICENSE 和 10 个 skill 目录），不要手改
 patches/pstack/                  pstack 补丁，按文件名顺序应用
 patches/spec/                    spec 补丁，按文件名顺序应用
-plugins/pstack/                  pstack 构建产物，等于 upstream 加 patches 再加版本戳，不要手改
-plugins/spec/                    spec 构建产物，同上
+plugins/pstack/                  pstack 构建产物（Claude Code 树），等于 upstream 加 patches 再加版本戳，不要手改
+plugins/pstack-cursor/           pstack 构建产物（Cursor 原生树），不进 Claude marketplace，不要手改
+plugins/spec/                    spec 构建产物，带 Claude 和 Cursor 两个 manifest，同上
 src/flow/                        flow 的源码，jstack 自己维护，可以直接改
-plugins/flow/                    flow 构建产物，等于 src/flow 再加版本戳，不要手改
-upstream/pstack.lock.json        锁定的 pstack 上游：仓库、路径、提交、版本、副本内容哈希
+plugins/flow/                    flow 构建产物，带 Claude 和 Cursor 两个 manifest，等于 src/flow 再加版本戳，不要手改
+docs/harness/agents.md           Pi/OMP/Claude Code 共用的 adapter，把 pstack 里的 Cursor 名称映射到各 harness
+package.json                     Pi package manifest，pi.skills 指向三个插件的 skills
+upstream/pstack.lock.json        锁定的 pstack（Claude Code 树）上游：仓库、路径、提交、版本、副本内容哈希
+upstream/pstack-cursor.lock.json 锁定的 pstack（Cursor 原生树）上游，字段同上
 upstream/spec.lock.json          锁定的 spec 上游，字段同上
 SYNC-LOG.md                      上游同步记录
-jstack                           维护脚本：install / sync / build / check
+jstack                           维护脚本：install / install-pi / install-cursor / sync / build / check / smoke
 ```
 
 ## 当前补丁
@@ -138,12 +181,15 @@ pstack：
 | `0001-worktree-audit-claude-code-transcripts` | `worktree-audit.sh` 原来只在 `~/.cursor/projects/<slug>/agent-transcripts` 里找会话记录，现在改为在 `~/.claude/projects/<slug>` 里找，并且同时搜主仓库和 worktree 自己的目录 | 这是 shell 脚本，不经过模型。不修的话 `LAST_CHAT` 永远为空，已合并、但最近还有会话在用的 worktree 会被标成 `safe`，worktree-cleanup 剧本可能据此把它删掉。改编自 [backnotprop/pstack](https://github.com/backnotprop/pstack)（MIT） |
 | `0002-adapter-transcript-slug` | adapter 原文说 slug 规则是"把 `/` 和 `.` 换成 `-`"，改成"把所有非字母数字字符换成 `-`" | 2026-11-06 在本机 `~/.claude/projects` 实测 32 个目录：新规则 32 个全对；原规则错了 7 个，都是路径里带 `_` 的。规则写错会让 `reflect`、`recall` 这类 skill 找不到会话记录 |
 | `0003-poteto-agent-background-frontmatter` | `poteto-agent` 的 frontmatter 把 Cursor 的 `is_background: true` 改成 Claude Code 的 `background: true` | frontmatter 由 Claude Code 解析，不经过模型。原来的键会被静默忽略，只在会话 debug 日志里留一条 WARN，`claude plugin validate` 不报。poteto-mode 要求每次派 delegate 都放后台。2026-11-06 对照实测：主会话明确要求前台运行时，上游原版在前台跑完才返回，打补丁后强制转后台。代价：Claude Code 不允许 agent teams 的进程内 teammate 派 `background: true` 的 agent，pstack 本身不用 agent teams |
+| `0004-generic-harness-adapter` | 把 `docs/harness/claude-code.md` 的映射表扩成 `docs/harness/agents.md`，分出 Claude Code、Pi、OMP 三节；`claude-code.md` 只留一个指向它的兼容指针，所有 skill 和 README 里的 adapter 链接改到新文件 | adapter 是模型运行时读的文档，上游只有 Claude Code 一版。Pi 和 OMP 用同一套工具名，但入口、agent 发现和模型角色不同；把差异集中在一个文件里，同步上游后仍只需要维护这一处。Cursor 用原生树，不读这份 adapter |
 
 spec：
 
-| 补丁 | 修了什么 | 为什么不能用上游的 manifest |
+| 补丁 | 修了什么 | 为什么不能用上游的做法 |
 |---|---|---|
 | `0001-plugin-manifest` | 新建 `.claude-plugin/plugin.json`：插件名 `spec`、只列 10 个 skill；版本号先写占位 `0.0.0`，由 `build` 改成 `<上游版本>+jstack.<内容哈希>` | 上游 manifest 叫 `mattpocock-skills`、列了 27 个 skill，还带 `implement` 实现编排，原样收进来就会和 poteto-mode 抢主编排。如果改成 vendor 上游 manifest 再打补丁，版本号那一行每次上游发版都会变，补丁必然打不上；新建一个文件则与上游版本无关 |
+| `0002-skill-tool-fallback` | 在 `grill-with-docs` 和 `wayfinder` 里补一句：harness 没有 Skill 工具时，按名字读取被调用 skill 的 `SKILL.md` | 这两处业务内容要求"用 Skill 工具调用 grilling / domain-modeling"。Pi 和 OMP 的 skill 加载方式不同，有的版本不暴露 Skill 工具；只补调用方式，不改 skill 的业务内容。Claude Code 有 Skill 工具，会走原来的路径 |
+| `0003-cursor-manifest` | 新建 `.cursor-plugin/plugin.json`：插件名 `spec`、列同样 10 个 skill；版本号先写占位 `0.0.0`，由 `build` 与 Claude manifest 一起重写 | 上游没有 Cursor 插件清单。Cursor 的加载器要求自己的 manifest，而 spec 只收 10 个 skill，不能直接复制上游的全量清单；由补丁新建，避免上游发版时冲突 |
 
 pstack 这几处问题都值得提给上游 `cursor/plugins`。上游修好之后，`sync` 时补丁会打不上，删掉对应补丁即可。
 
@@ -154,27 +200,45 @@ pstack 这几处问题都值得提给上游 `cursor/plugins`。上游修好之�
 更新上游：
 
 ```bash
-./jstack sync             # pstack 和 spec 都跟 main（flow 没有上游，跳过）
+./jstack sync             # pstack（两棵树）、spec 都跟 main（flow 没有上游，跳过）
 ./jstack sync spec        # 只同步 spec
 ./jstack sync pstack 2776ddd2355d6d6c8747d3964600f28daf62f049   # 指定 ref：tag、分支或完整提交号
 git diff -- upstream/     # 看上游改了什么
 ./jstack check
 ```
 
+`pstack` 和 `pstack-cursor` 是同一个上游仓库的两棵子树，可以分别同步；要停在同一个提交，就对两个 key 各传一次同样的完整提交号。只想同步 Cursor 原生树时用 `./jstack sync pstack-cursor`。
+
 `ref` 要用 tag、分支名或**完整**提交号。git 的 `fetch` 不接受短提交号，`./jstack sync pstack 2776ddd` 会报 `couldn't find remote ref`。
 
 不传 ref 时跟 `main`，锁文件会更新到上游最新的 main。要停在某个提交，就把完整提交号传给 `sync`。
 
-`check` 依次检查六件事（每个插件都查）：
+`check` 检查这些内容：
 
-1. `plugins/` 是否等于构建结果（防手改）
-2. `upstream/` 的内容哈希是否等于锁文件里 `tree` 字段记录的（防手改副本；flow 没有上游，跳过）
-3. 脚本里有没有写死的 Cursor 路径
+1. 每个 `plugins/<插件>` 是否等于构建结果（防手改），包括 `pstack-cursor`
+2. 每棵 `upstream/<树>` 的内容哈希是否等于锁文件里 `tree` 字段记录的（防手改副本；flow 没有上游，跳过）
+3. 各插件脚本里有没有写死的 Cursor 路径
 4. skill 和 agent 的 frontmatter 里有没有 Claude Code 不认识的键
 5. skill 里通过 Skill 工具调用的 skill 是否都收进了插件
-6. `claude plugin validate` 是否通过（marketplace 和全部插件）
+6. spec/flow 的 Cursor manifest 是否和 Claude manifest 同名、同版本、同样的 skill 列表
+7. `plugins/pstack-cursor` 是否是 Cursor 插件 `pstack`，skills 和 agents 是否齐全
+8. 根目录 `package.json` 是否把三个插件的 skills 都暴露给 Pi
+9. `claude plugin validate` 是否通过（marketplace 和全部插件）
 
 第 3、4、5 项专门查 adapter 管不到的地方：脚本和 frontmatter 都不经过模型，上游新引入的 Cursor 依赖在同步时就能发现；第 5 项查的是 spec 这种"只收一部分 skill"的插件有没有漏掉依赖。`claude plugin validate` 不查 frontmatter 键，也不查插件内部 skill 之间的调用关系。全部通过才提交。
+
+### 跨 harness smoke
+
+`check --smoke` 在静态检查之后，对**本机已安装**的 harness 各跑一遍 headless 链路；没安装的 harness 会打印跳过原因，不算失败。也可以单独运行：
+
+```bash
+./jstack smoke pi       # skill 目录、/skill:poteto-mode、route locate.sh、poteto-agent
+./jstack smoke omp      # skill:// URI、隐藏入口按路径读、route、task 派发 poteto-agent
+./jstack smoke cursor   # 调用 Cursor 自带 plugins-loader 检查三个插件和 route
+./jstack smoke all      # 三个都跑（= ./jstack check --smoke）
+```
+
+Pi 和 OMP 的 smoke 会实际启动模型、消耗 token，需要网络；它们是验收测试，不是每次提交的默认门禁。Cursor 没有可脚本化的 headless agent CLI，smoke 只验证加载器解析结果和 `locate.sh`，交互部分按 `docs/testing/cursor.md` 手动做。
 
 补丁打不上，说明上游改了那一段。对照 `upstream/<插件>` 重做补丁；如果上游已经修好，就直接删掉补丁。
 
@@ -187,7 +251,7 @@ git diff --no-index --src-prefix= --dst-prefix= a/<路径> b/<路径> > patches/
 
 新建文件也可以这样打补丁（`a/` 那边不存在即可），补丁里会写成 `--- /dev/null`。`patches/spec/0001` 就是这么来的。
 
-版本号由 `build` 写成 `<上游版本>+jstack.<内容哈希>`，内容一变版本号就变。pstack 的上游版本从 `plugin.json` 读，spec 的从锁文件读（它不收上游的 manifest）。
+版本号由 `build` 写成 `<上游版本>+jstack.<内容哈希>`，内容一变版本号就变。pstack 的上游版本从 `plugin.json` 读，spec 的从锁文件读（它不收上游的 manifest）；spec 和 flow 的 Cursor manifest 版本由 `build` 与 Claude manifest 一起重写。
 
 本机的 marketplace 是从本地路径添加的，会话直接从 `plugins/<插件>` 加载。Claude Code 在缓存里也复制了一份，但不读它（2026-11-06 用 `claude --debug-file` 看启动日志确认）。所以 `build` 之后，重开会话或运行 `/reload-plugins` 就生效。再跑一次 `./jstack install`，`claude plugin list` 里的版本号也会跟上。
 
