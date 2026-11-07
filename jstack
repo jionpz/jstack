@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# jstack：维护并安装 jstack marketplace。它发布两个插件：
+# jstack：维护并安装 jstack marketplace。它发布三个插件：
 #   pstack  原版 pstack 的 Claude Code 版（cursor/plugins）
 #   spec    Matt Pocock skills 里负责需求澄清和任务拆解的几个（mattpocock/skills），产出交给 pstack 执行
 #   flow    jstack 自己写的衔接层（src/flow），按任务大小把 spec 和 pstack 接起来
@@ -12,6 +12,8 @@
 # upstream/<插件> 是上游原样副本，plugins/<插件> 是构建产物，两者都不要手改。
 # 要改 pstack 或 spec，就在 patches/<插件>/ 下加补丁；flow 没有上游，直接改 src/flow。
 set -euo pipefail
+# 变量后紧跟中文标点时必须写成 ${VAR}：macOS 的 bash 3.2 在 UTF-8 locale 下会把标点的
+# 首字节算进变量名，`$PLUGIN，` 会报 "PLUGIN?: unbound variable"。
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 MARKETPLACE=jstack
@@ -56,7 +58,7 @@ use_plugin() {
 		# jstack 自己的插件，没有上游：源码在 src/flow，版本基数取它自己的 plugin.json。
 		OWN=1 VENDOR="$ROOT/src/$PLUGIN" LOCK="$ROOT/src/$PLUGIN/.claude-plugin/plugin.json"
 		;;
-	*) die "没有插件 $PLUGIN，可选：$PLUGINS" ;;
+	*) die "没有插件 ${PLUGIN}，可选：$PLUGINS" ;;
 	esac
 	PATCHES="$ROOT/patches/$PLUGIN"
 	OUT="$ROOT/plugins/$PLUGIN"
@@ -111,7 +113,7 @@ build_plugin() {
 	rsync -rlpc --delete --exclude node_modules "$WORK/build/$PLUGIN/" "$OUT/"
 	patches=("$PATCHES"/*.patch)
 	[ -e "${patches[0]}" ] || patches=()
-	say "✓ 已构建 plugins/$PLUGIN，版本 $(json_get version "$OUT/.claude-plugin/plugin.json")，打了 ${#patches[@]} 个补丁"
+	say "✓ 已构建 plugins/${PLUGIN}，版本 $(json_get version "$OUT/.claude-plugin/plugin.json")，打了 ${#patches[@]} 个补丁"
 }
 
 cmd_build() {
@@ -138,7 +140,7 @@ sync_plugin() {
 	if [ -n "$PICK" ]; then
 		# 只取 PICK 列出的文件和目录，保留它们在上游的相对路径。
 		for path in $PICK; do
-			[ -e "$src/$path" ] || die "上游 ${sha:0:7} 里没有 $path，可能被改名或删掉了"
+			[ -e "$src/$path" ] || die "上游 ${sha:0:7} 里没有 ${path}，可能被改名或删掉了"
 			mkdir -p "$stage/$(dirname "$path")"
 			cp -R "$src/$path" "$stage/$(dirname "$path")/"
 		done

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # 打印 jstack 各插件入口 SKILL.md 的绝对路径，每行"名字<TAB>路径"。
+# 变量后紧跟中文标点时必须写成 ${VAR}：macOS 的 bash 3.2 在 UTF-8 locale 下会把标点首字节算进变量名。
 # 本地 marketplace 的布局是 plugins/<插件>/，从 GitHub 安装的布局是 cache/jstack/<插件>/<版本>/，两种都支持。
 # 缓存里同一插件留有多个版本时，取最近写入的那个。
 set -euo pipefail
@@ -9,7 +10,7 @@ base=$(dirname "$root")
 find_skill() {
 	local plugin=$1 rel=$2 hit
 	hit=$(ls -dt "$base/$plugin/$rel" "$base/$plugin"/*/"$rel" 2>/dev/null | head -1 || true)
-	[ -n "$hit" ] || { echo "locate: 找不到 $plugin 插件的 $rel，确认 $plugin@jstack 已安装" >&2; return 1; }
+	[ -n "$hit" ] || { echo "locate: 找不到 $plugin 插件的 ${rel}，确认 $plugin@jstack 已安装" >&2; return 1; }
 	printf '%s\t%s\n' "/$plugin:$(basename "$(dirname "$hit")")" "$hit"
 }
 find_skill pstack skills/poteto-mode/SKILL.md

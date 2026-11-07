@@ -8,7 +8,7 @@ jionpz 的 AI 工程工作流 marketplace，发布三个插件：
 
 pstack 和 spec 都锁定在上游某个提交，另外叠加了 jstack 自己的少量补丁。flow 没有上游，源码在 `src/flow/`。
 
-## 为什么是两个插件
+## 为什么 pstack 和 spec 是两个插件
 
 这两个插件的上游、许可证、维护节奏都不同，各自锁定自己的提交，互不牵连。命令前缀也分开（`/pstack:*`、`/spec:*`），可以单独装、单独升级。
 
@@ -33,7 +33,7 @@ pstack 和 spec 都锁定在上游某个提交，另外叠加了 jstack 自己�
 
 它装 `pstack@jstack`、`spec@jstack`、`flow@jstack` 三个。
 
-在别的机器上不需要 clone，仓库是私有的 `jionpz/jstack`，先确保本机能访问它：运行 `gh auth login` 和 `gh auth setup-git`（走 HTTPS 和本机 git 凭据），或者配好 SSH key。然后：
+在别的机器上不需要 clone，仓库是 public 的 `jionpz/jstack`，直接安装即可。如果要在这个仓库里推送改动，先运行 `gh auth login` 和 `gh auth setup-git`（走 HTTPS 和本机 git 凭据），或者配好 SSH key。然后：
 
 ```bash
 claude plugin marketplace add jionpz/jstack && claude plugin install pstack@jstack && claude plugin install spec@jstack && claude plugin install flow@jstack
@@ -69,7 +69,7 @@ route 只在三处停下来问你，其余全部自动推进：
 
 签字之后由 poteto-mode 按 ticket 依赖顺序执行，不再停下来确认，poteto-mode 自己的 Always-pause 清单仍然有效。业务仓库的 `CLAUDE.md` 或 `.claude/rules/` 里定义了不同的分级、spec 位置或门禁时，以仓库为准。
 
-`disable-model-invocation: true` 的 skill（pstack 57 个、spec 5 个入口）不能被模型用 Skill 工具调用，Claude Code 会直接拒绝，提示 "reserved for explicit user invocation"。route 用随附的 `locate.sh` 找到这些入口 SKILL.md 的路径，然后直接读取并照着做，这也是 pstack 内部 skill 之间互相路由的方式。`locate.sh` 同时支持本地 marketplace 的 `plugins/<插件>/` 布局和 GitHub 安装的 `cache/jstack/<插件>/<版本>/` 布局。
+`disable-model-invocation: true` 的 skill（pstack 57 个、spec 6 个：5 个入口加 setup）不能被模型用 Skill 工具调用，Claude Code 会直接拒绝，提示 "reserved for explicit user invocation"。route 用随附的 `locate.sh` 找到这些入口 SKILL.md 的路径，然后直接读取并照着做，这也是 pstack 内部 skill 之间互相路由的方式。`locate.sh` 同时支持本地 marketplace 的 `plugins/<插件>/` 布局和 GitHub 安装的 `cache/jstack/<插件>/<版本>/` 布局。
 
 几条硬规则：
 
@@ -154,7 +154,7 @@ pstack 这几处问题都值得提给上游 `cursor/plugins`。上游修好之�
 更新上游：
 
 ```bash
-./jstack sync             # 两个插件都跟 main
+./jstack sync             # pstack 和 spec 都跟 main（flow 没有上游，跳过）
 ./jstack sync spec        # 只同步 spec
 ./jstack sync pstack 2776ddd2355d6d6c8747d3964600f28daf62f049   # 指定 ref：tag、分支或完整提交号
 git diff -- upstream/     # 看上游改了什么
@@ -191,11 +191,11 @@ git diff --no-index --src-prefix= --dst-prefix= a/<路径> b/<路径> > patches/
 
 本机的 marketplace 是从本地路径添加的，会话直接从 `plugins/<插件>` 加载。Claude Code 在缓存里也复制了一份，但不读它（2026-11-06 用 `claude --debug-file` 看启动日志确认）。所以 `build` 之后，重开会话或运行 `/reload-plugins` 就生效。再跑一次 `./jstack install`，`claude plugin list` 里的版本号也会跟上。
 
-其他机器从 GitHub 安装，插件复制进缓存，只有版本号变了才会更新。更新命令：`claude plugin marketplace update jstack && claude plugin update pstack@jstack && claude plugin update spec@jstack`。
+其他机器从 GitHub 安装，插件复制进缓存，只有版本号变了才会更新。更新命令：`claude plugin marketplace update jstack && claude plugin update pstack@jstack && claude plugin update spec@jstack && claude plugin update flow@jstack`。
 
 ## 推广到团队项目
 
-先在 GitHub 仓库的 Settings → Collaborators 里把队员加为协作者，他们才有权 clone 这个私有仓库（以及运行 `gh auth setup-git` 或配好 SSH key）。
+仓库当前是 public，队友直接 clone 即可；如果改回 private，先在 Settings → Collaborators 里把队员加为协作者，他们才有权 clone（以及运行 `gh auth setup-git` 或配好 SSH key）。
 
 然后在业务项目的 `.claude/settings.json` 里加上下面的配置并提交。队友信任这个项目之后，Claude Code 会注册 jstack marketplace。如果仍提示未安装，每人运行一次 `claude plugin install pstack@jstack`、`claude plugin install spec@jstack` 和 `claude plugin install flow@jstack`。
 

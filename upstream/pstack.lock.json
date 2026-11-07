@@ -2,8 +2,8 @@
   "repo": "https://github.com/cursor/plugins.git",
   "path": "harness/pstack/claude-code",
   "ref": "main",
-  "sha": "2776ddd2355d6d6c8747d3964600f28daf62f049",
+  "sha": "8ecfb19f844b67a4bc7af7f66c366d57bc7b6d2b",
   "version": "0.15.36",
   "tree": "25b4807f0141f0093b7b2c2ed49994181a58d0b75aad5da445b46d0b2d61083e",
-  "synced": "2026-11-06"
+  "synced": "2026-11-07"
 }
