@@ -1,12 +1,44 @@
 # jstack
 
-jstack 是一个 AI 工程工作流 marketplace，发布 `pstack`、`spec`、`flow` 三个插件，并适配 Claude Code、Pi、OMP、Cursor 四个 harness。
+jstack 是用户长期维护的 AI 开发工作流，以 `pstack`、`spec`、`flow` 三个插件发布。Claude Code 是主力 harness，同时支持 Pi、OMP、Codex、Cursor。
 
 ## Language
 
 **harness**:
-An agent client that discovers skills and runs the model loop; this repo supports Claude Code, Pi, OMP, and Cursor.
+An agent client that discovers skills and runs the model loop; this repo targets Claude Code first and also supports Pi, OMP, Codex, and Cursor.
 _Avoid_: client, IDE, environment
+
+**stage**:
+One fixed step of the jstack workflow (sizing, clarify, plan, execute, verify, review, land, archive), with a defined output and gate.
+_Avoid_: phase, step
+
+**provider**:
+The skill or script currently bound to a stage; upstream skills are providers and can be swapped.
+_Avoid_: backend, implementation
+
+**gate**:
+A condition a stage must meet before the workflow moves on, enforced by structure (hook or script) where the harness allows.
+_Avoid_: check, checkpoint
+
+**premium model**:
+The switchable, token-limited strongest model, used only for short high-leverage judgments.
+_Avoid_: expensive model, Opus
+
+**bulk model**:
+A model with effectively unlimited tokens (DeepSeek, GLM, Kimi class), used for the main loop, execution, and verification.
+_Avoid_: cheap model, fast model
+
+**needs-human**:
+A question only the user can settle, queued in the tracker while unblocked work continues.
+_Avoid_: blocker, approval
+
+**run report**:
+The short end-of-task summary readable on a phone: goal, changes, evidence, defaults applied, and what needs the user.
+_Avoid_: recap, log
+
+**task ledger**:
+The tracker, the single place where tickets, dependencies, and status live.
+_Avoid_: task list, todo
 
 **plugin**:
 A distributable bundle of skills and agents named `pstack`, `spec`, or `flow`.

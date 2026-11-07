@@ -1,6 +1,8 @@
 # jstack
 
-jionpz 的 AI 工程工作流 marketplace，发布三个插件：
+jionpz 长期维护的 AI 开发工作流。目标是少占用人的注意力：工作流自己判断什么时候需要人介入，自动走完开发、测试、验证、归档；token 有限的高级模型只做关键判断，token 几乎无限的 DeepSeek / GLM 类模型负责执行和验证。设计决策见 `docs/adr/`，其中 0002 到 0005 定义了方向。
+
+工作流由 jstack 自己定义的阶段组成，每个阶段绑定一个当前的提供者；上游 skill 只是提供者，可以被改写或替换。目前以三个插件的形式发布：
 
 - **pstack**：原版 [pstack](https://github.com/cursor/plugins/tree/main/pstack)（Lauren Tan，MIT），负责执行。Claude Code 用上游的 Claude Code 树，Cursor 用上游原生树，Pi/OMP 通过 `docs/harness/agents.md` 在运行时映射工具名和模型。
 - **spec**：[Matt Pocock 的 skills](https://github.com/mattpocock/skills)（MIT）里负责需求澄清和任务拆解的几个，产出的 spec 和 tickets 交给 pstack 执行。
@@ -274,7 +276,9 @@ git diff --no-index --src-prefix= --dst-prefix= a/<路径> b/<路径> > patches/
 
 ## 计划
 
-- 可选：如果 `flow:route` 被模型漏掉的情况多，再加一个 SessionStart hook 提示它。2026-11-06 用 DeepSeek Flash 实测：L 级需求会自动进入 route；S 级的一行 bug 修复没有进入 route，模型直接改完并验证了。
+路线图见 [jionpz/jstack#8](https://github.com/jionpz/jstack/issues/8)，子 issue 按依赖排序：评测套件、阶段表、两层模型、结构门禁、注意力协议、归档阶段、`jstack onboard`、Codex 支持、迁出 Trellis，以及用评测数据决定要不要精简 pstack。
+
+- 可选：如果 `flow:route` 被模型漏掉的情况多，再加一个 SessionStart hook 提示它。2026-11-06 用 DeepSeek Flash 实测：L 级需求会自动进入 route；S 级的一行 bug 修复没有进入 route，模型直接改完并验证了。这一点并入结构门禁 issue 的"逐轮阶段提示"。
 - 可选：如果团队统一用 GitHub Issues，考虑收录 `triage` skill，让 `to-spec`/`to-tickets` 的标签流程自动化（现在要手动建 `ready-for-agent` 标签）。
 
 ## 致谢

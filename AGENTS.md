@@ -1,6 +1,8 @@
 # jstack 维护规则
 
-jstack 是一个面向 Claude Code、Pi、OMP、Cursor 的插件 marketplace，发布三个插件：
+jstack 是用户长期维护的整条 AI 开发工作流。flow 定义工作流的阶段和门禁，上游 skill 只是当前绑定在某个阶段上的提供者，可以被改写或替换（ADR-0002）。模型分两层（ADR-0003），人工介入按风险自判（ADR-0004），任务只记在 tracker（ADR-0005）。改动工作流前先读这几份 ADR。Claude Code 是主力 harness，同时支持 Pi、OMP、Codex、Cursor。
+
+当前以插件 marketplace 的形式发布三个插件：
 
 - `pstack`：原版 pstack（Lauren Tan）的 Claude Code 版，源码 vendor 自 cursor/plugins 的 `harness/pstack/claude-code`。Cursor 用上游原生的 `pstack/` 树，单独构建为 Cursor-native 产物。
 - `spec`：Matt Pocock skills 里负责需求澄清和任务拆解的几个，vendor 自 mattpocock/skills。产出交给 pstack 的 `poteto-mode` 执行。
