@@ -505,13 +505,17 @@ check_locate() {
 	cp -R "$ROOT/plugins/spec" "$ROOT/plugins/flow" "$L/cursor/.cursor/plugins/local/"
 	cp "$ROOT/package.json" "$L/pi/.pi/agent/npm/node_modules/jstack/"
 	cp -R "$ROOT/plugins/pstack" "$ROOT/plugins/spec" "$ROOT/plugins/flow" "$L/pi/.pi/agent/npm/node_modules/jstack/plugins/"
+	# 软链入口：项目级接入把入口 skill 链进仓库的发现目录，locate 必须按物理路径找到兄弟插件。
+	mkdir -p "$L/link/.agents/skills"
+	ln -sfn "$ROOT/plugins/flow/skills/route" "$L/link/.agents/skills/route"
 	fv=$(json_get version "$ROOT/plugins/flow/.claude-plugin/plugin.json")
 	for lay in \
 		"本地 marketplace|$ROOT/plugins/flow|$ROOT/plugins|$L/empty" \
 		"Claude GitHub 缓存|$L/claude/.claude/plugins/cache/jstack/flow/$fv|$L/claude|$L/claude" \
 		"OMP 缓存|$L/omp/.omp/plugins/cache/plugins/jstack___flow___$fv|$L/omp|$L/omp" \
 		"Cursor 本地插件|$L/cursor/.cursor/plugins/local/flow|$L/cursor|$L/cursor" \
-		"Pi npm 包|$L/pi/.pi/agent/npm/node_modules/jstack/plugins/flow|$L/pi|$L/pi"; do
+		"Pi npm 包|$L/pi/.pi/agent/npm/node_modules/jstack/plugins/flow|$L/pi|$L/pi" \
+		"软链入口|$L/link/.agents|$ROOT/plugins|$L/link"; do
 		IFS='|' read -r name flow tree home <<<"$lay"
 		bad=
 		if ! out=$(JSTACK_STAGES_FILE= locate_in "$home" "$flow/skills/route/locate.sh" 2>"$err"); then

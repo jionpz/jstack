@@ -10,9 +10,17 @@
 #   Pi package             <包>/<插件>/skills/...，或 node_modules 下同级的 <插件>、jstack-<插件>、@jstack/<插件>
 #   OMP marketplace 缓存   cache/plugins/jstack___<插件>___<版本>/skills/...
 #   Cursor 本地插件        <Cursor 插件根>/local/<插件>/skills/...
+#   入口软链               <仓库>/.agents/skills/<入口> 链进任一安装树时，按物理路径找到兄弟插件
 # 缓存里同一插件留有多个版本时，取最近写入的那个。
+# skill 目录可能以软链暴露（项目级接入的 .agents/skills 等），所以先解析脚本自身的物理路径再取安装根。
 set -euo pipefail
-root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
+src=${BASH_SOURCE[0]}
+while [ -L "$src" ]; do
+	dir=$(cd -P "$(dirname "$src")" && pwd)
+	src=$(readlink "$src")
+	case $src in /*) ;; *) src=$dir/$src ;; esac
+done
+root=$(cd -P "$(dirname "$src")/../.." && pwd -P)
 base=$(dirname "$root")
 [ "$(basename "$base")" = flow ] && base=$(dirname "$base")
 home=${HOME:-}
@@ -21,7 +29,7 @@ pi_npm=$pi_agent/npm/node_modules
 omp_plugins=${OMP_PLUGINS_DIR:-$home/.omp/plugins}
 claude_plugins=${CLAUDE_PLUGINS_DIR:-$home/.claude/plugins}
 cursor_plugins=${CURSOR_PLUGINS_DIR:-$home/.cursor/plugins}
-stages=${JSTACK_STAGES_FILE:-$(dirname "${BASH_SOURCE[0]}")/stages.md}
+stages=${JSTACK_STAGES_FILE:-$(dirname "$src")/stages.md}
 [ -f "$stages" ] || { echo "locate: 找不到阶段表 ${stages}" >&2; exit 1; }
 # 只在当前 harness 的目录里找备用安装，避免把 Cursor 路由到 Claude Code 的 pstack 树。
 case $root in
