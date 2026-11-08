@@ -411,6 +411,8 @@ git diff --no-index --src-prefix= --dst-prefix= a/<路径> b/<路径> > patches/
 ./jstack eval --model <模型> --max-nudges 1 --keep xs-empty-message
 ```
 
+不传 `--model` 时，runner 从用户级配置 `~/.jstack/config.json`（还没迁移时退回旧 `~/.config/jstack/models.json`）的 `models.claude-code.bulk[0]` 取默认，启动时打印用的是哪个模型；读不到就拒绝运行，不会跟随 Claude Code 的默认模型跑到 premium。每次运行的 `RUN_ID` 带随机后缀，同一秒启动的两次评测不会共用目录和报告区段。
+
 每轮结束后跑 `check.sh`，cwd 是工作目录，`ANSWER_FILE` 指向 agent 最后一条回复。check 没通过，runner 就用 `--resume` 发一条固定的催促消息："我现在不在电脑前，回答不了问题。需要决定的地方按你推荐的方案处理，把这件事做完。"每个样本最多催 `--max-nudges` 次，默认 2 次。每轮的时限是 `JSTACK_EVAL_TIMEOUT` 秒，默认 1800。超时的样本直接判失败，不再催促。评测是测量，任务失败不影响退出码，只有参数错误或缺少依赖才非 0。
 
 每个样本记一行 JSON，字段如下：

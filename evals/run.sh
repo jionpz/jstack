@@ -7,6 +7,8 @@
 #
 # 环境变量：JSTACK_EVAL_TASKS（任务目录）、JSTACK_EVAL_FIXTURE（种子项目）、
 # JSTACK_EVAL_TIMEOUT（每轮秒数，默认 1800）、JSTACK_PREMIUM_MODELS（premium 模型名正则）。
+# 不传 --model 时用用户级配置（~/.jstack/config.json，旧 ~/.config/jstack/models.json）
+# 里 claude-code 的 bulk[0]；读不到就拒绝运行，不跟随 Claude Code 的默认模型。
 set -euo pipefail
 # 变量后紧跟中文标点时必须写成 ${VAR}（macOS bash 3.2 会把标点首字节算进变量名）。
 
@@ -84,6 +86,23 @@ die() { printf 'jstack eval: %s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
 usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; }
 is_uint() { case $1 in '' | *[!0-9]*) return 1 ;; esac; }
+
+# 用户级配置：新路径优先，旧 models.json 兜底（还没运行过 models 迁移时）。
+user_config() {
+	local cfg=${JSTACK_USER_CONFIG:-$HOME/.jstack/config.json}
+	if [ -f "$cfg" ]; then printf '%s\n' "$cfg"; return 0; fi
+	cfg=$HOME/.config/jstack/models.json
+	[ -f "$cfg" ] && { printf '%s\n' "$cfg"; return 0; }
+	return 1
+}
+
+# 没给 --model 时的默认模型：用户级配置里 claude-code 的 bulk[0]。
+# 读不到就返回空，由 cmd_run 拒绝运行，避免跟随 Claude Code 默认模型跑到 premium。
+default_model() {
+	local cfg
+	cfg=$(user_config) || return 1
+	jq -r '(.models // .harnesses // {})["claude-code"].bulk[0] // empty' "$cfg" 2>/dev/null
+}
 cleanup() { [ -z "$SANDBOX" ] || [ -n "$KEEP" ] || rm -rf "$SANDBOX"; }
 trap cleanup EXIT
 
@@ -240,12 +259,19 @@ cmd_run() {
 	is_uint "$TIMEOUT" && [ "$TIMEOUT" -ge 1 ] || die "JSTACK_EVAL_TIMEOUT 要是正整数（秒）"
 	for t in jq git node claude; do command -v "$t" >/dev/null || die "缺少依赖 $t"; done
 	[ -d "$FIXTURE" ] || die "没有种子项目 $FIXTURE"
+	if [ -z "$MODEL" ]; then
+		MODEL=$(default_model || true)
+		[ -n "$MODEL" ] || die "没有 --model，也读不到用户级配置里的 models.claude-code.bulk[0]；显式传 --model，或先运行 ./jstack models set"
+		say "模型 $MODEL（用户级配置的 claude-code.bulk[0]）"
+	else
+		say "模型 $MODEL（--model）"
+	fi
 	pick_tasks "$@"
 	for t in $TASKS; do
 		[ -f "$TASKS_DIR/$t/prompt.md" ] && [ -f "$TASKS_DIR/$t/check.sh" ] || die "任务 $t 缺少 prompt.md 或 check.sh"
 	done
 
-	RUN_ID=$(date +%Y%m%d-%H%M%S)
+	RUN_ID="$(date +%Y%m%d-%H%M%S)-$RANDOM"
 	RUN_DATE=$(date +%Y-%m-%d)
 	COMMIT=$(git -C "$ROOT" rev-parse --short HEAD)
 	[ -z "$(git -C "$ROOT" status --porcelain)" ] || COMMIT="$COMMIT-dirty"

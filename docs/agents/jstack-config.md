@@ -23,7 +23,7 @@
 | 字段 | 类型 | 默认 | 读取方 | 说明 |
 |---|---|---|---|---|
 | `models.<harness>.premium` | string | 无（必填才有分层） | `jstack models apply/status` | 高级模型 id，可带 `[1m]` 与 `:effort` 后缀；`<harness>` 取 `claude-code`、`cursor`、`omp`、`pi` |
-| `models.<harness>.bulk` | string[2] | 无 | 同上 | 两个无限模型；`bulk[0]` 给 `sonnet`/判断降级，`bulk[1]` 给 `haiku`/`SMALL_FAST` |
+| `models.<harness>.bulk` | string[2] | 无 | `jstack models apply/status`；`evals/run.sh` 在没给 `--model` 时取 `claude-code` 的 `bulk[0]` 作默认 | 两个无限模型；`bulk[0]` 给 `sonnet`/判断降级，`bulk[1]` 给 `haiku`/`SMALL_FAST` |
 | `models.<harness>.roles` | object | pstack 的 17 行角色表 | 同上 | 角色 → `premium` \| `bulk` \| `bulk0` \| `bulk1` 的覆盖，只写要改的行；值可以是逗号分隔的字符串或数组，`bulk` 等同 `bulk0` |
 | `budget.premium_daily_tokens` | number \| null | `null` | `jstack models status/apply` | premium 当日 token 上限；超限时判断类角色降级到 `bulk0` |
 | `budget.premium_concurrency` | number \| null | `null` | 同上 | premium 并发上限（AnyRouter 这类不能并发的 provider 用） |
