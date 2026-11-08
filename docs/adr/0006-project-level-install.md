@@ -62,7 +62,7 @@ Claude Code 有 `--scope project`，其余 harness 只有用户级安装；四�
 - 字段表是 `docs/agents/jstack-config.md`，每个字段写明归属、默认值和读取方。
 - **模型名只出现在用户级**。仓库级配置里出现 `models` 视为错误，`./jstack check` 拒绝，避免把数据流向写进业务仓库。
 - **阶段表只有一个覆盖机制**：`stages_file` 指向一份同格式的表，整表替换。按阶段合并 provider 的写法被否——同一种需求两套机制，还要处理"覆盖后阶段的产出与门禁从哪来"的歧义；整表文件共用同一份解析器和校验，换提供者、加阶段、删阶段都只改一个文件。route 生成路线时丢掉表里不存在的阶段。
-- 现有 `~/.config/jstack/models.json` 是过渡形态：`./jstack models` 继续可读，写入一律落到 `~/.jstack/config.json` 的 `models` 段（由 #24 迁移，旧路径保留只读兼容一个版本周期）。
+- 现有 `~/.config/jstack/models.json` 是过渡形态：`./jstack models` 在新文件不存在时自动迁移并备份旧文件，写入一律落到 `~/.jstack/config.json` 的 `models` 段（#24 已落地，旧路径保留只读兼容一个版本周期）。
 
 ### 5. 不新建第五套安装器
 

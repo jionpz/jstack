@@ -9,12 +9,12 @@
 | 用户级 | `~/.jstack/config.json` | 跨仓库不变项（模型、预算、通知预留） |
 | 仓库级 | `<repo>/.jstack/config.json` | 随仓库变化项（tracker、文档位置、must-stop、阶段表、验证命令） |
 
-> 实现状态：**仓库级**字段（`tracker`、`domain_docs`、`must_stop`、`stages_file`、`verify`）自 #23 起由 flow 的 `lib.sh` / `stage.sh` / `locate.sh` / `guard.sh` / `prompt.sh` 读取；**用户级**字段仍由 `./jstack models` 读写旧路径 `~/.config/jstack/models.json`（字段名与下表一致），`~/.jstack/config.json` 的迁移与四 harness 生成器由 #24 落地。
+> 实现状态：**仓库级**字段（`tracker`、`domain_docs`、`must_stop`、`stages_file`、`verify`）自 #23 起由 flow 的 `lib.sh` / `stage.sh` / `locate.sh` / `guard.sh` / `prompt.sh` 读取；**用户级**字段自 #24 起由 `./jstack models` 读写 `~/.jstack/config.json`，并生成四个 harness 的模型规则文件。旧 `~/.config/jstack/models.json` 在第一次运行 `models` 时自动迁移并备份。
 
 ## 解析规则
 
 - 仓库根：从当前目录向上找第一个含 `.jstack/config.json` 的目录；找不到再找 `.git`，以它为仓库根。`JSTACK_REPO` 环境变量优先（测试与 CI 用）。
-- 用户级路径：`$JSTACK_USER_CONFIG`，默认 `~/.jstack/config.json`。旧路径 `~/.config/jstack/models.json` 只读兼容，`models` 段等价于用户级 `models`。
+- 用户级路径：`$JSTACK_USER_CONFIG`，默认 `~/.jstack/config.json`。旧路径 `~/.config/jstack/models.json` 在新文件不存在时自动迁移（`harnesses` 段改名为 `models`，`budget` 原样保留），旧文件备份为 `models.json.bak-migrate-<时间>` 后保留；新文件存在后不再读旧文件。
 - 合并：仓库级覆盖用户级；数组字段整体覆盖，不做拼接。缺省值见各表。
 - 读取失败（JSON 非法、类型错误）：`./jstack check` 报错（`./jstack doctor` 在 #25 补上同样的检查）；flow hooks 在每轮提示里打一行醒目警告，guard 继续只按内置清单拦截。降级是显式的——用户每轮都能看到"仓库级 must-stop 追加项未生效"，修好后自动恢复。
 
@@ -24,7 +24,7 @@
 |---|---|---|---|---|
 | `models.<harness>.premium` | string | 无（必填才有分层） | `jstack models apply/status` | 高级模型 id，可带 `[1m]` 与 `:effort` 后缀；`<harness>` 取 `claude-code`、`cursor`、`omp`、`pi` |
 | `models.<harness>.bulk` | string[2] | 无 | 同上 | 两个无限模型；`bulk[0]` 给 `sonnet`/判断降级，`bulk[1]` 给 `haiku`/`SMALL_FAST` |
-| `models.<harness>.roles` | object | pstack 的 17 行角色表 | 同上 | 角色 → `premium` \| `bulk` \| `bulk0` \| `bulk1` 的覆盖，只写要改的行 |
+| `models.<harness>.roles` | object | pstack 的 17 行角色表 | 同上 | 角色 → `premium` \| `bulk` \| `bulk0` \| `bulk1` 的覆盖，只写要改的行；值可以是逗号分隔的字符串或数组，`bulk` 等同 `bulk0` |
 | `budget.premium_daily_tokens` | number \| null | `null` | `jstack models status/apply` | premium 当日 token 上限；超限时判断类角色降级到 `bulk0` |
 | `budget.premium_concurrency` | number \| null | `null` | 同上 | premium 并发上限（AnyRouter 这类不能并发的 provider 用） |
 | `notifications.channel` | string \| null | `null` | 预留（#13） | 只占位，不实现；实现前写入即报"未支持" |
@@ -59,7 +59,7 @@
 | `docs/agents/issue-tracker.md` | 面向 spec 上游的 prose，保留。jstack 脚本读仓库级 `tracker`；`doctor`（#25）发现两者矛盾时报警（例如文档写 local、配置写 github） |
 | `docs/agents/domain.md` | 保留；`domain_docs.*` 路径与它描述的位置应一致 |
 | `CLAUDE.md` 的 `## Agent skills` 段 | 保留为入口说明；内容应与 `tracker` / `docs` 一致，`doctor`（#25）检查 |
-| `~/.claude/rules/pstack-models.md`、`~/.cursor/rules/pstack-models.mdc`、`~/.pi/agent/AGENTS.md`、OMP 的 rules | 全部由用户级 `models` 生成，禁止手改；`./jstack models apply` 是唯一写入方 |
+| `~/.claude/rules/pstack-models.md`、`~/.cursor/rules/pstack-models.mdc`、`~/.omp/agent/rules/pstack-models.md`、`~/.omp/agent/config.yml` 的 `modelRoles` 块、`~/.pi/agent/AGENTS.md` 的角色表块 | 全部由用户级 `models` 生成，禁止手改；`./jstack models apply` 是唯一写入方。Pi/OMP 的共享文件只改 `jstack:models` 标记块，块外不碰；首次写入前确认（`--yes` 跳过），写前备份 |
 | `src/flow/skills/route/stages.md`、`must-stop.md` | 插件内置的默认值；仓库级 `stages_file` 整表替换阶段表，`must_stop` 在读取时追加，都不改插件文件 |
 | 业务仓库自己的 `AGENTS.md` | jstack 不读不写。项目级接入只动 `.jstack/`、生成的 harness 配置和入口链接，不往 `AGENTS.md` 里塞内容 |
 

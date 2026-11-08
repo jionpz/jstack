@@ -18,8 +18,8 @@ jstack 是用户长期维护的整条 AI 开发工作流。flow 定义工作流�
 - spec 只收需求澄清和任务拆解。不要收 `implement`、`implement-spec`、`ask-matt` 这类实现编排，它们会和 `poteto-mode` 抢主编排。增删 skill 时，`jstack` 的 `PICK` 和 `patches/spec/0001` 的 `skills` 清单要一起改；漏掉被调用的 skill 时 `./jstack check` 会报。
 - 提交前必须让 `./jstack check` 全部通过。改了 adapter、安装方式、manifest 或 Pi package 时，再跑 `./jstack check --smoke`（或 `./jstack smoke all`）：它会启动本机已装的 Pi、OMP、Cursor 做 headless 验收，没装的 harness 自动跳过。smoke 会消耗 token，不是每次提交的硬性门禁，但发布前必须跑过。
 - 改 `src/flow`、`patches/`（包括 adapter）、同步上游、改模型配置或 hooks 之前，先跑 `./jstack eval`，把结果和 `evals/results.jsonl` 里最近一次同模型的基线对比；退化要修掉，或者在提交说明里写明理由。判断退化至少用 `--samples 3`。改了 `evals/` 本身就重跑一份基线。`evals/tasks` 的题目由 `./jstack check` 自检（初始状态失败、参考解通过）。细节见 README 的“评测”一节。
-- 模型分层只由 `~/.config/jstack/models.json` 决定。改模型选择用 `./jstack models set`，不要在 skill 或规则文件里写死模型；改 `apply` 生成的规则格式后跑 `./jstack check`（models 项会在临时 HOME 里核对角色表、settings 备份、幂等、dry-run 和预算降级）。
+- 模型分层只由 `~/.jstack/config.json` 的 `models` 段决定（旧 `~/.config/jstack/models.json` 自动迁移并备份）。改模型选择用 `./jstack models set`，不要在 skill 或规则文件里写死模型；改 `apply` 生成的规则格式后跑 `./jstack check`（models 项会在临时 HOME 里核对四个 harness、标记块合并、首次确认、迁移备份、幂等、dry-run 和预算降级）。
 - 根目录 `package.json` 是 Pi package manifest，`pi.skills` 必须覆盖 `plugins/pstack/skills`、`plugins/spec/skills`、`plugins/flow/skills`；`./jstack check` 会核对。
 - 同步上游后，用 `git diff -- upstream/` 看上游改了什么。如果上游已经修好某个补丁对应的问题，就删掉那个补丁。
-- route 的阶段和每个阶段的提供者只写在 `src/flow/skills/route/stages.md`，`locate.sh` 从那张表读提供者，不写死 skill 名。上游改了 skill 名，或要换掉某个阶段的提供者，只改表里那一格；只有安装目录布局变了才改 locate.sh。`./jstack check` 会在五种安装布局下核对表里每个提供者都找得到。
+- route 的阶段和每个阶段的提供者只写在 `src/flow/skills/route/stages.md`，`locate.sh` 从那张表读提供者，不写死 skill 名。上游改了 skill 名，或要换掉某个阶段的提供者，只改表里那一格；只有安装目录布局变了才改 locate.sh。`./jstack check` 会在六种安装布局下核对表里每个提供者都找得到。
 - 插件名必须保持 `pstack`、`spec`、`flow`：Claude Code 的 skill 以插件名为命令前缀（`/pstack:<name>`、`/spec:<name>`），adapter 还把 agent 映射成 `pstack:poteto-agent`；Pi/OMP 用 `/skill:<name>`，Cursor 用 `/<name>`。改名会让这些引用全部失效。`pstack-cursor` 只是构建目录 / 上游目录的 key，两个 pstack 产物的 manifest 名字都必须是 `pstack`。

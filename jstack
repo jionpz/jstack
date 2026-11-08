@@ -22,10 +22,10 @@
 #   ./jstack eval list | --selftest [任务名...]    列出任务；不调模型地校验每个任务的 check（check 也会跑）
 #   ./jstack models [show]                         显示模型分层配置和 apply 会写哪些文件
 #   ./jstack models init [--harness <h>] [--premium <id>] [--bulk <a,b>] [--force]
-#                                                  引导配置 ~/.config/jstack/models.json（JSTACK_MODELS_CONFIG 可覆盖路径）
-#   ./jstack models set premium|bulk <值> [--harness <h>]
+#                                                  引导配置 ~/.jstack/config.json（JSTACK_USER_CONFIG 可覆盖路径）
+#   ./jstack models set premium|bulk <值> [--harness <h>] [--yes]
 #                                                  改一个值并自动 apply（--harness 默认 claude-code）
-#   ./jstack models apply [--dry-run]              写入各 harness 的模型规则；--dry-run 只打印
+#   ./jstack models apply [--dry-run] [--yes]      写入四个 harness 的模型规则；--dry-run 只打印
 #   ./jstack models status                         premium 今日 token 用量与预算
 #
 # upstream/<插件> 是上游原样副本，plugins/<插件> 是构建产物，两者都不要手改。
@@ -715,67 +715,14 @@ MD
 	return $rc
 }
 
-# 模型分层命令的验收：全部在临时 HOME 里跑，不碰真实配置，不联网。
-check_models() {
-	local h="$WORK/models-home" cfg settings rule usage out n role a b rc=0 backups before after today yesterday
-	rm -rf "$h"
-	mkdir -p "$h/.claude" "$h/.config/magpie"
-	cfg="$h/.config/jstack/models.json"
-	settings="$h/.claude/settings.json"
-	rule="$h/.claude/rules/pstack-models.md"
-	usage="$h/.config/magpie/usage.jsonl"
-	printf '{"model":"keep-me"}\n' >"$settings"
-
-	if ! out=$(HOME="$h" JSTACK_MODELS_CONFIG="$cfg" "$ROOT/jstack" models init --harness claude-code --premium p/x --bulk a/x,b/x 2>&1); then
-		say "✗ models init 运行失败："
-		printf '%s\n' "$out" | sed 's/^/  /'
-		return 1
-	fi
-	if ! python3 -I - "$cfg" <<'PY'
-import json, sys
-with open(sys.argv[1], encoding="utf-8") as f:
-	doc = json.load(f)
-assert doc["harnesses"]["claude-code"] == {"premium": "p/x", "bulk": ["a/x", "b/x"]}
-assert doc["budget"] == {"premium_daily_tokens": None, "premium_concurrency": None}
-PY
-	then
-		say "✗ models init 写出的 JSON 或默认预算不对"
-		rc=1
-	fi
-	if [ -e "$rule" ] || [ "$(cat "$settings")" != '{"model":"keep-me"}' ]; then
-		say "✗ models init 不应该自动 apply"
-		rc=1
-	fi
-
-	if ! out=$(HOME="$h" JSTACK_MODELS_CONFIG="$cfg" "$ROOT/jstack" models set premium c/y --harness claude-code 2>&1); then
-		say "✗ models set premium 运行失败："
-		printf '%s\n' "$out" | sed 's/^/  /'
-		return 1
-	fi
-	if [ "$(models_json "$cfg" get claude-code premium)" != c/y ]; then
-		say "✗ models set premium 没有改配置里的值"
-		rc=1
-	fi
-
-	if [ ! -f "$rule" ]; then
-		say "✗ models apply 没有写 ${rule}"
-		rc=1
-	else
-		if [ -e "$h/.cursor/rules/pstack-models.mdc" ] || [ -e "$h/.omp/agent/rules/pstack-models.md" ]; then
-			say "✗ models apply 处理了没有配置的 harness"
-			rc=1
+# 断言一份模型规则文件有 17 个角色行，判断类落到给定模型，双模型角色有两个不同值。
+models_check_roles() { # <file> <quality-value>
+	local file=$1 q=$2 role a b
+	while IFS= read -r role; do
+		if [ "$(grep -Fc "${role}: " "$file" || true)" -ne 1 ]; then
+			return 1
 		fi
-		n=$(grep -cE '^[a-z][a-z ,-]*: (opus|sonnet|haiku)(, (opus|sonnet|haiku))?$' "$rule")
-		if [ "$n" -ne 17 ]; then
-			say "✗ models 规则文件有 ${n} 个角色行，不是 17 个"
-			rc=1
-		fi
-		while IFS= read -r role; do
-			if [ "$(grep -Fc "${role}: " "$rule")" -ne 1 ]; then
-				say "✗ models 规则文件缺少角色 ${role}"
-				rc=1
-			fi
-		done <<'EOF'
+	done <<'EOF'
 feature, refactoring
 bug-fix
 perf-issue
@@ -794,22 +741,79 @@ swarm workers
 architect runners
 interrogate reviewers
 EOF
-		for role in 'arena runners' 'interrogate reviewers'; do
-			a=$(grep -F "${role}: " "$rule" | head -1)
-			b=${a#*: }
-			a=${b%%,*}
-			b=${b#*, }
-			if [ -z "$a" ] || [ -z "$b" ] || [ "$a" = "$b" ]; then
-				say "✗ models 规则里 ${role} 没有两个不同的别名"
-				rc=1
-			fi
-		done
-		grep -qx 'judgment and prose: opus' "$rule" || {
-			say "✗ models 规则里判断类角色没有落到 opus"
-			rc=1
-		}
+	grep -qx "judgment and prose: ${q}" "$file" || return 1
+	for role in 'arena runners' 'interrogate reviewers'; do
+		a=$(grep -F "${role}: " "$file" | head -1 || true)
+		a=${a#*: }
+		b=${a#*, }
+		a=${a%%,*}
+		[ -n "$a" ] && [ -n "$b" ] && [ "$a" != "$b" ] || return 1
+	done
+	return 0
+}
+
+models_hashes() { # <HOME>
+	find "$1" -type f -not -path '*/.jstack/*' -not -name '*.bak-models-*' -not -path '*/.config/magpie/*' \
+		-exec shasum -a 256 {} + 2>/dev/null | sort
+}
+
+# 模型分层命令的验收：全部在临时 HOME 里跑，不碰真实配置，不联网。
+check_models() {
+	local h="$WORK/models-home" cfg settings rule usage out n role a b rc=0 backups before after today yesterday
+	local cursor_rule omp_rule omp_cfg pi_file h2 h3
+	rm -rf "$h"
+	mkdir -p "$h/.claude" "$h/.config/magpie"
+	cfg="$h/.jstack/config.json"
+	settings="$h/.claude/settings.json"
+	rule="$h/.claude/rules/pstack-models.md"
+	cursor_rule="$h/.cursor/rules/pstack-models.mdc"
+	omp_rule="$h/.omp/agent/rules/pstack-models.md"
+	omp_cfg="$h/.omp/agent/config.yml"
+	pi_file="$h/.pi/agent/AGENTS.md"
+	usage="$h/.config/magpie/usage.jsonl"
+	printf '{"model":"keep-me"}\n' >"$settings"
+
+	if ! out=$(HOME="$h" "$ROOT/jstack" models init --harness claude-code --premium p/x --bulk a/x,b/x 2>&1); then
+		say "✗ models init 运行失败："
+		printf '%s\n' "$out" | sed 's/^/  /'
+		return 1
+	fi
+	if ! python3 -I - "$cfg" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+	doc = json.load(f)
+assert doc["models"]["claude-code"] == {"premium": "p/x", "bulk": ["a/x", "b/x"]}
+assert doc["budget"] == {"premium_daily_tokens": None, "premium_concurrency": None}
+PY
+	then
+		say "✗ models init 写出的 JSON 或默认预算不对"
+		rc=1
+	fi
+	if [ -e "$rule" ] || [ "$(cat "$settings")" != '{"model":"keep-me"}' ]; then
+		say "✗ models init 不应该自动 apply"
+		rc=1
 	fi
 
+	if ! out=$(HOME="$h" "$ROOT/jstack" models set premium c/y --harness claude-code 2>&1); then
+		say "✗ models set premium 运行失败："
+		printf '%s\n' "$out" | sed 's/^/  /'
+		return 1
+	fi
+	if [ "$(models_json "$cfg" get claude-code premium)" != c/y ]; then
+		say "✗ models set premium 没有改配置里的值"
+		rc=1
+	fi
+	if [ -e "$cursor_rule" ] || [ -e "$omp_rule" ] || [ -e "$pi_file" ]; then
+		say "✗ models apply 处理了没有配置的 harness"
+		rc=1
+	fi
+	if [ ! -f "$rule" ]; then
+		say "✗ models apply 没有写 ${rule}"
+		rc=1
+	elif ! models_check_roles "$rule" opus; then
+		say "✗ models 的 claude-code 规则文件角色行不对"
+		rc=1
+	fi
 	if ! python3 -I - "$settings" <<'PY'
 import json, sys
 with open(sys.argv[1], encoding="utf-8") as f:
@@ -825,19 +829,18 @@ PY
 		say "✗ models apply 没把 settings.json 的模型 env 指向 premium/bulk0/bulk1，或丢了其它键"
 		rc=1
 	fi
-
 	backups=$(find "$h/.claude" -maxdepth 1 -name 'settings.json.bak-models-*' | wc -l | tr -d ' ')
 	if [ "$backups" -ne 1 ]; then
-		say "✗ models apply 的备份数量是 ${backups}，应为 1"
+		say "✗ models apply 的 settings 备份数量是 ${backups}，应为 1"
 		rc=1
 	fi
-	before=$(shasum -a 256 "$rule" "$settings" | cut -d' ' -f1 | tr '\n' ' ')
-	if ! out=$(HOME="$h" JSTACK_MODELS_CONFIG="$cfg" "$ROOT/jstack" models apply 2>&1); then
+	before=$(models_hashes "$h")
+	if ! out=$(HOME="$h" "$ROOT/jstack" models apply 2>&1); then
 		say "✗ 第二次 models apply 运行失败："
 		printf '%s\n' "$out" | sed 's/^/  /'
 		rc=1
 	fi
-	after=$(shasum -a 256 "$rule" "$settings" | cut -d' ' -f1 | tr '\n' ' ')
+	after=$(models_hashes "$h")
 	if [ "$before" != "$after" ]; then
 		say "✗ 第二次 models apply 改了文件"
 		rc=1
@@ -848,12 +851,118 @@ PY
 		rc=1
 	fi
 
-	if ! out=$(HOME="$h" JSTACK_MODELS_CONFIG="$cfg" "$ROOT/jstack" models apply --dry-run 2>&1); then
+	# 四个 harness 一次配置；Pi/OMP 的共享文件先放好块外内容。
+	if ! out=$(HOME="$h" "$ROOT/jstack" models init --premium c/y --bulk a/x,b/x 2>&1); then
+		say "✗ models init（四个 harness）运行失败："
+		printf '%s\n' "$out" | sed 's/^/  /'
+		rc=1
+	fi
+	mkdir -p "$h/.omp/agent" "$h/.pi/agent"
+	printf 'setupVersion: 2\nmodelRoles:\n  slow: old/x\n  plan: old/y\nhideThinkingBlock: true\n' >"$omp_cfg"
+	printf '# my agent notes\nkeep me\n' >"$pi_file"
+	before=$(models_hashes "$h")
+	if ! out=$(HOME="$h" "$ROOT/jstack" models apply </dev/null 2>&1); then
+		say "✗ 非交互 models apply 运行失败："
+		printf '%s\n' "$out" | sed 's/^/  /'
+		rc=1
+	fi
+	printf '%s\n' "$out" | grep -q '首次写入需要 --yes' || {
+		say "✗ 非交互 models apply 没有说明首次写入需要 --yes"
+		rc=1
+	}
+	grep -q 'old/x' "$omp_cfg" || {
+		say "✗ 没有 --yes 时 models apply 改了 OMP config.yml"
+		rc=1
+	}
+	grep -qx 'keep me' "$pi_file" || {
+		say "✗ 没有 --yes 时 models apply 改了 Pi AGENTS.md"
+		rc=1
+	}
+	if ! out=$(HOME="$h" "$ROOT/jstack" models apply --yes 2>&1); then
+		say "✗ models apply --yes 运行失败："
+		printf '%s\n' "$out" | sed 's/^/  /'
+		rc=1
+	fi
+	if ! models_check_roles "$rule" opus; then
+		say "✗ 四个 harness 的 claude-code 规则文件角色行不对"
+		rc=1
+	fi
+	if [ ! -f "$cursor_rule" ] || ! models_check_roles "$cursor_rule" c/y; then
+		say "✗ models apply 没有写对 cursor 规则：${cursor_rule}"
+		rc=1
+	fi
+	grep -q '^alwaysApply: true$' "$cursor_rule" 2>/dev/null || {
+		say "✗ cursor 规则缺少 alwaysApply frontmatter"
+		rc=1
+	}
+	if [ ! -f "$omp_rule" ] || ! models_check_roles "$omp_rule" c/y; then
+		say "✗ models apply 没有写对 omp 规则：${omp_rule}"
+		rc=1
+	fi
+	grep -q '^# jstack:models:begin$' "$omp_cfg" || {
+		say "✗ OMP config.yml 没有 modelRoles 标记块"
+		rc=1
+	}
+	grep -q '^  slow: c/y$' "$omp_cfg" || {
+		say "✗ OMP modelRoles 的 slow 没有指向 premium"
+		rc=1
+	}
+	grep -q '^  plan: a/x$' "$omp_cfg" || {
+		say "✗ OMP modelRoles 的 plan 没有指向 bulk0"
+		rc=1
+	}
+	grep -q '^setupVersion: 2$' "$omp_cfg" || {
+		say "✗ OMP config.yml 的块外内容被改了"
+		rc=1
+	}
+	if grep -q 'old/x' "$omp_cfg"; then
+		say "✗ 旧 modelRoles 块没有被替换"
+		rc=1
+	fi
+	if ! models_check_roles "$pi_file" c/y; then
+		say "✗ Pi AGENTS.md 的角色行不对"
+		rc=1
+	fi
+	grep -qx 'keep me' "$pi_file" || {
+		say "✗ Pi AGENTS.md 的块外内容被改了"
+		rc=1
+	}
+	for file in "$omp_cfg" "$pi_file"; do
+		n=$(grep -c 'jstack:models:begin' "$file" || true)
+		if [ "$n" -ne 1 ]; then
+			say "✗ ${file} 的 jstack 标记块数量是 ${n}，应为 1"
+			rc=1
+		fi
+	done
+
+	# 再次 apply：文件不变，标记块不重复。
+	before=$(models_hashes "$h")
+	if ! out=$(HOME="$h" "$ROOT/jstack" models apply --yes 2>&1); then
+		say "✗ 第二次 models apply --yes 运行失败："
+		printf '%s\n' "$out" | sed 's/^/  /'
+		rc=1
+	fi
+	after=$(models_hashes "$h")
+	if [ "$before" != "$after" ]; then
+		say "✗ 第二次 models apply --yes 改了文件"
+		rc=1
+	fi
+	for file in "$omp_cfg" "$pi_file"; do
+		n=$(grep -c 'jstack:models:begin' "$file" || true)
+		if [ "$n" -ne 1 ]; then
+			say "✗ 重复 apply 后 ${file} 有 ${n} 个标记块"
+			rc=1
+		fi
+	done
+
+	# --dry-run 不落盘。
+	before=$(models_hashes "$h")
+	if ! out=$(HOME="$h" "$ROOT/jstack" models apply --dry-run --yes 2>&1); then
 		say "✗ models apply --dry-run 运行失败："
 		printf '%s\n' "$out" | sed 's/^/  /'
 		rc=1
 	fi
-	after=$(shasum -a 256 "$rule" "$settings" | cut -d' ' -f1 | tr '\n' ' ')
+	after=$(models_hashes "$h")
 	if [ "$before" != "$after" ]; then
 		say "✗ models apply --dry-run 改了文件"
 		rc=1
@@ -867,6 +976,42 @@ PY
 		rc=1
 	}
 
+	# 角色覆盖：只写要改的行，层级换成对应 harness 的模型。
+	python3 -I - "$cfg" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+	doc = json.load(f)
+doc["models"]["claude-code"]["roles"] = {"hardest tasks": "bulk0", "judgment and prose": "bulk0,bulk1"}
+with open(path, "w", encoding="utf-8") as f:
+	json.dump(doc, f, ensure_ascii=False, indent=2)
+	f.write("\n")
+PY
+	if ! out=$(HOME="$h" "$ROOT/jstack" models apply --yes 2>&1); then
+		say "✗ 带角色覆盖的 models apply 运行失败："
+		printf '%s\n' "$out" | sed 's/^/  /'
+		rc=1
+	fi
+	grep -qx 'hardest tasks: sonnet' "$rule" || {
+		say "✗ 角色覆盖没有把 hardest tasks 改成 bulk0"
+		rc=1
+	}
+	grep -qx 'judgment and prose: sonnet, haiku' "$rule" || {
+		say "✗ 角色覆盖没有把 judgment and prose 改成 bulk0,bulk1"
+		rc=1
+	}
+	python3 -I - "$cfg" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+	doc = json.load(f)
+doc["models"]["claude-code"].pop("roles", None)
+with open(path, "w", encoding="utf-8") as f:
+	json.dump(doc, f, ensure_ascii=False, indent=2)
+	f.write("\n")
+PY
+
+	# 预算超限：premium 角色降级，OMP 的 slow 也降级。
 	python3 -I - "$cfg" <<'PY'
 import json, sys
 path = sys.argv[1]
@@ -880,7 +1025,7 @@ with open(path, "w", encoding="utf-8") as f:
 PY
 	today=$(date +%Y-%m-%d)
 	printf '{"t":"%sT10:00:00+08:00","model":"y","in":5,"out":6}\n' "$today" >"$usage"
-	if ! out=$(HOME="$h" JSTACK_MODELS_CONFIG="$cfg" "$ROOT/jstack" models apply 2>&1); then
+	if ! out=$(HOME="$h" "$ROOT/jstack" models apply --yes 2>&1); then
 		say "✗ 预算超限时 models apply 运行失败："
 		printf '%s\n' "$out" | sed 's/^/  /'
 		rc=1
@@ -901,13 +1046,18 @@ PY
 		say "✗ 预算超限时列表里的 premium 没有降级为 sonnet"
 		rc=1
 	}
+	grep -q '^  slow: a/x$' "$omp_cfg" || {
+		say "✗ 预算超限时 OMP 的 slow 没有降级为 bulk0"
+		rc=1
+	}
 
+	# 今日 token 统计。
 	yesterday=$(python3 -I -c 'import datetime; print(datetime.date.today() - datetime.timedelta(days=1))')
 	printf '{"t":"%sT09:00:00+08:00","model":"y","in":10,"out":5}\n' "$today" >"$usage"
 	printf '{"t":"%sT10:00:00+08:00","model":"y","in":1,"out":2}\n' "$today" >>"$usage"
 	printf '{"t":"%sT10:00:00+08:00","model":"y","in":100,"out":100}\n' "$yesterday" >>"$usage"
 	printf '{"t":"%sT10:00:00+08:00","model":"other","in":1000,"out":1000}\n' "$today" >>"$usage"
-	if ! out=$(HOME="$h" JSTACK_MODELS_CONFIG="$cfg" "$ROOT/jstack" models status 2>&1); then
+	if ! out=$(HOME="$h" "$ROOT/jstack" models status 2>&1); then
 		say "✗ models status 运行失败："
 		printf '%s\n' "$out" | sed 's/^/  /'
 		rc=1
@@ -925,7 +1075,7 @@ with open(path, "w", encoding="utf-8") as f:
 	json.dump(doc, f, ensure_ascii=False, indent=2)
 	f.write("\n")
 PY
-	if ! out=$(HOME="$h" JSTACK_MODELS_CONFIG="$cfg" "$ROOT/jstack" models status 2>&1); then
+	if ! out=$(HOME="$h" "$ROOT/jstack" models status 2>&1); then
 		say "✗ models status（不限预算）运行失败"
 		rc=1
 	elif [ "$out" != 'premium 今日 tokens: 18 / 上限 -（不限）' ]; then
@@ -933,7 +1083,7 @@ PY
 		rc=1
 	fi
 	rm -f "$usage"
-	if ! out=$(HOME="$h" JSTACK_MODELS_CONFIG="$cfg" "$ROOT/jstack" models status 2>&1); then
+	if ! out=$(HOME="$h" "$ROOT/jstack" models status 2>&1); then
 		say "✗ models status（无日志）运行失败"
 		rc=1
 	elif [ "$out" != 'premium 今日 tokens: - / 上限 -（不限）' ]; then
@@ -941,8 +1091,59 @@ PY
 		rc=1
 	fi
 
+	# 旧 ~/.config/jstack/models.json 自动迁移并备份。
+	h2="$WORK/models-home-legacy"
+	rm -rf "$h2"
+	mkdir -p "$h2/.config/jstack"
+	printf '{"harnesses":{"claude-code":{"premium":"old/p","bulk":["old/a","old/b"]}},"budget":{"premium_daily_tokens":5,"premium_concurrency":null}}\n' >"$h2/.config/jstack/models.json"
+	if ! out=$(HOME="$h2" "$ROOT/jstack" models apply --yes 2>&1); then
+		say "✗ 旧配置迁移时 models apply 运行失败："
+		printf '%s\n' "$out" | sed 's/^/  /'
+		rc=1
+	fi
+	printf '%s\n' "$out" | grep -q '迁移' || {
+		say "✗ models apply 没有说明旧配置迁移"
+		rc=1
+	}
+	if ! python3 -I - "$h2/.jstack/config.json" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+	doc = json.load(f)
+assert doc["models"]["claude-code"]["premium"] == "old/p"
+assert doc["budget"]["premium_daily_tokens"] == 5
+PY
+	then
+		say "✗ 旧配置没有迁移到 ~/.jstack/config.json 的 models 段"
+		rc=1
+	fi
+	if [ -z "$(find "$h2/.config/jstack" -maxdepth 1 -name 'models.json.bak-migrate-*' -print -quit)" ]; then
+		say "✗ 旧配置迁移后没有备份"
+		rc=1
+	fi
+
+	# Pi AGENTS.md 是符号链接时不跟随写入。
+	h3="$WORK/models-home-link"
+	rm -rf "$h3"
+	mkdir -p "$h3/.pi/agent" "$h3/.agents"
+	printf 'target\n' >"$h3/.agents/AGENTS.md"
+	ln -s "$h3/.agents/AGENTS.md" "$h3/.pi/agent/AGENTS.md"
+	HOME="$h3" "$ROOT/jstack" models init --harness pi --premium c/y --bulk a/x,b/x >/dev/null 2>&1 || true
+	if ! out=$(HOME="$h3" "$ROOT/jstack" models apply --yes 2>&1); then
+		say "✗ 符号链接 Pi AGENTS.md 时 models apply 运行失败："
+		printf '%s\n' "$out" | sed 's/^/  /'
+		rc=1
+	fi
+	printf '%s\n' "$out" | grep -q '符号链接' || {
+		say "✗ models apply 没有说明 Pi AGENTS.md 是符号链接"
+		rc=1
+	}
+	if [ "$(cat "$h3/.agents/AGENTS.md")" != target ]; then
+		say "✗ models apply 跟随符号链接改了目标文件"
+		rc=1
+	fi
+
 	if [ "$rc" -eq 0 ]; then
-		say "✓ models：init/set/apply/status 在临时 HOME 里通过（17 个角色行、settings 备份幂等、dry-run、预算降级）"
+		say "✓ models：单配置生成四 harness 规则（标记块合并、首次确认、--yes、迁移备份、roles 覆盖、dry-run、预算降级）在临时 HOME 里通过"
 	fi
 	return $rc
 }
@@ -1114,18 +1315,20 @@ cmd_check() {
 	return $rc
 }
 
-# 模型分层：~/.config/jstack/models.json 是所有 harness 的唯一来源。
+# 模型分层：~/.jstack/config.json 的 models 段是所有 harness 的唯一来源。
 # 这里只校验模型 id 的形状，不联网、不调用 magpie；写文件才是 apply 的事。
 
-models_config_path() { printf '%s\n' "${JSTACK_MODELS_CONFIG:-$HOME/.config/jstack/models.json}"; }
+models_config_path() { printf '%s\n' "${JSTACK_USER_CONFIG:-${JSTACK_MODELS_CONFIG:-$HOME/.jstack/config.json}}"; }
+models_legacy_path() { printf '%s\n' "${JSTACK_MODELS_LEGACY:-$HOME/.config/jstack/models.json}"; }
 
 # 模型 id 可以带上下文标记和推理深度后缀：deepseek:max、deepseek[1m]、deepseek[1m]:max。
 models_valid_id() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*(\[[A-Za-z0-9]+\])?(:[a-z]+)?$ ]]; }
 
-# 读取 models.json。用法：
+# 读取用户级配置的 models 段（旧文件里的 harnesses 也认）。用法：
 #   models_json <cfg> harnesses
 #   models_json <cfg> has <harness>
 #   models_json <cfg> get <harness> premium|bulk0|bulk1
+#   models_json <cfg> roles <harness>
 #   models_json <cfg> budget premium_daily_tokens|premium_concurrency
 # 配置缺失时 harnesses 输出空，has 返回 1，budget 输出 null。
 models_json() {
@@ -1133,6 +1336,7 @@ models_json() {
 import json, re, sys
 cfg, op, *rest = sys.argv[1:]
 shape = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*(\[[A-Za-z0-9]+\])?(:[a-z]+)?$")
+tiers = ("premium", "bulk", "bulk0", "bulk1")
 try:
 	with open(cfg, encoding="utf-8") as f:
 		doc = json.load(f)
@@ -1142,27 +1346,54 @@ except ValueError as error:
 	sys.exit(f"{cfg}: 不是合法 JSON：{error}")
 if not isinstance(doc, dict):
 	sys.exit(f"{cfg}: 顶层必须是对象")
-harnesses = doc.get("harnesses")
-if harnesses is None:
-	harnesses = {}
-if not isinstance(harnesses, dict):
-	sys.exit(f"{cfg}: harnesses 必须是对象")
+models = doc.get("models")
+if models is None:
+	models = doc.get("harnesses")
+if models is None:
+	models = {}
+if not isinstance(models, dict):
+	sys.exit(f"{cfg}: models 必须是对象")
 
 def harness(name):
-	value = harnesses.get(name)
+	value = models.get(name)
 	if value is None:
 		return None
 	if not isinstance(value, dict):
-		sys.exit(f"{cfg}: harnesses.{name} 必须是对象")
+		sys.exit(f"{cfg}: models.{name} 必须是对象")
 	premium = value.get("premium")
 	bulk = value.get("bulk")
 	if not isinstance(premium, str) or not shape.fullmatch(premium):
-		sys.exit(f"{cfg}: harnesses.{name}.premium 不是合法的模型 id：{premium!r}")
+		sys.exit(f"{cfg}: models.{name}.premium 不是合法的模型 id：{premium!r}")
 	if not isinstance(bulk, list) or len(bulk) != 2 or not all(isinstance(x, str) and shape.fullmatch(x) for x in bulk):
-		sys.exit(f"{cfg}: harnesses.{name}.bulk 必须正好是两个合法的模型 id")
+		sys.exit(f"{cfg}: models.{name}.bulk 必须正好是两个合法的模型 id")
 	if bulk[0] == bulk[1]:
-		sys.exit(f"{cfg}: harnesses.{name}.bulk 的两个模型必须不同")
+		sys.exit(f"{cfg}: models.{name}.bulk 的两个模型必须不同")
 	return premium, bulk
+
+def role_map(name):
+	value = models.get(name)
+	if not isinstance(value, dict):
+		return {}
+	roles = value.get("roles")
+	if roles is None:
+		return {}
+	if not isinstance(roles, dict):
+		sys.exit(f"{cfg}: models.{name}.roles 必须是对象")
+	out = {}
+	for role, choice in roles.items():
+		if not isinstance(role, str) or not role.strip():
+			sys.exit(f"{cfg}: models.{name}.roles 的键必须是非空字符串")
+		items = choice if isinstance(choice, list) else str(choice).split(",")
+		values = []
+		for item in items:
+			item = item.strip() if isinstance(item, str) else ""
+			if item not in tiers:
+				sys.exit(f"{cfg}: models.{name}.roles.{role} 只能是 premium、bulk、bulk0、bulk1：{choice!r}")
+			values.append("bulk0" if item == "bulk" else item)
+		if not values:
+			sys.exit(f"{cfg}: models.{name}.roles.{role} 不能为空")
+		out[role] = values
+	return out
 
 if op == "harnesses":
 	for name in ("claude-code", "cursor", "omp", "pi"):
@@ -1177,6 +1408,9 @@ elif op == "get":
 		sys.exit(1)
 	premium, bulk = value
 	print({"premium": premium, "bulk0": bulk[0], "bulk1": bulk[1]}[field])
+elif op == "roles":
+	for role, values in role_map(rest[0]).items():
+		print(role + "\t" + ",".join(values))
 elif op == "budget":
 	budget = doc.get("budget")
 	if budget is None:
@@ -1195,7 +1429,7 @@ else:
 PY
 }
 
-# 写一个 harness 的配置；先写临时文件再原子替换，保留其它 harness 和 budget。
+# 写一个 harness 的配置；先写临时文件再原子替换，保留其它 harness、roles 和 budget。
 models_write_harness() {
 	python3 -I - "$@" <<'PY'
 import json, os, sys
@@ -1206,11 +1440,13 @@ if os.path.exists(cfg):
 		doc = json.load(f)
 if not isinstance(doc, dict):
 	sys.exit(f"{cfg}: 顶层必须是对象")
-harnesses = doc.get("harnesses")
-if harnesses is None:
-	harnesses = doc["harnesses"] = {}
-if not isinstance(harnesses, dict):
-	sys.exit(f"{cfg}: harnesses 必须是对象")
+if "models" not in doc and isinstance(doc.get("harnesses"), dict):
+	doc["models"] = doc.pop("harnesses")
+models = doc.get("models")
+if models is None:
+	models = doc["models"] = {}
+if not isinstance(models, dict):
+	sys.exit(f"{cfg}: models 必须是对象")
 budget = doc.get("budget")
 if budget is None:
 	budget = doc["budget"] = {}
@@ -1218,7 +1454,12 @@ if not isinstance(budget, dict):
 	sys.exit(f"{cfg}: budget 必须是对象")
 budget.setdefault("premium_daily_tokens", None)
 budget.setdefault("premium_concurrency", None)
-harnesses[name] = {"premium": premium, "bulk": [bulk0, bulk1]}
+value = models.get(name)
+if not isinstance(value, dict):
+	value = {}
+value["premium"] = premium
+value["bulk"] = [bulk0, bulk1]
+models[name] = value
 os.makedirs(os.path.dirname(cfg) or ".", exist_ok=True)
 tmp = cfg + ".tmp"
 with open(tmp, "w", encoding="utf-8") as f:
@@ -1226,6 +1467,50 @@ with open(tmp, "w", encoding="utf-8") as f:
 	f.write("\n")
 os.replace(tmp, cfg)
 PY
+}
+
+# 旧 ~/.config/jstack/models.json 迁移到 ~/.jstack/config.json：旧文件备份后保留。
+# 用法：models_migrate_if_needed <dry>；需要迁移且 dry=1 时只打印。
+models_migrate_if_needed() {
+	local dry=$1 cfg old
+	cfg=$(models_config_path)
+	old=$(models_legacy_path)
+	[ -f "$cfg" ] && return 0
+	[ -f "$old" ] || return 0
+	if [ "$dry" -eq 1 ]; then
+		say "- 将把旧配置 ${old} 迁移到 ${cfg}（旧文件备份后保留）"
+		return 0
+	fi
+	command -v python3 >/dev/null || die "models 需要 python3"
+	python3 -I - "$old" "$cfg" <<'PY'
+import json, os, sys
+old, cfg = sys.argv[1:3]
+with open(old, encoding="utf-8") as f:
+	doc = json.load(f)
+if not isinstance(doc, dict):
+	sys.exit(f"{old}: 顶层必须是对象")
+models = doc.get("models")
+if models is None:
+	models = doc.get("harnesses")
+if models is None:
+	models = {}
+if not isinstance(models, dict):
+	sys.exit(f"{old}: models 必须是对象")
+out = dict(doc)
+out["models"] = models
+out.pop("harnesses", None)
+budget = out.get("budget")
+if budget is not None:
+	out["budget"] = budget
+os.makedirs(os.path.dirname(cfg) or ".", exist_ok=True)
+tmp = cfg + ".tmp"
+with open(tmp, "w", encoding="utf-8") as f:
+	json.dump(out, f, ensure_ascii=False, indent=2)
+	f.write("\n")
+os.replace(tmp, cfg)
+PY
+	cp -p "$old" "${old}.bak-migrate-$(date +%Y%m%d-%H%M%S)"
+	say "✓ 已把 ${old} 迁移到 ${cfg}（旧文件已备份）"
 }
 
 # 检测某个 harness 当前的模型，输出三行：premium、bulk0、bulk1（可能为空）。
@@ -1299,11 +1584,16 @@ models_budget_line() { # <premium_daily_tokens> <premium_concurrency>
 	fi
 }
 
-# 角色→层级映射。三个 harness 共用；这里把层级换成别名或真实模型 id。
-models_role_lines() { # <harness> <premium> <bulk0> <bulk1> <degraded>
-	local h=$1 premium=$2 bulk0=$3 bulk1=$4 degraded=$5 role tiers tier value values
+# 角色→层级映射。四个 harness 共用；这里把层级换成别名或真实模型 id。
+# 第 6 个参数是 models.<harness>.roles 的覆盖，每行 "角色<TAB>层级,..."。
+models_role_lines() { # <harness> <premium> <bulk0> <bulk1> <degraded> [roles]
+	local h=$1 premium=$2 bulk0=$3 bulk1=$4 degraded=$5 roles=${6:-} role tiers tier value values override
 	while IFS='|' read -r role tiers; do
 		[ -n "$role" ] || continue
+		if [ -n "$roles" ]; then
+			override=$(printf '%s\n' "$roles" | awk -F'\t' -v r="$role" '$1 == r { print $2; exit }')
+			[ -z "$override" ] || tiers=$override
+		fi
 		values=
 		for tier in ${tiers//,/ }; do
 			case ${h}:${tier} in
@@ -1344,8 +1634,8 @@ interrogate reviewers|bulk0,bulk1
 EOF
 }
 
-models_rule_content() { # <harness> <premium> <bulk0> <bulk1> <degraded> <cap> <concurrency>
-	local h=$1 premium=$2 bulk0=$3 bulk1=$4 degraded=$5 cap=$6 concurrency=$7
+models_rule_content() { # <harness> <premium> <bulk0> <bulk1> <degraded> <cap> <concurrency> [roles]
+	local h=$1 premium=$2 bulk0=$3 bulk1=$4 degraded=$5 cap=$6 concurrency=$7 roles=${8:-}
 	case $h in
 	cursor)
 		printf -- '---\ndescription: pstack per-role model choices (overrides skill defaults)\nalwaysApply: true\n---\n'
@@ -1354,7 +1644,7 @@ models_rule_content() { # <harness> <premium> <bulk0> <bulk1> <degraded> <cap> <
 		printf -- '---\nalwaysApply: true\n---\n'
 		;;
 	esac
-	printf '%s\n' '# pstack model configuration, generated by jstack from ~/.config/jstack/models.json. Do not edit; run ./jstack models set instead.'
+	printf '%s\n' '# pstack model configuration, generated by jstack from ~/.jstack/config.json. Do not edit; run ./jstack models set instead.'
 	case $h in
 	claude-code) printf '# opus = premium (%s), sonnet = bulk (%s), haiku = bulk (%s)\n' "$premium" "$bulk0" "$bulk1" ;;
 	*) printf '# premium = %s, bulk = %s, %s\n' "$premium" "$bulk0" "$bulk1" ;;
@@ -1364,7 +1654,7 @@ models_rule_content() { # <harness> <premium> <bulk0> <bulk1> <degraded> <cap> <
 	if [ "$h" = claude-code ] && [ "$concurrency" != null ]; then
 		printf '# premium_concurrency=%s is recorded only; Claude Code has no per-tier concurrency control.\n' "$concurrency"
 	fi
-	models_role_lines "$@"
+	models_role_lines "$h" "$premium" "$bulk0" "$bulk1" "$degraded" "$roles"
 }
 
 # 统计某 premium 模型今天的 in + out；magpie 日志不存在时以 3 退出。
@@ -1417,9 +1707,9 @@ models_stats_harness() {
 	return 1
 }
 
-# 内容没变就不重写；dry-run 只打印路径和内容。
+# 内容没变就不重写；写前备份旧文件；dry-run 只打印路径和内容。
 models_emit_file() { # <path> <content> <dry>
-	local path=$1 content=$2 dry=$3 tmp
+	local path=$1 content=$2 dry=$3 tmp backup
 	if [ "$dry" -eq 1 ]; then
 		say "- 将写入 ${path}："
 		printf '%s\n' "$content" | sed 's/^/  /'
@@ -1433,8 +1723,112 @@ models_emit_file() { # <path> <content> <dry>
 		say "= ${path}（未变化）"
 		return 0
 	fi
+	if [ -f "$path" ]; then
+		backup="${path}.bak-models-$(date +%Y%m%d-%H%M%S)"
+		cp -p "$path" "$backup"
+		say "✓ 已备份 ${backup}"
+	fi
 	mv "$tmp" "$path"
 	say "✓ 已写入 ${path}"
+}
+
+# 共享文件（OMP config.yml、Pi AGENTS.md）里只改 jstack 标记块，块外不碰。
+# 退出码：0 已写，1 未变化，2 符号链接（不跟随），3 跳过。
+models_merge_block() { # <path> <md|yaml> <content-file> <dry>
+	local path=$1 kind=$2 file=$3 dry=$4 rc=0
+	python3 -I - "$path" "$kind" "$file" "$dry" <<'PY' || rc=$?
+import datetime, json, os, re, shutil, sys
+path, kind, content_file, dry = sys.argv[1:5]
+with open(content_file, encoding="utf-8") as f:
+	block = f.read().rstrip("\n") + "\n"
+begin = "<!-- jstack:models:begin -->" if kind == "md" else "# jstack:models:begin"
+end = "<!-- jstack:models:end -->" if kind == "md" else "# jstack:models:end"
+if os.path.islink(path):
+	print(f"SKIP {path}: 是符号链接，不跟随写入")
+	sys.exit(2)
+exists = os.path.exists(path)
+old = ""
+if exists:
+	with open(path, encoding="utf-8") as f:
+		old = f.read()
+new = None
+if begin in old and end in old:
+	pre, rest = old.split(begin, 1)
+	_, post = rest.split(end, 1)
+	new = pre + begin + "\n" + block + end + post
+elif kind == "yaml":
+	lines = old.splitlines(keepends=True)
+	out = []
+	i = 0
+	while i < len(lines):
+		if re.match(r"^modelRoles:\s*(#.*)?$", lines[i]):
+			out.append(begin + "\n" + block + end + "\n")
+			i += 1
+			while i < len(lines) and (lines[i].startswith((" ", "\t"))):
+				i += 1
+			continue
+		out.append(lines[i])
+		i += 1
+	if out and (not old or "".join(out) != old):
+		new = "".join(out)
+if new is None:
+	sep = ""
+	if old and not old.endswith("\n"):
+		sep = "\n\n"
+	elif old:
+		sep = "\n"
+	new = old + sep + begin + "\n" + block + end + "\n"
+if new == old:
+	print(f"= {path}（未变化）")
+	sys.exit(1)
+if dry == "1":
+	print(f"- 将更新 {path}：")
+	for line in block.splitlines():
+		print("  " + line)
+	sys.exit(0)
+os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+if exists:
+	stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+	backup = f"{path}.bak-models-{stamp}"
+	shutil.copy2(path, backup)
+	print(f"✓ 已备份 {backup}")
+tmp = path + f".tmp.{os.getpid()}"
+with open(tmp, "w", encoding="utf-8") as f:
+	f.write(new)
+if exists:
+	shutil.copymode(path, tmp)
+os.replace(tmp, path)
+print(f"✓ 已更新 {path}")
+PY
+	return $rc
+}
+
+# OMP 的 modelRoles 片段：slow 用 premium，执行类用 bulk0，快速通道用 bulk1。
+models_omp_roles_yaml() { # <premium> <bulk0> <bulk1> <degraded>
+	local slow=$1
+	[ "$4" -eq 0 ] || slow=$2
+	printf 'modelRoles:\n  slow: %s\n  plan: %s\n  task: %s\n  default: %s\n  smol: %s\n' \
+		"$slow" "$2" "$2" "$2" "$3"
+}
+
+# 首次写入共享文件前确认一次；--yes 跳过，非交互且没有 --yes 时跳过写入。
+models_confirm_first() { # <path> <yes>
+	local path=$1 yes=$2 answer
+	if [ "$yes" -eq 1 ]; then return 0; fi
+	if [ -f "$path" ] && grep -q 'jstack:models:begin' "$path" 2>/dev/null; then return 0; fi
+	if [ ! -t 0 ]; then
+		say "- 跳过 ${path}：首次写入需要 --yes（非交互）"
+		return 1
+	fi
+	printf '首次写入 %s，确认？[y/N] ' "$path"
+	read -r answer || answer=
+	case $answer in
+	y|Y) return 0 ;;
+	*)
+		say "  已跳过 ${path}"
+		return 1
+		;;
+	esac
 }
 
 # 同步 Claude Code settings.json 的四个 env；值没变就不写、也不备份。
@@ -1493,21 +1887,28 @@ models_usage_text() {
 用法：
   ./jstack models [show]                 显示配置路径、各 harness 的模型、预算和 apply 会写的文件
   ./jstack models init [--harness <h>] [--premium <id>] [--bulk <a,b>] [--force]
-                                         引导配置 ~/.config/jstack/models.json；JSTACK_MODELS_CONFIG 可覆盖路径。
+                                         引导配置 ~/.jstack/config.json；JSTACK_USER_CONFIG 可覆盖路径。
+                                         旧 ~/.config/jstack/models.json 会自动迁移并备份。
                                          非交互模式要同时给 --premium 和 --bulk；不给 --harness 时写入全部四个 harness
-  ./jstack models set premium <id> [--harness <h>]
-  ./jstack models set bulk <a,b> [--harness <h>]
+  ./jstack models set premium <id> [--harness <h>] [--yes]
+  ./jstack models set bulk <a,b> [--harness <h>] [--yes]
                                          改一个值并自动 apply；--harness 默认 claude-code
-  ./jstack models apply [--dry-run]      把配置写成各 harness 的规则文件
+  ./jstack models apply [--dry-run] [--yes]
+                                         把配置写成四个 harness 的规则文件；首次写 Pi/OMP 的共享文件要确认，--yes 跳过
   ./jstack models status                 统计 premium 今日 token 用量
 EOF
 }
 
 cmd_models_show() {
-	local cfg harnesses h premium bulk0 bulk1 cap conc
+	local cfg harnesses h premium bulk0 bulk1 cap conc legacy
 	cfg=$(models_config_path)
+	legacy=$(models_legacy_path)
 	command -v python3 >/dev/null || die "models 需要 python3"
 	printf '配置：%s\n' "$cfg"
+	if [ ! -f "$cfg" ] && [ -f "$legacy" ]; then
+		say "发现旧配置 ${legacy}；运行 ./jstack models apply 会自动迁移并备份。"
+		return 0
+	fi
 	if [ ! -f "$cfg" ]; then
 		say "尚未配置。运行 ./jstack models init 开始。"
 		return 0
@@ -1529,10 +1930,10 @@ cmd_models_show() {
 	say "apply 会写："
 	for h in $harnesses; do
 		case $h in
-		claude-code) say "  claude-code  ${HOME}/.claude/rules/pstack-models.md（无 frontmatter）；${HOME}/.claude/settings.json 的 4 个 env，改前备份 settings.json.bak-models-<时间>" ;;
+		claude-code) say "  claude-code  ${HOME}/.claude/rules/pstack-models.md（无 frontmatter）；${HOME}/.claude/settings.json 的 4 个 env，改前备份" ;;
 		cursor) say "  cursor       ${HOME}/.cursor/rules/pstack-models.mdc（frontmatter: alwaysApply）" ;;
-		omp) say "  omp          ${HOME}/.omp/agent/rules/pstack-models.md（frontmatter: alwaysApply）" ;;
-		pi) say "  pi           不写文件，只打印角色表（~/.pi/agent/AGENTS.md 是符号链接，不能改）" ;;
+		omp) say "  omp          ${HOME}/.omp/agent/rules/pstack-models.md（frontmatter: alwaysApply）；${HOME}/.omp/agent/config.yml 的 modelRoles 标记块" ;;
+		pi) say "  pi           ${HOME}/.pi/agent/AGENTS.md 的角色表标记块（符号链接时跳过并打印）" ;;
 		esac
 	done
 }
@@ -1571,6 +1972,7 @@ cmd_models_init() {
 	fi
 	command -v python3 >/dev/null || die "models 需要 python3"
 	cfg=$(models_config_path)
+	models_migrate_if_needed 0
 	cand="$WORK/models-candidate.json"
 	rm -f "$cand"
 	if [ -f "$cfg" ]; then cp "$cfg" "$cand"; fi
@@ -1642,27 +2044,29 @@ cmd_models_init() {
 }
 
 cmd_models_set() {
-	local field= value= harness=claude-code cfg old_premium old_b0 old_b1 premium b0 b1
+	local field= value= harness=claude-code cfg old_premium old_b0 old_b1 premium b0 b1 yes=0
 	while [ $# -gt 0 ]; do
 		case $1 in
 		--harness) harness=${2:?--harness 后面要跟 harness 名}; shift 2 ;;
+		--yes) yes=1; shift ;;
 		*)
 			if [ -z "$field" ]; then
 				field=$1
 			elif [ -z "$value" ]; then
 				value=$1
 			else
-				die "用法：./jstack models set premium|bulk <值> [--harness <h>]"
+				die "用法：./jstack models set premium|bulk <值> [--harness <h>] [--yes]"
 			fi
 			shift
 			;;
 		esac
 	done
-	[ -n "$field" ] && [ -n "$value" ] || die "用法：./jstack models set premium|bulk <值> [--harness <h>]"
+	[ -n "$field" ] && [ -n "$value" ] || die "用法：./jstack models set premium|bulk <值> [--harness <h>] [--yes]"
 	case $harness in
 	claude-code|cursor|omp|pi) ;;
 	*) die "未知 harness：${harness}（可用 claude-code、cursor、omp、pi）" ;;
 	esac
+	models_migrate_if_needed 0
 	cfg=$(models_config_path)
 	[ -f "$cfg" ] || die "没有模型配置 ${cfg}，先运行 ./jstack models init"
 	command -v python3 >/dev/null || die "models 需要 python3"
@@ -1695,18 +2099,28 @@ cmd_models_set() {
 	esac
 	models_write_harness "$cfg" "$harness" "$premium" "$b0" "$b1"
 	say "✓ 已更新 ${harness}：premium=${premium} bulk=${b0}, ${b1}"
-	cmd_models_apply
+	if [ "$yes" -eq 1 ]; then
+		cmd_models_apply --yes
+	else
+		cmd_models_apply
+	fi
 }
 
 cmd_models_apply() {
-	local dry=0 cfg harnesses h premium bulk0 bulk1 cap conc degraded=0 tokens= stats_h stats_bulk0 summary= content
+	local dry=0 yes=0 cfg harnesses h premium bulk0 bulk1 cap conc degraded=0 tokens= stats_h stats_bulk0 summary= content roles
+	local block="$WORK/models-block" pi_file omp_cfg rc
 	while [ $# -gt 0 ]; do
 		case $1 in
 		--dry-run) dry=1; shift ;;
-		*) die "未知参数：$1（用法：./jstack models apply [--dry-run]）" ;;
+		--yes) yes=1; shift ;;
+		*) die "未知参数：$1（用法：./jstack models apply [--dry-run] [--yes]）" ;;
 		esac
 	done
+	models_migrate_if_needed "$dry"
 	cfg=$(models_config_path)
+	if [ ! -f "$cfg" ] && [ "$dry" -eq 1 ] && [ -f "$(models_legacy_path)" ]; then
+		cfg=$(models_legacy_path)
+	fi
 	[ -f "$cfg" ] || die "没有模型配置 ${cfg}，先运行 ./jstack models init"
 	command -v python3 >/dev/null || die "models 需要 python3"
 	harnesses=$(models_json "$cfg" harnesses)
@@ -1733,37 +2147,62 @@ cmd_models_apply() {
 		premium=$(models_json "$cfg" get "$h" premium)
 		bulk0=$(models_json "$cfg" get "$h" bulk0)
 		bulk1=$(models_json "$cfg" get "$h" bulk1)
+		roles=$(models_json "$cfg" roles "$h")
 		case $h in
 		claude-code)
-			content=$(models_rule_content claude-code "$premium" "$bulk0" "$bulk1" "$degraded" "$cap" "$conc")
+			content=$(models_rule_content claude-code "$premium" "$bulk0" "$bulk1" "$degraded" "$cap" "$conc" "$roles")
 			models_emit_file "${HOME}/.claude/rules/pstack-models.md" "$content" "$dry"
 			models_sync_settings "${HOME}/.claude/settings.json" "$premium" "$bulk0" "$bulk1" "$dry"
 			summary="${summary} claude-code(opus=${premium}, sonnet=${bulk0}, haiku=${bulk1})"
 			;;
 		cursor)
-			content=$(models_rule_content cursor "$premium" "$bulk0" "$bulk1" "$degraded" "$cap" "$conc")
+			content=$(models_rule_content cursor "$premium" "$bulk0" "$bulk1" "$degraded" "$cap" "$conc" "$roles")
 			models_emit_file "${HOME}/.cursor/rules/pstack-models.mdc" "$content" "$dry"
 			summary="${summary} cursor(premium=${premium}, bulk0=${bulk0}, bulk1=${bulk1})"
 			;;
 		omp)
-			content=$(models_rule_content omp "$premium" "$bulk0" "$bulk1" "$degraded" "$cap" "$conc")
+			content=$(models_rule_content omp "$premium" "$bulk0" "$bulk1" "$degraded" "$cap" "$conc" "$roles")
 			models_emit_file "${HOME}/.omp/agent/rules/pstack-models.md" "$content" "$dry"
-			summary="${summary} omp(premium=${premium}, bulk0=${bulk0}, bulk1=${bulk1})"
+			omp_cfg="${HOME}/.omp/agent/config.yml"
+			if [ "$dry" -eq 0 ] && ! models_confirm_first "$omp_cfg" "$yes"; then
+				summary="${summary} omp(规则已写，config.yml 跳过)"
+			else
+				models_omp_roles_yaml "$premium" "$bulk0" "$bulk1" "$degraded" >"$block"
+				models_merge_block "$omp_cfg" yaml "$block" "$dry" && rc=0 || rc=$?
+				if [ "$rc" -eq 1 ]; then
+					summary="${summary} omp(premium=${premium}, bulk0=${bulk0}, bulk1=${bulk1}；modelRoles 未变化)"
+				elif [ "$rc" -eq 2 ]; then
+					summary="${summary} omp(规则已写，config.yml 是符号链接，跳过)"
+				else
+					summary="${summary} omp(premium=${premium}, bulk0=${bulk0}, bulk1=${bulk1})"
+				fi
+			fi
+			;;
+		pi)
+			pi_file="${HOME}/.pi/agent/AGENTS.md"
+			content=$(models_rule_content pi "$premium" "$bulk0" "$bulk1" "$degraded" "$cap" "$conc" "$roles")
+			if [ -L "$pi_file" ]; then
+				say "- Pi：${pi_file} 是符号链接，不跟随写入；角色表如下，可交给 harness-config 维护："
+				printf '%s\n' "$content" | sed 's/^/  /'
+				summary="${summary} pi(符号链接，未写入)"
+			elif [ "$dry" -eq 0 ] && ! models_confirm_first "$pi_file" "$yes"; then
+				summary="${summary} pi(跳过)"
+			else
+				printf '%s\n' "$content" >"$block"
+				models_merge_block "$pi_file" md "$block" "$dry" && rc=0 || rc=$?
+				if [ "$rc" -eq 1 ]; then
+					summary="${summary} pi(${pi_file} 未变化)"
+				elif [ "$rc" -eq 2 ]; then
+					summary="${summary} pi(符号链接，未写入)"
+				else
+					summary="${summary} pi(${pi_file})"
+				fi
+			fi
 			;;
 		esac
 	done
-	if printf '%s\n' "$harnesses" | grep -qx pi; then
-		premium=$(models_json "$cfg" get pi premium)
-		bulk0=$(models_json "$cfg" get pi bulk0)
-		bulk1=$(models_json "$cfg" get pi bulk1)
-		say "Pi 不写规则文件：~/.pi/agent/AGENTS.md 是指向全局治理文档的符号链接，不能改。"
-		say "Pi 没有分角色的规则机制，角色模型要按配置手动传给子 agent（Agent 的 model 与 thinking）："
-		printf '# premium = %s, bulk = %s, %s\n' "$premium" "$bulk0" "$bulk1"
-		[ "$degraded" -eq 0 ] || printf '# premium degraded to %s: daily token cap reached\n' "$bulk0"
-		models_budget_line "$cap" "$conc"
-		models_role_lines pi "$premium" "$bulk0" "$bulk1" "$degraded"
-	fi
-	[ -n "$summary" ] || summary=" pi(不写文件)"
+	rm -f "$block"
+	[ -n "$summary" ] || summary=" 没有可写的 harness"
 	if [ "$dry" -eq 1 ]; then
 		say "- 模型配置将应用：${summary# }"
 	else
@@ -1773,6 +2212,7 @@ cmd_models_apply() {
 
 cmd_models_status() {
 	local cfg h premium tokens cap
+	models_migrate_if_needed 0
 	cfg=$(models_config_path)
 	[ -f "$cfg" ] || die "没有模型配置 ${cfg}，先运行 ./jstack models init"
 	command -v python3 >/dev/null || die "models 需要 python3"

@@ -46,7 +46,7 @@ claude plugin marketplace add jionpz/jstack && claude plugin install pstack@jsta
 装好之后在 Claude Code 里：
 
 1. `/reload-plugins`，或者新开一个会话。
-2. `./jstack models init` 按提示配置 `~/.config/jstack/models.json`，再 `./jstack models apply`：写入模型角色表 `~/.claude/rules/pstack-models.md` 和 `~/.claude/settings.json` 里的模型 env。见下面“模型分层”一节。
+2. `./jstack models init` 按提示配置 `~/.jstack/config.json`，再 `./jstack models apply`：写入模型角色表 `~/.claude/rules/pstack-models.md` 和 `~/.claude/settings.json` 里的模型 env。见下面“模型分层”一节。
 3. 在要用 spec 的仓库里运行一次 `/spec:setup-matt-pocock-skills`：选定 issue tracker 和领域文档的位置，写 `docs/agents/*.md` 和 `CLAUDE.md` 里的 `## Agent skills` 段。
 4. 直接描述任务即可。`flow:route` 会自动分级并选择流程；也可以显式运行 `/flow:route <任务描述>`。想跳过路由时，直接用 `/pstack:*` 或 `/spec:*` 命令，route 不会介入。
 
@@ -92,17 +92,27 @@ Cursor 的本地插件加载器只接受 `~/.cursor/plugins/local` 内的符号�
 
 ## 模型分层
 
-两层模型（ADR-0003）：premium 做判断，通常是能力最强的高级模型；bulk 是 token 几乎不限的模型家族，负责执行和验证。每个角色属于哪一层写在 `jstack` 里，绑定哪个模型只由 `~/.config/jstack/models.json` 决定（`JSTACK_MODELS_CONFIG` 可覆盖路径，测试用）。文件按 harness 分开：
+两层模型（ADR-0003）：premium 做判断，通常是能力最强的高级模型；bulk 是 token 几乎不限的模型家族，负责执行和验证。每个角色属于哪一层写在 `jstack` 里，绑定哪个模型只由 `~/.jstack/config.json` 的 `models` 段决定（`JSTACK_USER_CONFIG` 可覆盖路径，测试用）。旧 `~/.config/jstack/models.json` 在第一次运行 `models` 时自动迁移并备份。文件按 harness 分开：
 
 ```json
 {
-  "harnesses": {
+  "models": {
     "claude-code": { "premium": "opencode-go/...", "bulk": ["...", "..."] },
     "cursor": { "premium": "...", "bulk": ["...", "..."] },
     "omp": { "premium": "magpie/...", "bulk": ["magpie/...", "magpie/..."] },
     "pi": { "premium": "provider/model", "bulk": ["provider/model", "provider/model"] }
   },
   "budget": { "premium_daily_tokens": null, "premium_concurrency": null }
+}
+```
+
+每个 harness 还可以选写 `roles`，只覆盖要改的角色，值为 `premium`、`bulk`（等于 `bulk0`）、`bulk0`、`bulk1`，多个用逗号或数组：
+
+```json
+"claude-code": {
+  "premium": "opencode-go/...",
+  "bulk": ["...", "..."],
+  "roles": { "hardest tasks": "premium", "arena runners": "bulk0,bulk1" }
 }
 ```
 
@@ -114,7 +124,7 @@ Cursor 的本地插件加载器只接受 `~/.cursor/plugins/local` 内的符号�
 | `./jstack models init` | 逐 harness 引导配置。默认值来自当前安装（Claude Code 的 settings.json、Pi 的 defaultModel、OMP 的 modelRoles）；已有配置作为默认值，`--force` 重新问；输入 `q` 跳过该 harness。非交互写法：`--harness claude-code --premium <id> --bulk <a,b>`。写完不自动 apply |
 | `./jstack models set premium <id>` | 改一个值，原子写配置，然后自动 apply。`--harness` 默认 `claude-code` |
 | `./jstack models set bulk <a,b>` | 同上；两个 bulk 必须不同 |
-| `./jstack models apply [--dry-run]` | 按配置写各 harness 的规则文件；`--dry-run` 只打印路径和内容 |
+| `./jstack models apply [--dry-run] [--yes]` | 按配置写四个 harness 的规则文件；`--dry-run` 只打印路径和内容；首次写 Pi/OMP 的共享文件要确认，`--yes` 跳过确认 |
 | `./jstack models status` | 统计 magpie 日志里 premium 今日的 `in + out`，和日预算比较 |
 
 `apply` 写到哪里：
@@ -123,14 +133,14 @@ Cursor 的本地插件加载器只接受 `~/.cursor/plugins/local` 内的符号�
 |---|---|---|
 | Claude Code | `~/.claude/rules/pstack-models.md`（无 frontmatter）和 `~/.claude/settings.json` 的 `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL`、`ANTHROPIC_SMALL_FAST_MODEL` | 规则里写 `opus` / `sonnet` / `haiku` 别名；settings 的三个 env 指向 premium、bulk[0]、bulk[1]，`SMALL_FAST` 跟 bulk[1]。改 settings 前备份成 `settings.json.bak-models-<时间>`，值没变就不备份 |
 | Cursor | `~/.cursor/rules/pstack-models.mdc`（`alwaysApply: true`） | 真实 slug |
-| OMP | `~/.omp/agent/rules/pstack-models.md`（`alwaysApply: true`） | 配置里的 magpie slug；不改 `config.yml` |
-| Pi | 不写文件 | `~/.pi/agent/AGENTS.md` 是指向全局治理文档的符号链接，`apply` 只打印角色表；Pi 没有分角色规则机制，角色模型要手动传给子 agent |
+| OMP | `~/.omp/agent/rules/pstack-models.md`（`alwaysApply: true`）和 `~/.omp/agent/config.yml` 里的 `modelRoles` 标记块 | 配置里的 magpie slug；`slow` 走 premium，`plan` / `task` / `default` 走 bulk[0]，`smol` 走 bulk[1]；块外内容不碰，首次写入前确认并备份 |
+| Pi | `~/.pi/agent/AGENTS.md` 的角色表标记块 | 真实 `provider/model`；AGENTS.md 是符号链接时不跟随写入，只打印角色表（本机就把它交给 harness-config 维护） |
 
-17 个角色行由 `jstack` 生成，三个 harness 共用同一份角色到层级映射：执行、探索、审查工具走 bulk，判断、综合、最终结论走 premium，审查面板同时用两个 bulk 家族。重复运行 `apply` 是幂等的，内容没变就不重写。
+17 个角色行由 `jstack` 生成，四个 harness 共用同一份角色到层级映射：执行、探索、审查工具走 bulk，判断、综合、最终结论走 premium，审查面板同时用两个 bulk 家族。重复运行 `apply` 是幂等的，内容没变就不重写；Pi/OMP 的共享文件只改 `jstack:models` 标记块，块外不碰，写入前备份。
 
 预算：`premium_daily_tokens` 为 null 表示不限。设置上限后，`apply` 先统计今天 premium 的 token；达到或超过上限时把所有 premium 角色降级到对应 harness 的 bulk[0]，在规则文件头写明降级原因，并在 stdout 打出警告。`premium_concurrency` 只记录、打印，不强制，因为 Claude Code 没有按层并发控制。
 
-`/pstack:setup-pstack` 仍然可用，但它直接写规则文件、不读 `models.json`。配置模型统一用 `./jstack models`，避免两套来源互相覆盖。
+`/pstack:setup-pstack` 仍然可用，但它直接写规则文件、不读用户级配置。配置模型统一用 `./jstack models`，避免两套来源互相覆盖。
 
 ## 分工
 
@@ -157,7 +167,7 @@ route 只在三处停下来问你，其余全部自动推进：
 
 签字之后由 poteto-mode 按 ticket 依赖顺序执行，不再停下来确认，poteto-mode 自己的 Always-pause 清单仍然有效。业务仓库的 `CLAUDE.md` 或 `.claude/rules/` 里定义了不同的分级、spec 位置或门禁时，以仓库为准。
 
-`disable-model-invocation: true` 的 skill（pstack 57 个、spec 6 个：5 个入口加 setup）不能被模型用 Skill 工具调用，Claude Code 会直接拒绝，提示 "reserved for explicit user invocation"。route 用随附的 `locate.sh` 找到这些提供者文件的路径，然后直接读取并照着做，这也是 pstack 内部 skill 之间互相路由的方式。`locate.sh` 不写死 skill 名，而是读同目录 `stages.md` 的 Providers 列：换掉某个阶段的提供者只改表里那一格。它支持本地 marketplace、Claude Code 的 GitHub 缓存、OMP 缓存、Cursor 本地插件和 Pi package 五种安装布局，入口 skill 以软链暴露时也按物理路径解析；任一提供者找不到就点名并以非 0 退出。
+`disable-model-invocation: true` 的 skill（pstack 57 个、spec 6 个：5 个入口加 setup）不能被模型用 Skill 工具调用，Claude Code 会直接拒绝，提示 "reserved for explicit user invocation"。route 用随附的 `locate.sh` 找到这些提供者文件的路径，然后直接读取并照着做，这也是 pstack 内部 skill 之间互相路由的方式。`locate.sh` 不写死 skill 名，而是读同目录 `stages.md` 的 Providers 列：换掉某个阶段的提供者只改表里那一格。它支持本地 marketplace、Claude Code 的 GitHub 缓存、OMP 缓存、Cursor 本地插件、Pi package 和入口软链六种安装布局，入口 skill 以软链暴露时按物理路径解析；任一提供者找不到就点名并以非 0 退出。
 
 几条硬规则：
 
