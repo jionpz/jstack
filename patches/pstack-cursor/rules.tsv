@@ -1,0 +1,19 @@
+# pstack 的 Cursor 转换规则。./jstack build 把 plugins/pstack（Claude 树）按这里的顺序转换
+# 成 plugins/pstack-cursor；./jstack check 会核对每条规则在源树里至少命中一处，并且转换
+# 改动的文件与规则命中的文件一一对应。空字段写 `-`。
+#
+# 列：id<TAB>kind<TAB>scope<TAB>from<TAB>to
+#   drop-paragraph  删除匹配行和紧随其后的空行；scope 是相对插件根的 glob
+#   replace         把行内的 from 字面串替换成 to
+#   replace-line    整行等于 from 时替换成 to
+#   copy-file       用 patches/pstack-cursor/<to> 覆盖 scope；from 忽略
+#   manifest        用 patches/pstack-cursor/<to> 的字段合并 Claude manifest，生成 scope；from 忽略
+#
+# 这些差异来自上游的 Claude Code 树与 Cursor 原生树（同一提交 8ecfb19）。上游同步后
+# 如果差异变了，check 会报：某条规则不再命中，或转换改动了规则没覆盖的文件。
+adapter-paragraph	drop-paragraph	skills/*/SKILL.md	If you are not in Cursor, read [the harness adapter](../../docs/harness/agents.md) once per session before you follow this skill. It maps the Cursor names in pstack skills to your harness.	-
+poteto-help-adapter	replace	skills/poteto-help/SKILL.md	[harness adapter](../../docs/harness/agents.md)	[Claude Code adapter](../../docs/harness/claude-code.md)
+agent-background	replace-line	agents/*.md	background: true	is_background: true
+worktree-audit	copy-file	skills/poteto-mode/scripts/worktree-audit.sh	-	worktree-audit.sh
+cursor-manifest	manifest	.cursor-plugin/plugin.json	-	manifest.json
+cursor-logo	copy-file	assets/logo.png	-	assets/logo.png

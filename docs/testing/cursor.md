@@ -12,7 +12,7 @@ Cursor 没有可脚本化的 headless agent CLI，这一份是 Cursor 本地插�
 `install-cursor` 把三个产物复制到 Cursor 的本地插件目录（Cursor 的加载器拒绝指向该目录之外的符号链接）：
 
 ```text
-~/.cursor/plugins/local/pstack/   # 上游 Cursor 原生树，来自 plugins/pstack-cursor
+~/.cursor/plugins/local/pstack/   # 由 plugins/pstack 转换生成，来自 plugins/pstack-cursor
 ~/.cursor/plugins/local/spec/     # 双 manifest，来自 plugins/spec
 ~/.cursor/plugins/local/flow/     # 双 manifest，来自 plugins/flow
 ```
@@ -44,7 +44,7 @@ bash "$HOME/.cursor/plugins/local/flow/skills/route/locate.sh"
 3. **route → pstack**：运行 `/route 用一句话说明这个仓库是做什么的，不要改文件`。route 应把它判成调查类，读 `poteto-mode` 的 SKILL.md 后直接执行。
 4. **route → spec**：运行 `/route 这个仓库的安装流程有两种合理解释，先澄清再拆解，暂时不要实现`。route 应判成 M/ambiguous 或 L，先读 `grill-with-docs` 的 SKILL.md；确认它能进入澄清轮，再停止。
 5. **agent 能派发**：让 poteto-mode 派一个只读子 agent（例如读 README 的 `Task`），确认 Cursor 的 subagent 面板出现，结果回到主会话。也可以直接确认 `agents/poteto-agent.md` 的 `is_background: true` 和 `agents/comment-sicko.md` 都在。
-6. **装的是原生树**：`~/.cursor/plugins/local/pstack/agents/poteto-agent.md` 保留 `is_background: true`；`pstack/skills/` 里没有 “In Claude Code” 的 adapter 引导。这说明 Cursor 用的是上游原生树，不是 Claude Code 树。
+6. **装的是转换产物**：`~/.cursor/plugins/local/pstack/agents/poteto-agent.md` 保留 `is_background: true`；`pstack/skills/` 里没有「If you are not in Cursor, read the harness adapter」的引导。这说明 Cursor 用的是从 Claude 树转换出的产物，不是 Claude Code 树。
 7. **spec/flow 的 Cursor manifest**：`~/.cursor/plugins/local/spec/.cursor-plugin/plugin.json` 的 `skills` 是一个 10 项的数组；`flow` 的 `skills` 是 `"./skills/"`，`hooks` 指向 `"./hooks/hooks.cursor.json"`。
 8. **阶段提示**：让 route 进入某个阶段后，再发一条消息，回复的上下文里应出现「jstack 阶段门禁：当前阶段 …」。没有阶段记录时不应出现。
 9. **must-stop 确认**：让 agent 运行 `rm -rf build`（或 `git push --force`），Cursor 应弹出命令确认，提示里带 `jstack must-stop:`；取消后命令不执行。

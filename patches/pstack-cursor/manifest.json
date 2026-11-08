@@ -1,0 +1,13 @@
+{
+  "displayName": "pstack",
+  "logo": "assets/logo.png",
+  "category": "developer-tools",
+  "tags": [
+    "workflow",
+    "principles",
+    "review",
+    "planning"
+  ],
+  "skills": "./skills/",
+  "agents": "./agents/"
+}

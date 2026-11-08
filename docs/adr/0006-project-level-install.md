@@ -43,7 +43,7 @@ Claude Code 有 `--scope project`，其余 harness 只有用户级安装；四�
   "version": 1,
   "jstack":  { "version": "0.1.0", "commit": "<jstack 仓库 commit>" },
   "vendor":  { "tree": "<vendor 目录内容哈希（路径 + 内容）>" },
-  "upstream": { "pstack": "<commit>", "pstack-cursor": "<commit>", "spec": "<commit>" },
+  "upstream": { "pstack": "<commit>", "spec": "<commit>" },
   "plugins": { "pstack": { "version": "<版本>" }, "spec": { "version": "<版本>" }, "flow": { "version": "<版本>" } },
   "harnesses": {
     "claude-code": { "scope": "project", "records": [".claude/skills/route", ".claude/agents/poteto-agent.md", "..."] },

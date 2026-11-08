@@ -3,8 +3,9 @@
 #   pstack  原版 pstack 的 Claude Code 版（cursor/plugins 的 harness/pstack/claude-code）
 #   spec    Matt Pocock skills 里负责需求澄清和任务拆解的几个（mattpocock/skills），产出交给 pstack 执行
 #   flow    jstack 自己写的衔接层（src/flow），按任务大小把 spec 和 pstack 接起来
-# 另外构建 Cursor 原生版 pstack（同一个上游的 pstack/ 树），单独放在 plugins/pstack-cursor，不进 Claude marketplace；
-# spec 和 flow 同时带 .claude-plugin 和 .cursor-plugin 两个 manifest，Claude Code 和 Cursor 共用同一份产物。
+# 另外从 plugins/pstack 转换出 Cursor 版 pstack，放在 plugins/pstack-cursor，不进 Claude marketplace；
+# 转换规则和替换文件在 patches/pstack-cursor/。spec 和 flow 同时带 .claude-plugin 和 .cursor-plugin
+# 两个 manifest，Claude Code 和 Cursor 共用同一份产物。
 #
 #   ./jstack install [--all] [--scope user|project] [--repo <dir>] [--dry-run]
 #                                                  默认装 Claude Code 用户级；--all 探测已装 harness 全部安装；
@@ -14,8 +15,9 @@
 #   ./jstack install-cursor                        把 pstack、spec、flow 复制到 ~/.cursor/plugins/local/
 #                                                  （Cursor 拒绝指向该目录之外的符号链接，所以只复制）
 #   ./jstack sync [插件 [ref]]                     拉取上游（不写插件就全部同步，ref 默认 main），然后 build
-#   ./jstack build                                 用 upstream/ + patches/（flow 用 src/flow）重建 plugins/
-#   ./jstack check [--smoke]                       校验构建产物、锁文件、Cursor 残留、frontmatter、skill 依赖、manifest、Pi package、阶段表提供者、评测题；
+#   ./jstack build                                 用 upstream/ + patches/（flow 用 src/flow）重建 plugins/，
+#                                                  并从 plugins/pstack 转换出 plugins/pstack-cursor
+#   ./jstack check [--smoke]                       校验构建产物、锁文件、Cursor 转换规则与残留、frontmatter、skill 依赖、manifest、Pi package、阶段表提供者、评测题；
 #                                                  --smoke 额外跑已安装 harness 的 headless smoke（需要模型和网络）
 #   ./jstack smoke [pi|omp|cursor|all]             跑 Pi/OMP/Cursor 的 headless smoke；Cursor 只做加载器和 route 检查
 #                                                  每条 headless 命令限时 JSTACK_SMOKE_TIMEOUT 秒（默认 600），超时先 TERM，10 秒后 KILL
@@ -41,7 +43,9 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 MARKETPLACE=jstack
 PLUGINS="pstack spec flow"
-CURSOR_PLUGINS="pstack-cursor"
+# Cursor 版 pstack 不是独立的插件 key：build 从 plugins/pstack 转换生成，规则在 patches/pstack-cursor/。
+PSTACK_CURSOR=$ROOT/plugins/pstack-cursor
+PSTACK_CURSOR_PATCHES=$ROOT/patches/pstack-cursor
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
@@ -56,14 +60,9 @@ use_plugin() {
 	LOCK="$ROOT/upstream/$PLUGIN.lock.json"
 	case $PLUGIN in
 	pstack)
+		# Cursor 版 pstack 不再单独同步：build 从这棵 Claude 树转换生成 plugins/pstack-cursor。
 		UPSTREAM_REPO=https://github.com/cursor/plugins.git
 		UPSTREAM_PATH=harness/pstack/claude-code
-		;;
-	pstack-cursor)
-		# Cursor 原生 pstack 树。manifest 是 .cursor-plugin/plugin.json，名字仍是 pstack。
-		UPSTREAM_REPO=https://github.com/cursor/plugins.git
-		UPSTREAM_PATH=pstack
-		MANIFEST=.cursor-plugin/plugin.json
 		;;
 	spec)
 		# 只取需求澄清、任务拆解的 5 个 skill（grill-with-docs 到 handoff），加上它们运行时要用的：
@@ -88,7 +87,7 @@ use_plugin() {
 		# jstack 自己的插件，没有上游：源码在 src/flow，版本基数取它自己的 plugin.json。
 		OWN=1 VENDOR="$ROOT/src/$PLUGIN" LOCK="$ROOT/src/$PLUGIN/.claude-plugin/plugin.json"
 		;;
-	*) die "没有插件 ${PLUGIN}，可选：$PLUGINS $CURSOR_PLUGINS" ;;
+	*) die "没有插件 ${PLUGIN}，可选：$PLUGINS（pstack-cursor 由 build 从 pstack 转换生成）" ;;
 	esac
 	PATCHES="$ROOT/patches/$PLUGIN"
 	OUT="$ROOT/plugins/$PLUGIN"
@@ -171,12 +170,119 @@ build_plugin() {
 	say "✓ 已构建 plugins/${PLUGIN}，版本 $(json_get version "$OUT/$MANIFEST")，打了 ${#patches[@]} 个补丁"
 }
 
+# Cursor 转换规则表：patches/pstack-cursor/rules.tsv。跳过注释和空行。
+cursor_rules() {
+	[ -f "$PSTACK_CURSOR_PATCHES/rules.tsv" ] || die "缺少 patches/pstack-cursor/rules.tsv"
+	awk -F '\t' '!/^#/ && NF >= 3 { print }' "$PSTACK_CURSOR_PATCHES/rules.tsv"
+}
+
+cursor_rule_kind_ok() {
+	case $1 in
+	drop-paragraph | replace | replace-line | copy-file | manifest) return 0 ;;
+	esac
+	return 1
+}
+
+# 规则在已构建的 Claude 树 $1 里命中的文件；copy-file / manifest 的目标总是算一处。
+cursor_rule_targets() { # <dir> <kind> <scope> <from>
+	local dir=$1 kind=$2 scope=$3 from=$4 f
+	if [ "$from" = - ]; then from=; fi
+	case $kind in
+	copy-file | manifest)
+		printf '%s\n' "$dir/$scope"
+		return 0
+		;;
+	esac
+	for f in "$dir"/$scope; do
+		[ -f "$f" ] || continue
+		case $kind in
+		drop-paragraph | replace) grep -qF -- "$from" "$f" && printf '%s\n' "$f" ;;
+		replace-line) grep -qxF -- "$from" "$f" && printf '%s\n' "$f" ;;
+		esac
+	done
+}
+
+# 把已构建的 Claude pstack 树 $1 原地转换成 Cursor 产物：按规则改 skill/agent、删 .claude-plugin、
+# 用 manifest.json 合并出 .cursor-plugin/plugin.json，最后按转换后的内容写版本号。
+convert_pstack_cursor() {
+	local dest=$1 id kind scope from to f version hash claude_manifest
+	claude_manifest=$dest/.claude-plugin/plugin.json
+	[ -f "$claude_manifest" ] || die "${dest#"$ROOT"/} 里没有 .claude-plugin/plugin.json"
+	version=$(json_get version "$claude_manifest")
+	version=${version%%+jstack.*}
+	cp "$claude_manifest" "$WORK/pstack-cursor-claude-manifest.json"
+	rm -rf "$dest/.claude-plugin"
+	cursor_rules >"$WORK/pstack-cursor-rules"
+	while IFS=$'\t' read -r id kind scope from to; do
+		cursor_rule_kind_ok "$kind" || die "Cursor 转换规则 ${id} 的 kind 不认识：${kind}"
+		if [ "$from" = - ]; then from=; fi
+		if [ "$to" = - ]; then to=; fi
+		case $kind in
+		drop-paragraph | replace | replace-line)
+			for f in "$dest"/$scope; do
+				[ -f "$f" ] || continue
+				case $kind in
+				drop-paragraph)
+					grep -qF -- "$from" "$f" || continue
+					awk -v from="$from" 'skip && $0 == "" { skip = 0; next } { skip = 0 } $0 == from { skip = 1; next } { print }' "$f" >"$f.tmp"
+					;;
+				replace)
+					grep -qF -- "$from" "$f" || continue
+					awk -v from="$from" -v to="$to" '{ i = index($0, from); if (i) $0 = substr($0, 1, i - 1) to substr($0, i + length(from)); print }' "$f" >"$f.tmp"
+					;;
+				replace-line)
+					grep -qxF -- "$from" "$f" || continue
+					awk -v from="$from" -v to="$to" '$0 == from { $0 = to } { print }' "$f" >"$f.tmp"
+					;;
+				esac
+				mv "$f.tmp" "$f"
+			done
+			;;
+		copy-file)
+			[ -f "$PSTACK_CURSOR_PATCHES/$to" ] || die "Cursor 转换规则 ${id} 缺少 patches/pstack-cursor/${to}"
+			mkdir -p "$(dirname "$dest/$scope")"
+			cp "$PSTACK_CURSOR_PATCHES/$to" "$dest/$scope"
+			case $scope in *.sh) chmod 755 "$dest/$scope" ;; esac
+			;;
+		manifest)
+			[ -f "$PSTACK_CURSOR_PATCHES/$to" ] || die "Cursor 转换规则 ${id} 缺少 patches/pstack-cursor/${to}"
+			mkdir -p "$(dirname "$dest/$scope")"
+			jq -s '.[0] + .[1] | del(."$schema")' "$WORK/pstack-cursor-claude-manifest.json" \
+				"$PSTACK_CURSOR_PATCHES/$to" >"$dest/$scope" || die "生成 Cursor manifest 失败"
+			;;
+		esac
+	done <"$WORK/pstack-cursor-rules"
+	hash=$(tree_hash "$dest" ! -path "./.cursor-plugin/plugin.json" | cut -c1-7)
+	set_manifest_version "$dest/.cursor-plugin/plugin.json" "$version+jstack.$hash"
+	[ "$(json_get version "$dest/.cursor-plugin/plugin.json")" = "$version+jstack.$hash" ] ||
+		die "Cursor manifest 里没有 version"
+}
+
+# 从 upstream/pstack 加补丁构建出 Claude 树，再转换成 Cursor 树到 $1。
+build_pstack_cursor() {
+	local dest=$1 src="$WORK/pstack-cursor-src"
+	rm -rf "$src" "$dest"
+	use_plugin pstack
+	build_into "$src"
+	mkdir -p "$dest"
+	rsync -a "$src/" "$dest/"
+	convert_pstack_cursor "$dest"
+}
+
+build_cursor_plugin() {
+	build_pstack_cursor "$WORK/build/pstack-cursor"
+	mkdir -p "$PSTACK_CURSOR"
+	rsync -rlpc --delete --exclude node_modules "$WORK/build/pstack-cursor/" "$PSTACK_CURSOR/"
+	say "✓ 已生成 plugins/pstack-cursor，版本 $(json_get version "$PSTACK_CURSOR/.cursor-plugin/plugin.json")，$(cursor_rules | wc -l | tr -d ' ') 条转换规则"
+}
+
 cmd_build() {
 	local p
-	for p in $PLUGINS $CURSOR_PLUGINS; do
+	for p in $PLUGINS; do
 		use_plugin "$p"
 		build_plugin
 	done
+	build_cursor_plugin
 }
 
 sync_plugin() {
@@ -228,7 +334,7 @@ EOF
 cmd_sync() {
 	local p
 	[ $# -le 2 ] || die "用法：./jstack sync [插件 [ref]]"
-	for p in ${1:-$PLUGINS $CURSOR_PLUGINS}; do
+	for p in ${1:-$PLUGINS}; do
 		use_plugin "$p"
 		[ -z "$OWN" ] || { [ -z "${1:-}" ] || die "$p 没有上游，直接改 src/$p"; continue; }
 		sync_plugin "${2:-main}"
@@ -494,6 +600,21 @@ JS
 		return 1
 	fi
 	say "✓ Cursor: $(cat "$out")"
+	# pstack 必须是由 Claude 树转换出来的 Cursor 产物：安装副本与构建产物一致，且没有适配提示。
+	if ! diff -rq -x .DS_Store "$PSTACK_CURSOR" "$root/pstack" >/dev/null 2>&1; then
+		say "✗ Cursor: 安装的 pstack 与 plugins/pstack-cursor 不一致（先 ./jstack install-cursor）"
+		return 1
+	fi
+	if grep -rqF 'If you are not in Cursor, read [the harness adapter]' "$root/pstack/skills"; then
+		say "✗ Cursor: 安装的 pstack skills 里还有 adapter 提示，转换没有生效"
+		return 1
+	fi
+	if ! grep -qxF 'is_background: true' "$root/pstack/agents/poteto-agent.md" ||
+		grep -qxF 'background: true' "$root/pstack/agents/poteto-agent.md"; then
+		say "✗ Cursor: 安装的 poteto-agent 不是 Cursor 的 is_background frontmatter"
+		return 1
+	fi
+	say "✓ Cursor: pstack 是 Claude 树转换产物（无 adapter 提示，agent 用 is_background）"
 	# 按 Cursor 的 hook 协议喂输入，确认三个门禁脚本在安装副本里都能工作。
 	mkdir -p "$WORK/smoke/state"
 	printf 'path execute,verify\nstage execute\n' >"$WORK/smoke/state/cursor-smoke"
@@ -1494,6 +1615,105 @@ assert all(r["lock"] == "ok" for r in vendor), vendor
 	return $rc
 }
 
+# Cursor 版 pstack 由 plugins/pstack 转换生成。重跑一次转换，核对产物没有被手改；
+# 同时核对 rules.tsv 的每条规则都命中差异，转换改动的文件正好是规则命中的文件。
+check_pstack_cursor() {
+	local src="$WORK/check/pstack-cursor-src" out="$WORK/check/pstack-cursor"
+	local rc=0 id kind scope from to n total=0 targets="$WORK/cursor-targets"
+	local diffs skill_diffs agent_diffs want_skill want_agent unexpected manifest logo hits=
+	: >"$targets"
+	use_plugin pstack
+	build_into "$src"
+	cursor_rules >"$WORK/cursor-rules-check"
+	while IFS=$'\t' read -r id kind scope from to; do
+		if ! cursor_rule_kind_ok "$kind"; then
+			say "✗ Cursor 转换规则 ${id} 的 kind 不认识：${kind}"
+			rc=1
+			continue
+		fi
+		if [ "$from" = - ]; then from=; fi
+		n=$(cursor_rule_targets "$src" "$kind" "$scope" "$from" | wc -l | tr -d ' ')
+		if [ "$n" -eq 0 ]; then
+			say "✗ Cursor 转换规则 ${id} 在 pstack 构建结果里没有命中差异（上游可能改了措辞，同步规则表）"
+			rc=1
+		fi
+		total=$((total + 1))
+		cursor_rule_targets "$src" "$kind" "$scope" "$from" >>"$targets"
+	done <"$WORK/cursor-rules-check"
+
+	rm -rf "$out"
+	mkdir -p "$out"
+	rsync -a "$src/" "$out/"
+	convert_pstack_cursor "$out"
+	if diff -rq -x node_modules "$out" "$PSTACK_CURSOR" >"$WORK/cursor-diff" 2>&1 &&
+		diff <(cd "$out" && find . -type f -perm -u+x ! -path '*/node_modules/*' | sort) \
+			<(cd "$PSTACK_CURSOR" && find . -type f -perm -u+x ! -path '*/node_modules/*' | sort) >/dev/null; then
+		say "✓ plugins/pstack-cursor 与 plugins/pstack 的 Cursor 转换结果一致（$(json_get version "$PSTACK_CURSOR/.cursor-plugin/plugin.json")）"
+	else
+		say "✗ plugins/pstack-cursor 与转换结果不一致：可能被手改过，或改了转换规则后没有运行 ./jstack build"
+		sed 's/^/  /' "$WORK/cursor-diff" | head -20
+		rc=1
+	fi
+
+	# 转换只允许改规则命中的文件，外加增删 .claude-plugin / .cursor-plugin / assets。
+	diffs=$(diff -rq "$src" "$out" 2>&1 || true)
+	skill_diffs=$(printf '%s\n' "$diffs" | grep -cE '/skills/.* differ$' || true)
+	agent_diffs=$(printf '%s\n' "$diffs" | grep -cE '/agents/.* differ$' || true)
+	want_skill=$(grep -F '/skills/' "$targets" | sort -u | wc -l | tr -d ' ')
+	want_agent=$(grep -F '/agents/' "$targets" | sort -u | wc -l | tr -d ' ')
+	unexpected=$(printf '%s\n' "$diffs" |
+		grep -vE '/skills/.* differ$|/agents/.* differ$|Only in .*: \.claude-plugin$|Only in .*: \.cursor-plugin$|Only in .*: assets$' || true)
+	if [ -z "$unexpected" ] && [ "$skill_diffs" -eq "$want_skill" ] && [ "$agent_diffs" -eq "$want_agent" ]; then
+		say "✓ Cursor 转换只改动规则覆盖的文件：skills/ ${skill_diffs} 个、agents/ ${agent_diffs} 个（${total} 条规则）"
+	else
+		say "✗ Cursor 转换改动的文件与规则表不一致：skills/ ${skill_diffs}（规则 ${want_skill}）、agents/ ${agent_diffs}（规则 ${want_agent}）"
+		[ -z "$unexpected" ] || printf '%s\n' "$unexpected" | sed "s|$WORK/check/||g; s/^/  /" | head -20
+		rc=1
+	fi
+
+	manifest="$PSTACK_CURSOR/.cursor-plugin/plugin.json"
+	if [ ! -f "$manifest" ]; then
+		say "✗ plugins/pstack-cursor 缺少 .cursor-plugin/plugin.json"
+		rc=1
+	else
+		[ "$(json_get name "$manifest")" = pstack ] || hits="${hits:+$hits, }name"
+		[ "$(json_get skills "$manifest")" = ./skills/ ] || hits="${hits:+$hits, }skills"
+		[ "$(json_get agents "$manifest")" = ./agents/ ] || hits="${hits:+$hits, }agents"
+		[ -f "$PSTACK_CURSOR/skills/poteto-mode/SKILL.md" ] || hits="${hits:+$hits, }poteto-mode"
+		[ -f "$PSTACK_CURSOR/agents/poteto-agent.md" ] || hits="${hits:+$hits, }poteto-agent"
+		logo=$(json_get logo "$manifest")
+		if [ -n "$logo" ] && [ ! -f "$PSTACK_CURSOR/$logo" ]; then
+			hits="${hits:+$hits, }logo"
+		fi
+		[ ! -d "$PSTACK_CURSOR/.claude-plugin" ] || hits="${hits:+$hits, }.claude-plugin 残留"
+		if [ -n "$hits" ]; then
+			say "✗ plugins/pstack-cursor 不是完整的 Cursor pstack 产物：${hits}"
+			rc=1
+		else
+			say "✓ plugins/pstack-cursor 是 Cursor 插件 pstack（$(json_get version "$manifest")），skills、agents 和 logo 齐全"
+		fi
+	fi
+	if grep -rqF 'If you are not in Cursor, read [the harness adapter]' "$PSTACK_CURSOR/skills" 2>/dev/null; then
+		say "✗ plugins/pstack-cursor 的 skill 里还有 adapter 提示，转换规则没有覆盖"
+		rc=1
+	fi
+	if grep -rqE '^background: true$' "$PSTACK_CURSOR/agents" 2>/dev/null; then
+		say "✗ plugins/pstack-cursor 的 agent 里还有 Claude Code 的 background 字段"
+		rc=1
+	fi
+	if ! grep -qF '~/.cursor/projects' "$PSTACK_CURSOR/skills/poteto-mode/scripts/worktree-audit.sh" ||
+		grep -qF '~/.claude/projects' "$PSTACK_CURSOR/skills/poteto-mode/scripts/worktree-audit.sh"; then
+		say "✗ plugins/pstack-cursor 的 worktree-audit.sh 没有换成 Cursor 的会话记录路径"
+		rc=1
+	fi
+	if ! grep -qF '[Claude Code adapter](../../docs/harness/claude-code.md)' "$PSTACK_CURSOR/skills/poteto-help/SKILL.md" ||
+		grep -qF '[harness adapter](../../docs/harness/agents.md)' "$PSTACK_CURSOR/skills/poteto-help/SKILL.md"; then
+		say "✗ plugins/pstack-cursor 的 poteto-help 没有换回 Claude Code adapter 链接"
+		rc=1
+	fi
+	return $rc
+}
+
 cmd_check() {
 	local rc=0 p hits failed= smoke= hooks_rel=
 	while [ $# -gt 0 ]; do
@@ -1502,7 +1722,7 @@ cmd_check() {
 		*) die "未知参数：$1（可用 --smoke）" ;;
 		esac
 	done
-	for p in $PLUGINS $CURSOR_PLUGINS; do
+	for p in $PLUGINS; do
 		use_plugin "$p"
 		build_into "$WORK/check/$p"
 		if diff -rq -x node_modules "$WORK/check/$p" "$OUT" >"$WORK/diff" 2>&1 &&
@@ -1522,21 +1742,6 @@ cmd_check() {
 		else
 			say "✗ upstream/$PLUGIN 与 upstream/$PLUGIN.lock.json 记录的内容对不上：副本只能由 ./jstack sync 写入"
 			rc=1
-		fi
-		if [ "$PLUGIN" = pstack-cursor ]; then
-			# Cursor 原生产物：manifest 用 .cursor-plugin，frontmatter 和脚本按 Cursor 约定，不做 Claude Code 检查。
-			hits=
-			[ -f "$OUT/.cursor-plugin/plugin.json" ] || hits="${hits:+$hits, }manifest"
-			[ "$(json_get name "$OUT/.cursor-plugin/plugin.json" 2>/dev/null || true)" = pstack ] || hits="${hits:+$hits, }name"
-			[ -f "$OUT/skills/poteto-mode/SKILL.md" ] || hits="${hits:+$hits, }skills"
-			[ -f "$OUT/agents/poteto-agent.md" ] || hits="${hits:+$hits, }agents"
-			if [ -n "$hits" ]; then
-				say "✗ plugins/$PLUGIN 不是完整的 Cursor pstack 产物：缺少 ${hits}。"
-				rc=1
-			else
-				say "✓ plugins/$PLUGIN 是 Cursor 插件 pstack（$(json_get version "$OUT/.cursor-plugin/plugin.json")），skills 和 agents 齐全"
-			fi
-			continue
 		fi
 		# 上游 adapter 只翻译 Markdown 里的 Cursor 名称，脚本里写死的 Cursor 路径要靠补丁修。
 		if hits=$(grep -rnIE '(\$HOME|~)/\.cursor/|agent-transcripts' --exclude='*.md' --exclude-dir=node_modules "$OUT"); then
@@ -1617,6 +1822,7 @@ cmd_check() {
 			fi
 		fi
 	done
+	check_pstack_cursor || rc=1
 	# Pi package：根 package.json 的 pi.skills 必须覆盖三个插件的 skill 目录，pi.extensions 指向 flow 的门禁扩展，且都真实存在。
 	hits=
 	if [ ! -f "$ROOT/package.json" ]; then
@@ -3038,7 +3244,7 @@ write_lock() { # <仓库> <harness>...：install 是唯一写 lock 的命令
 	tree=$(tree_hash "$vendor")
 	ver=$(json_get version "$ROOT/package.json")
 	commit=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || true)
-	upstream=$(for h in pstack pstack-cursor spec; do
+	upstream=$(for h in pstack spec; do
 		[ -f "$ROOT/upstream/$h.lock.json" ] || continue
 		printf '%s\t%s\n' "$h" "$(jq -r '.sha // ""' "$ROOT/upstream/$h.lock.json")"
 	done | jq -Rn '[inputs | split("\t") | {key: .[0], value: .[1]}] | from_entries')
@@ -3276,7 +3482,7 @@ cmd_install_cursor() {
 		*) die "未知参数：$1（install-cursor 默认复制，--copy 可省略）" ;;
 		esac
 	done
-	# pstack 用 Cursor 原生树；spec 和 flow 用带双 manifest 的同一份产物。
+	# pstack 用 plugins/pstack 转换出的 Cursor 树；spec 和 flow 用带双 manifest 的同一份产物。
 	for name in pstack spec flow; do
 		case $name in
 		pstack) src="$ROOT/plugins/pstack-cursor" ;;
