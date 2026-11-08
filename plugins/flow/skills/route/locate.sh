@@ -10,6 +10,7 @@
 #   Pi package             <包>/<插件>/skills/...，或 node_modules 下同级的 <插件>、jstack-<插件>、@jstack/<插件>
 #   OMP marketplace 缓存   cache/plugins/jstack___<插件>___<版本>/skills/...
 #   Cursor 本地插件        <Cursor 插件根>/local/<插件>/skills/...
+#   Codex marketplace 缓存 <CODEX_HOME>/plugins/cache/<marketplace>/<插件>/<版本>/skills/...
 #   入口软链               <仓库>/.agents/skills/<入口> 链进任一安装树时，按物理路径找到兄弟插件
 # 缓存里同一插件留有多个版本时，取最近写入的那个。
 # skill 目录可能以软链暴露（项目级接入的 .agents/skills 等），所以先解析脚本自身的物理路径再取安装根。
@@ -29,6 +30,7 @@ pi_npm=$pi_agent/npm/node_modules
 omp_plugins=${OMP_PLUGINS_DIR:-$home/.omp/plugins}
 claude_plugins=${CLAUDE_PLUGINS_DIR:-$home/.claude/plugins}
 cursor_plugins=${CURSOR_PLUGINS_DIR:-$home/.cursor/plugins}
+codex_plugins=${CODEX_HOME:-$home/.codex}/plugins
 . "$(dirname "$src")/lib.sh" 2>/dev/null || true
 stages=${JSTACK_STAGES_FILE:-$(dirname "$src")/stages.md}
 [ -n "${JSTACK_STAGES_FILE:-}" ] || stages=$(jstack_stages_path "$stages")
@@ -38,6 +40,7 @@ case $root in
 */.cursor/plugins/*) harness=cursor ;;
 */.omp/plugins/*) harness=omp ;;
 */.pi/agent/* | */.pi/npm/* | */.pi/git/*) harness=pi ;;
+*/.codex/plugins/*) harness=codex ;;
 *) harness=claude ;;
 esac
 
@@ -134,6 +137,14 @@ find_skill() {
 	cursor)
 		look_plugin_root "$cursor_plugins/local/$plugin" "$name" && return 0
 		;;
+	codex)
+		look_roots "$name" \
+			"$codex_plugins/cache/jstack/$plugin" \
+			"$codex_plugins/cache/jstack/plugins/$plugin" && return 0
+		for r in $(ls -dt "$codex_plugins"/cache/*/"$plugin" 2>/dev/null || true); do
+			look_plugin_root "$r" "$name" && return 0
+		done
+		;;
 	*)
 		look_plugin_root "$claude_plugins/cache/jstack/$plugin" "$name" && return 0
 		;;
@@ -166,7 +177,7 @@ while IFS= read -r tok; do
 	name=${rest%%/*} file=SKILL.md
 	[ "$rest" = "$name" ] || file=${rest#*/}
 	if ! find_skill "$plugin" "$name"; then
-		echo "locate: 找不到 ${tok}：${plugin} 插件里没有 ${name} skill，已检查 Claude Code、Pi、OMP、Cursor 的安装布局" >&2
+		echo "locate: 找不到 ${tok}：${plugin} 插件里没有 ${name} skill，已检查 Claude Code、Pi、OMP、Cursor、Codex 的安装布局" >&2
 		missing=1
 	elif [ ! -f "$found/$file" ]; then
 		echo "locate: 找不到 ${tok}：${found} 里没有 ${file}" >&2

@@ -2,15 +2,15 @@
 
 flow 的三个门禁（阶段提示、验证门禁、红线守卫）的判定逻辑都在 `src/flow/hooks/*.sh`，与 harness 无关。各 harness 用自己的事件把输入翻译成 Claude Code 的 hook 协议，再执行同一个脚本；状态文件格式和会话 id 规则也共用 `lib.sh`。
 
-本文件记录每个 harness 能承载哪些门禁、怎么接、哪些地方降级。Codex 不在 #20 的范围（归 #16）。
+本文件记录每个 harness 能承载哪些门禁、怎么接、哪些地方降级。Codex 的会话 id 已接，三个门禁还没接；它自带 hooks，接入是后续任务。
 
 ## 能力矩阵
 
-| 门禁 | Claude Code | Cursor | Pi | OMP |
-|---|---|---|---|---|
-| 阶段提示（UserPromptSubmit） | 支持（原生 hooks） | 需适配（`beforeSubmitPrompt` → `additional_context`） | 需适配（`before_agent_start` → 隐藏消息） | 需适配（`before_agent_start` → 隐藏消息） |
-| 验证门禁（Stop） | 支持（原生 hooks，`stop_hook_active` 由 harness 维护） | 需适配（`stop` → `followup_message`，`loop_limit` 3） | 需适配（`agent_before_settle`，扩展自己限 3 次） | 需适配（`session_stop` → `decision: block`，`stop_hook_active` 由 harness 维护） |
-| 红线守卫（PreToolUse） | 支持（原生 hooks，`permissionDecision: ask`） | 需适配（`beforeShellExecution` → `permission: ask`；`preToolUse` 降级 `deny`） | 需适配（`tool_call` → 确认框或 `block`） | 需适配（`tool_call` → 确认框或 `block`） |
+| 门禁 | Claude Code | Cursor | Pi | OMP | Codex |
+|---|---|---|---|---|---|
+| 阶段提示（UserPromptSubmit） | 支持（原生 hooks） | 需适配（`beforeSubmitPrompt` → `additional_context`） | 需适配（`before_agent_start` → 隐藏消息） | 需适配（`before_agent_start` → 隐藏消息） | 未接（Codex 0.166 有 `UserPromptSubmit`） |
+| 验证门禁（Stop） | 支持（原生 hooks，`stop_hook_active` 由 harness 维护） | 需适配（`stop` → `followup_message`，`loop_limit` 3） | 需适配（`agent_before_settle`，扩展自己限 3 次） | 需适配（`session_stop` → `decision: block`，`stop_hook_active` 由 harness 维护） | 未接（有 `Stop` 事件） |
+| 红线守卫（PreToolUse） | 支持（原生 hooks，`permissionDecision: ask`） | 需适配（`beforeShellExecution` → `permission: ask`；`preToolUse` 降级 `deny`） | 需适配（`tool_call` → 确认框或 `block`） | 需适配（`tool_call` → 确认框或 `block`） | 未接（有 `PreToolUse`） |
 
 “需适配”不是没实现：三个门禁在 Pi 和 OMP 上都已实现，只是需要扩展层翻译协议，并有下面的降级。
 
@@ -32,11 +32,13 @@ flow 的三个门禁（阶段提示、验证门禁、红线守卫）的判定逻
 3. `PI_SESSION_ID`
 4. `CLAUDE_CODE_SESSION_ID`
 5. `CURSOR_CONVERSATION_ID`
+6. `CODEX_SESSION_ID`
 
 - Claude Code 在 shell 里导出 `CLAUDE_CODE_SESSION_ID`，hook 输入里也带 `session_id`。
 - Cursor 导出 `CURSOR_CONVERSATION_ID`，hook 输入里是 `conversation_id`；两者都是 UUID，URI 编码后不变。
 - Pi 给 bash 工具注入 `PI_SESSION_ID`；扩展用 `ctx.sessionManager.getSessionId()` 调 hook。
 - OMP 不向 shell 注入会话 id。`extensions/omp.ts` 在 `session_start` / `session_switch` 把根会话 id 写进进程环境 `JSTACK_SESSION_ID`，子 shell 继承。子 agent 会话（`sessionManager.getHeader().parentSession` 非空）不写，继承根会话的 id，和根会话共用同一份阶段记录。
+- Codex 给 `shell` 工具的环境导出 `CODEX_SESSION_ID`（与 `CODEX_THREAD_ID` 同值），`codex exec` 里同样可用；`stage.sh` 在 Codex 里能照常记阶段和证据。
 
 ## 降级
 
@@ -45,7 +47,7 @@ flow 的三个门禁（阶段提示、验证门禁、红线守卫）的判定逻
 3. **Cursor 的 Stop 门禁拿不到最后一条回复**：标了 `ask` 时直接放行，无法核对回复里是否真的提了问题；`loop_limit` 3 兜底。
 4. **OMP 的扩展目前只装在用户级**：`./jstack install --scope project` 不写 `~/.omp/agent/extensions/`（项目级扩展要写 `.omp/config.yml`，尚未接入）。扩展入口写的是最后一次用户级 `./jstack install` 的 checkout 绝对路径，与项目 vendor 的版本可能漂移；更新或移动 checkout 后重跑一次用户级 install。扩展缺失时 OMP 里没有门禁，`stage.sh` 打印“这个 harness 没有会话 id”。
 5. **子 agent 会话不跑门禁**：Pi / OMP 的扩展跳过 `parentSession` 非空的会话。子 agent 不该也不能替主会话记证据；它的 shell 继承根会话 id，只读同一份状态。
-6. **Codex 三个门禁都不支持**（#16）：没有 hook 事件，也拿不到会话 id，`stage.sh` 只打印一行说明，什么都不做。
+6. **Codex 三个门禁都还没接**：codex-cli 0.166.0 自带 hooks（`UserPromptSubmit`、`PreToolUse`、`Stop` 等，配置在 `~/.codex/hooks.json`、仓库 `.codex/hooks.json`，插件也可以带 `hooks/hooks.json`），也给 shell 导出会话 id，所以三个门禁都接得上；目前 flow 还没有 Codex 的 hooks 配置和协议适配。`stage.sh` 在 Codex 里可用，只是门禁不触发，收尾报告照写未生效。
 
 ## 收尾报告
 
@@ -53,6 +55,7 @@ route 的收尾报告（`src/flow/skills/route/SKILL.md` 第 5 节）要写明�
 
 - `stage.sh` 打印“这个 harness 没有会话 id” → 报告里写“本会话阶段门禁未生效（<harness>）”。
 - OMP 会话里没有 `~/.omp/agent/extensions/jstack-flow-gates.ts` → 同样视为未生效。
+- Codex 会话（`CODEX_SESSION_ID` 存在）→ 三个门禁还没接，同样写未生效。
 - 其余情况不写。
 
 ## 验证

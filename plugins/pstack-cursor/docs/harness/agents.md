@@ -11,6 +11,7 @@ Cursor's native pstack tree does not read this file. The copy that ships to Curs
 | An `Agent` tool with an `effort` parameter, a `Skill` tool, or agents named `pstack:*`; transcripts under `~/.claude/projects/` | Claude Code | [Claude Code](#claude-code) |
 | An `Agent` tool with `thinking` and `get_subagent_result`; `/skill:<name>` commands; sessions under `~/.pi/agent/sessions/` | Pi | [Pi](#pi) |
 | A `task` tool with `agent`, `task`, `context`, and `name`; `skill://<name>` or `manage_skill`; sessions under `~/.omp/agent/sessions/` | OMP | [OMP](#omp) |
+| A `spawn_agent` tool with `agent_type`; `shell` and `apply_patch` instead of file tools; skills written `$<plugin>:<name>`; sessions under `~/.codex/sessions/` | Codex | [Codex](#codex) |
 
 Use the first row whose tools the session actually exposes. If none match, say which harness you could not identify, then use the Cursor names as written and drop any field the tool rejects.
 
@@ -263,3 +264,90 @@ An agent file's `model` and `thinking` are authoritative. The `task` call has no
 | Cursor built-ins and `cursor-team-kit`: `create-skill`, `/loop`, `/deslop`, `control-ui`, `control-cli` | Not built into OMP. Author `SKILL.md` with `manage_skill` or directly, run the loop in the session or the job runner, and use the repo's own UI or CLI driver. Skip a step that needs the Cursor built-in itself with the line. |
 
 When a step needs a Cursor-only feature, put one line in your reply, `Skipped in OMP: <step>. <reason>.`, then go on to the next step. Do not stop, ask, or retry. When a later step needs what the skipped step made, such as a URL or a key, leave a placeholder and name it in the line.
+
+## Codex
+
+Codex is the OpenAI `codex` CLI. It reads Claude Code plugin manifests, so jstack installs as a Codex plugin, and `./jstack install --all --scope project` links the entry skills into `.agents/skills/` and writes the custom agents as `.codex/agents/*.toml`. Only the rows below differ from the Cursor names; map everything else as written.
+
+### Tools
+
+| Cursor | Codex |
+| --- | --- |
+| `Read`, `Write`, `Edit` | No file tools. Read with `shell` (`sed -n`, `rg`); write only through `apply_patch`, one `*** Begin Patch` block with `*** Update File:`, `*** Add File:`, or `*** Delete File:` hunks. |
+| `Bash` | `shell`. |
+| `Grep`, `Glob` | `shell` with `rg`. |
+| `AskQuestion` | `request_user_input` when the session lists it; `codex exec` has no such tool, so ask in plain text. |
+| Open a todolist | `update_plan`. |
+| `Task` | `spawn_agent` (see below). |
+| An image to look at | `view_image`. |
+
+### Subagent tool and parameters
+
+Codex subagents are threads started with `spawn_agent`. In codex-cli 0.166.0 the collab tools are exposed only when multi-agent v2 is on: `codex features enable multi_agent_v2` once, or `-c features.multi_agent_v2=true` on the command line. Without it the model is not offered `spawn_agent`; do the work in the main session and say so.
+
+| Cursor | Codex |
+| --- | --- |
+| `Task` | `spawn_agent` with `agent_type`, the task text, and optionally `task_name`, `model`, and the reasoning effort field the schema shows. The follow-ups are whatever collab tools the session lists, such as `wait_agent` / `wait`, `send_message` / `send_input`, `close_agent`, `list_agents`; never call one it does not list. |
+| `subagent_type: generalPurpose` | `agent_type: "default"`. The built-ins are `default`, `worker` for code work, and `explorer` for read-only work. |
+| `poteto-agent`, `comment-sicko` | Custom agents in TOML. jstack's project install writes `.codex/agents/poteto-agent.toml` and `.codex/agents/comment-sicko.toml`; user-wide copies go in `~/.codex/agents/`. Each has `name`, `description`, and `developer_instructions`, plus optional `model` and `model_reasoning_effort`. If the file is missing, spawn `default` and put poteto-mode's skill-read line in the task. |
+| `readonly: true` | `agent_type: "explorer"`. The brief also says "do not edit files", and you check `git status` afterward. |
+| `readonly: false` | `agent_type: "worker"` for a bounded code change, `default` otherwise. |
+| `environment: "cloud"` | No cloud agents. Run locally, or create a `git worktree` yourself and name its path in the task. Skip a step that needs the cloud machine. |
+| `environment: "local"` | Omit. |
+| `cloud_base_branch: <b>` | Tell the worker to check out `<b>` first. |
+| `resume` | `send_message` while the agent is still open; otherwise spawn a fresh agent and paste the earlier result into the task. |
+| `file_attachments` | List the paths in the task. |
+| `run_in_background: true` | Omit. A spawned agent already runs in the background; wait only when the next step needs its result. |
+
+`spawn_agent` itself tells the model to delegate only when the user, `AGENTS.md`, or a skill asks for subagents. poteto-mode asks, so its subagent steps are allowed.
+
+### Models and reasoning effort
+
+| Cursor | Codex |
+| --- | --- |
+| `claude-<family>-<version>-<effort>[-fast]`, such as `claude-opus-5-5-xhigh` | `model: "<model>"` and `reasoning_effort: "<effort>"` on `spawn_agent`, or `-m <model>` and `-c model_reasoning_effort="<effort>"` on the CLI. Drop `-fast`; Codex has no fast mode. |
+| A `grok-*`, `gpt-*`, or other non-Claude slug | Same fields. Only use a model `codex debug models` lists; otherwise omit `model` so the agent inherits the parent model, and say so. |
+| `auto` or `inherit-parent` | Omit `model`. Subagents inherit the parent model by default. |
+| A role value `<model> <effort>`, such as `opus high` | `model: "<model>"` and `reasoning_effort: "high"`, or the matching `-m` / `-c` pair. |
+| The `pstack-models.mdc` rule, `~/.cursor/rules/pstack-models.mdc` | `~/.codex/AGENTS.md`, the user instruction file Codex loads in every session. It never reads `.mdc` files. If the role's line is missing, use the skill's default slug. |
+
+### Skill invocation
+
+| Cursor | Codex |
+| --- | --- |
+| `/name` or "the **name** skill" | `$<plugin>:<name>` for a skill that belongs to a plugin, such as `$flow:route` and `$pstack:poteto-mode`; a standalone skill in `.agents/skills/` is `$<name>`. There is no `Skill` tool; the skill loads from the prompt. `/skills` lists exactly what the session offers. |
+| Telling the user to run a pstack skill | `$pstack:<name>`, or `/skills` to pick from the catalog. There is no `/pstack:<name>` command. |
+| Installed pstack | `codex plugin marketplace add <checkout>` then `codex plugin add pstack@jstack`; the cache is `$CODEX_HOME/plugins/cache/jstack/pstack/<version>`, and `<pstack>` is that directory. A project-level `./jstack install --all --scope project` instead links the entry skills into `.agents/skills/`. |
+| `disable-model-invocation: true` | Not honored. Codex lists every skill it discovers, so pstack's entry skills are model-invocable too. |
+
+### Session and transcript roots
+
+| Cursor | Codex |
+| --- | --- |
+| Transcripts in `~/.cursor/projects/<slug>/agent-transcripts/` | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (older builds write `.jsonl.zst`); the session id is `session_meta.payload.session_id`. Read only the newest rollout for the current workspace. |
+| A subagent transcript beside the chat | Each spawned agent is its own thread with its own `rollout-*.jsonl` under the same sessions tree. |
+| `.cursor/skills/`, `~/.cursor/skills/` | `.agents/skills/` (project, walking up), `~/.agents/skills/` (user), and the skills inside installed plugins. |
+| `.cursor/rules/*.mdc`, always-applied rules | `AGENTS.md` (project, walking up) and `~/.codex/AGENTS.md`; Codex never reads `.mdc` files. |
+| `~/.cursor/plugins/`, `.cursor-plugin/plugin.json` | `$CODEX_HOME/plugins/cache/<marketplace>/<plugin>/<version>/`; the manifest Codex reads is `.claude-plugin/plugin.json`. |
+| `https://github.com/cursor/plugins/blob/main/pstack/<path>` | `<pstack>/<path>` when that file exists. Read the local copy, never fetch it. |
+
+### setup-pstack
+
+`setup-pstack` does not write Codex config. Print the role lines, then let the user apply them.
+
+- Detect. The detected models are the ones `codex debug models` lists, each with the reasoning efforts its entry allows.
+- Defaults. Map each default slug onto a catalog model and effort: `claude-opus-5-5-xhigh` is the catalog model used for judgment at `xhigh`, and `grok-4.7-xhigh-fast` is the same at `xhigh` without fast mode. If a slug has no catalog entry, write `inherit-parent`.
+- Print, don't write. Print the comment lines, the `# budget` line, and one line per role from step 5, and tell the user they can paste them into `~/.codex/AGENTS.md` (or the `~/.agents/AGENTS.md` it links to). Do not edit either file; the user owns them. Never put the role lines in a project `AGENTS.md`.
+- Custom agents. An agent TOML's `model` and `model_reasoning_effort` are authoritative. Leave them unset when the role line should control the agent.
+
+### Cursor-only skips
+
+| Cursor | Codex |
+| --- | --- |
+| Cursor Automations: routines, `update_state` routine calls, `api2.cursor.sh/automations` webhooks, routine wakes, and `SendToUser` secret requests | Skip with the line. |
+| Bugbot | Bugbot comments on a GitHub PR are ordinary review threads, so triage them with the forge command that the step gives. Skip a step that starts, waits for, or configures Bugbot when the PR has no Bugbot check or comment. |
+| Cursor cloud agents | Codex has no cloud agents. Run locally, or use a worktree you create yourself. Skip a step that needs the cloud agent itself, such as its dashboard status or its own machine. |
+| A built-in PR tool | Use the forge command that the step gives, such as `gh pr create`. That is not a skip, so write no line. |
+| Cursor built-ins and `cursor-team-kit`: `create-skill`, `/loop`, `/deslop`, `control-ui`, `control-cli` | Not built into Codex. Author `SKILL.md` directly, run the loop in the session or the job runner, and use the repo's own UI or CLI driver. Skip a step that needs the Cursor built-in itself with the line. |
+
+When a step needs a Cursor-only feature, put one line in your reply, `Skipped in Codex: <step>. <reason>.`, then go on to the next step. Do not stop, ask, or retry. When a later step needs what the skipped step made, such as a URL or a key, leave a placeholder and name it in the line.

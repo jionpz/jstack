@@ -654,6 +654,77 @@ JS
 	say "- Cursor 的交互部分（/route、澄清轮、subagent 面板）按 docs/testing/cursor.md 手动验证"
 }
 
+smoke_codex() {
+	command -v codex >/dev/null || { say "- 没找到 Codex CLI，跳过 Codex smoke"; return 0; }
+	local dir="$WORK/smoke/codex" out prompt s rc=0 bad=0 model=${JSTACK_SMOKE_CODEX_MODEL:-opencode-go/deepseek-v4.1-flash}
+	rm -rf "$dir"
+	mkdir -p "$dir"
+	# 项目级安装（只装 Codex）：入口 skill 进 .agents/skills，poteto-agent / comment-sicko 转成 .codex/agents/*.toml。
+	if ! install_project "$dir" 0 codex >"$dir/install.log" 2>&1; then
+		say "✗ Codex 项目级安装失败："
+		tail -10 "$dir/install.log" | sed 's/^/  /'
+		return 1
+	fi
+	# 隔离 CODEX_HOME：只软链真实 auth.json / config.toml，插件缓存留空，
+	# 这样测的是项目级安装本身，不会因为用户级装过 jstack 而蒙混过关。
+	local home="$dir/.codex-home" real=${CODEX_HOME:-$HOME/.codex} f
+	mkdir -p "$home"
+	for f in auth.json config.toml; do
+		[ -e "$real/$f" ] && ln -sfn "$real/$f" "$home/$f"
+	done
+	# 用一个固定模型跑，避免跟随用户的默认模型烧 premium（评测统一 deepseek flash xhigh）。
+	cat >"$dir/run-codex.sh" <<'SH'
+#!/usr/bin/env bash
+cd "$1" || exit 1
+export CODEX_HOME="$1/.codex-home"
+exec codex exec --ephemeral --skip-git-repo-check -s danger-full-access \
+	-m "$2" -c 'model_reasoning_effort="xhigh"' -c 'features.multi_agent_v2=true' "$3"
+SH
+	chmod +x "$dir/run-codex.sh"
+	# 1. skill 发现：Codex 给 skill 加上 <目录>: 前缀；.agents/skills 的入口要能看到。
+	out="$dir/skills.txt"
+	if smoke_run "Codex skill catalog" "$out" "$dir/run-codex.sh" "$dir" "$model" \
+		'List the names of the skills available to you that are named route or poteto-mode, one per line, then reply SKILLS-DONE. Do not use tools.'; then
+		for s in 'flow:route' 'pstack:poteto-mode'; do
+			grep -qF -- "$s" "$out" || {
+				say "✗ Codex skill catalog 缺少 $s"
+				rc=1 bad=1
+			}
+		done
+		[ "$bad" -eq 0 ] && say "✓ Codex: 项目 .agents/skills 里的入口可见（flow:route、pstack:poteto-mode）"
+	else
+		rc=1
+	fi
+	# 2. route 在 Codex 的项目安装布局（vendor）下运行 locate.sh，覆盖阶段表的全部提供者。
+	out="$dir/route.txt"
+	prompt='$flow:route 只运行 .agents/skills/route/locate.sh，逐行列出它打印的全部提供者，然后停止。不要进入任何阶段。'
+	if smoke_run "Codex route" "$out" "$dir/run-codex.sh" "$dir" "$model" "$prompt"; then
+		bad=0
+		for s in $(local_providers); do
+			grep -qF -- "$s" "$out" || {
+				say "✗ Codex route 输出缺少 $s"
+				rc=1 bad=1
+			}
+		done
+		[ "$bad" -eq 0 ] && say "✓ Codex: route 定位到阶段表的全部 $(local_providers | wc -l | tr -d ' ') 个提供者"
+	else
+		rc=1
+	fi
+	# 3. 自定义 agent：.codex/agents/poteto-agent.toml 由项目级安装生成，spawn_agent 按名字派出去。
+	out="$dir/subagent.txt"
+	prompt="Use spawn_agent exactly once with agent_type \"poteto-agent\" and the task \"Read $dir/.agents/skills/poteto-mode/SKILL.md only if you need it. Then compute 137+248 and reply with only the number. Do not start the workflow or edit files.\" Then wait for its reply and report that reply verbatim, then stop."
+	if smoke_run "Codex poteto-agent" "$out" "$dir/run-codex.sh" "$dir" "$model" "$prompt"; then
+		grep -qF '385' "$out" || {
+			say "✗ Codex: 没有看到 poteto-agent 的计算结果"
+			rc=1
+		}
+		grep -qF '385' "$out" && say "✓ Codex: poteto-agent 作为自定义 agent 派出并返回结果"
+	else
+		rc=1
+	fi
+	return $rc
+}
+
 cmd_smoke() {
 	local which=${1:-all} rc=0
 	command -v jq >/dev/null || die "smoke 需要 jq"
@@ -663,11 +734,13 @@ cmd_smoke() {
 		smoke_pi || rc=1
 		smoke_omp || rc=1
 		smoke_cursor || rc=1
+		smoke_codex || rc=1
 		;;
 	pi) smoke_pi || rc=1 ;;
 	omp) smoke_omp || rc=1 ;;
 	cursor) smoke_cursor || rc=1 ;;
-	*) die "用法：./jstack smoke [pi|omp|cursor|all]" ;;
+	codex) smoke_codex || rc=1 ;;
+	*) die "用法：./jstack smoke [pi|omp|cursor|codex|all]" ;;
 	esac
 	[ "$rc" -eq 0 ] && say "✓ smoke 通过" || say "✗ smoke 未通过"
 	return $rc
@@ -684,7 +757,7 @@ locate_in() {
 	local h=$1
 	shift
 	HOME=$h CLAUDE_PLUGINS_DIR=$h/.claude/plugins OMP_PLUGINS_DIR=$h/.omp/plugins \
-		CURSOR_PLUGINS_DIR=$h/.cursor/plugins PI_AGENT_DIR=$h/.pi/agent bash "$@"
+		CURSOR_PLUGINS_DIR=$h/.cursor/plugins PI_AGENT_DIR=$h/.pi/agent CODEX_HOME=$h/.codex bash "$@"
 }
 
 # 阶段表的每个提供者在每种安装布局下都找得到：用 plugins/ 产物复制出各布局，从布局自己的 flow 副本运行 locate.sh。
@@ -701,6 +774,9 @@ check_locate() {
 		mkdir -p "$L/claude/.claude/plugins/cache/jstack/$p"
 		cp -R "$ROOT/plugins/$p" "$L/claude/.claude/plugins/cache/jstack/$p/$v"
 		cp -R "$ROOT/plugins/$p" "$L/omp/.omp/plugins/cache/plugins/jstack___${p}___$v"
+		# Codex 安装时把 semver 的构建元数据（+jstack.<hash>）丢掉，缓存目录只留主版本。
+		mkdir -p "$L/codex/.codex/plugins/cache/jstack/$p"
+		cp -R "$ROOT/plugins/$p" "$L/codex/.codex/plugins/cache/jstack/$p/${v%%+*}"
 	done
 	cp -R "$ROOT/plugins/pstack-cursor" "$L/cursor/.cursor/plugins/local/pstack"
 	cp -R "$ROOT/plugins/spec" "$ROOT/plugins/flow" "$L/cursor/.cursor/plugins/local/"
@@ -716,6 +792,7 @@ check_locate() {
 		"OMP 缓存|$L/omp/.omp/plugins/cache/plugins/jstack___flow___$fv|$L/omp|$L/omp" \
 		"Cursor 本地插件|$L/cursor/.cursor/plugins/local/flow|$L/cursor|$L/cursor" \
 		"Pi npm 包|$L/pi/.pi/agent/npm/node_modules/jstack/plugins/flow|$L/pi|$L/pi" \
+		"Codex 缓存|$L/codex/.codex/plugins/cache/jstack/flow/${fv%%+*}|$L/codex|$L/codex" \
 		"软链入口|$L/link/.agents|$ROOT/plugins|$L/link"; do
 		IFS='|' read -r name flow tree home <<<"$lay"
 		bad=
@@ -1356,11 +1433,13 @@ check_doctor() {
 	mkdir -p "$h/.omp/plugins/cache/plugins/jstack___flow___1.2.3+jstack.abc" \
 		"$h/.cursor/plugins/local/spec/.claude-plugin" \
 		"$h/.pi/agent/npm/node_modules/jstack/plugins/pstack/.claude-plugin" \
+		"$h/.codex/plugins/cache/jstack/spec/0.9.0/.claude-plugin" \
 		"$r/.git" "$r/.jstack/vendor/plugins/pstack/.claude-plugin" \
 		"$r/.jstack/vendor/plugins/flow/.claude-plugin" "$bin"
 	printf '{"name":"jstack","version":"0.1.0"}\n' >"$h/.pi/agent/npm/node_modules/jstack/package.json"
 	printf '{"version":"4.4.4"}\n' >"$h/.pi/agent/npm/node_modules/jstack/plugins/pstack/.claude-plugin/plugin.json"
 	printf '{"version":"3.3.3"}\n' >"$h/.cursor/plugins/local/spec/.claude-plugin/plugin.json"
+	printf '{"version":"0.9.0"}\n' >"$h/.codex/plugins/cache/jstack/spec/0.9.0/.claude-plugin/plugin.json"
 	printf '{"version":"9.9.9"}\n' >"$r/.jstack/vendor/plugins/pstack/.claude-plugin/plugin.json"
 	printf '{"version":"1.0.0"}\n' >"$r/.jstack/vendor/plugins/flow/.claude-plugin/plugin.json"
 	tree=$(tree_hash "$r/.jstack/vendor")
@@ -1393,6 +1472,7 @@ assert repo in r["source"], r
 assert find("pi", "package", "pstack")["version"] == "4.4.4"
 assert find("omp", "cache", "flow")["version"] == "1.2.3+jstack.abc"
 assert find("cursor", "local", "spec")["version"] == "3.3.3"
+assert find("codex", "cache", "spec")["version"] == "0.9.0"
 assert find("vendor", "project", "pstack")["lock"] == "ok"
 assert find("vendor", "project", "flow")["lock"] == "ok"
 assert len(rows) >= 7, len(rows)
@@ -1431,7 +1511,7 @@ EOF
 	fi
 
 	if [ "$rc" -eq 0 ]; then
-		say "✓ doctor：六种来源的安装矩阵、--json、lock 漂移、--no-fail 都通过"
+		say "✓ doctor：七种来源的安装矩阵、--json、lock 漂移、--no-fail 都通过"
 	fi
 	return $rc
 }
@@ -1446,7 +1526,7 @@ check_install_project() {
 	h=$(cd "$h" && pwd -P)
 	r=$(cd "$r" && pwd -P)
 	bin=$(cd "$bin" && pwd -P)
-	for p in claude pi omp cursor; do
+	for p in claude pi omp cursor codex; do
 		cat >"$bin/$p" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-} ${2:-}" = "plugin list" ]; then printf '[]\n'; fi
@@ -1496,6 +1576,11 @@ SH
 			say "✗ 缺少 jstack 生成的 .claude/agents/$e.md"
 			rc=1
 		}
+		grep -q "^name = \"$e\"" "$r/.codex/agents/$e.toml" 2>/dev/null &&
+			grep -q "^developer_instructions = '''" "$r/.codex/agents/$e.toml" || {
+			say "✗ 缺少 jstack 生成的 .codex/agents/$e.toml（name 或 developer_instructions）"
+			rc=1
+		}
 	done
 	if ! jq -e --arg mark '.jstack/vendor/plugins/flow' '
 		[(.hooks.UserPromptSubmit // []), (.hooks.PreToolUse // []), (.hooks.Stop // [])]
@@ -1528,8 +1613,8 @@ SH
 			rc=1
 		fi
 	done
-	if ! jq -e '(.harnesses | keys | sort) == ["claude-code", "cursor", "omp", "pi"]' "$r/.jstack/lock.json" >/dev/null 2>&1; then
-		say "✗ lock 的 harnesses 不是四个都记录"
+	if ! jq -e '(.harnesses | keys | sort) == ["claude-code", "codex", "cursor", "omp", "pi"]' "$r/.jstack/lock.json" >/dev/null 2>&1; then
+		say "✗ lock 的 harnesses 不是五个都记录"
 		rc=1
 	fi
 
@@ -1557,14 +1642,14 @@ SH
 	done
 
 	# 重复运行：不新增链接、不重复 hooks、lock 不变。
-	before=$({ LC_ALL=C /bin/ls -lA "$r/.claude/skills" "$r/.agents/skills" "$r/.cursor/skills"
-		cat "$r/.claude/settings.json" "$r/.cursor/hooks.json" "$r/.jstack/lock.json"; } | sha256_stream)
+	before=$({ LC_ALL=C /bin/ls -lA "$r/.claude/skills" "$r/.agents/skills" "$r/.cursor/skills" "$r/.codex/agents"
+		cat "$r/.claude/settings.json" "$r/.cursor/hooks.json" "$r/.jstack/lock.json" "$r"/.codex/agents/*.toml; } | sha256_stream)
 	if ! PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" install --all --scope project --repo "$r" >/dev/null 2>&1; then
 		say "✗ 重复运行 install 失败"
 		rc=1
 	fi
-	after=$({ LC_ALL=C /bin/ls -lA "$r/.claude/skills" "$r/.agents/skills" "$r/.cursor/skills"
-		cat "$r/.claude/settings.json" "$r/.cursor/hooks.json" "$r/.jstack/lock.json"; } | sha256_stream)
+	after=$({ LC_ALL=C /bin/ls -lA "$r/.claude/skills" "$r/.agents/skills" "$r/.cursor/skills" "$r/.codex/agents"
+		cat "$r/.claude/settings.json" "$r/.cursor/hooks.json" "$r/.jstack/lock.json" "$r"/.codex/agents/*.toml; } | sha256_stream)
 	if [ "$before" != "$after" ]; then
 		say "✗ 重复运行 install 改变了安装产物（hooks、链接或 lock）"
 		rc=1
@@ -1610,7 +1695,7 @@ assert all(r["lock"] == "ok" for r in vendor), vendor
 	fi
 
 	if [ "$rc" -eq 0 ]; then
-		say "✓ 项目级安装：vendor、9 个入口、Claude hooks、Cursor hooks、lock、四 harness 的 locate（Pi/OMP 共用 .agents）、幂等、dry-run 与 doctor 都通过"
+		say "✓ 项目级安装：vendor、9 个入口、Claude hooks、Cursor hooks、Codex agents、lock、五 harness 的 locate（Pi/OMP/Codex 共用 .agents）、幂等、dry-run 与 doctor 都通过"
 	fi
 	return $rc
 }
@@ -1711,6 +1796,42 @@ check_pstack_cursor() {
 		say "✗ plugins/pstack-cursor 的 poteto-help 没有换回 Claude Code adapter 链接"
 		rc=1
 	fi
+	return $rc
+}
+
+# Codex 直接读 Claude Code 的 marketplace 和插件清单。用临时 CODEX_HOME 走一遍
+# marketplace add / plugin add，核对三个插件都能装进缓存，且缓存里带 .claude-plugin/plugin.json 和 skills/。
+check_codex_manifest() {
+	local home="$WORK/codex-manifest-home" p hit rc=0
+	if ! command -v codex >/dev/null 2>&1; then
+		say "- 没找到 codex CLI，跳过 Codex manifest 校验"
+		return 0
+	fi
+	rm -rf "$home"
+	mkdir -p "$home"
+	if ! CODEX_HOME="$home" codex plugin marketplace add "$ROOT" --json >"$WORK/codex-add" 2>"$WORK/codex.err"; then
+		say "✗ Codex 无法添加 jstack marketplace："
+		sed 's/^/  /' "$WORK/codex.err" | head -10
+		return 1
+	fi
+	for p in $PLUGINS; do
+		if ! CODEX_HOME="$home" codex plugin add "$p@jstack" --json >"$WORK/codex-add" 2>"$WORK/codex.err"; then
+			say "✗ Codex 无法安装 $p@jstack："
+			sed 's/^/  /' "$WORK/codex.err" | head -10
+			rc=1
+			continue
+		fi
+		hit=$(find "$home/plugins/cache/jstack/$p" -maxdepth 3 -name plugin.json -path '*/.claude-plugin/*' 2>/dev/null | head -1)
+		[ -n "$hit" ] || {
+			say "✗ Codex 缓存的 $p 里没有 .claude-plugin/plugin.json"
+			rc=1
+		}
+		find "$home/plugins/cache/jstack/$p" -maxdepth 6 -name SKILL.md 2>/dev/null | grep -q . || {
+			say "✗ Codex 缓存的 $p 里没有 skill"
+			rc=1
+		}
+	done
+	[ "$rc" -eq 0 ] && say "✓ Codex manifest：marketplace 可添加，pstack/spec/flow 可安装且带 Claude 清单与 skills"
 	return $rc
 }
 
@@ -1849,6 +1970,7 @@ cmd_check() {
 	check_repo_config || rc=1
 	check_doctor || rc=1
 	check_install_project || rc=1
+	check_codex_manifest || rc=1
 	# 阶段门禁对构建产物测。macOS 上用 /bin/bash 跑，确认 hook 在系统自带的 bash 3.2 下也能用。
 	if "$([ -x /bin/bash ] && echo /bin/bash || echo bash)" "$ROOT/tests/flow-hooks.sh" >"$WORK/hooks" 2>&1; then
 		say "✓ flow 的 stage.sh 和 hooks 测试通过（$(grep -c '^✓' "$WORK/hooks") 项）"
@@ -2866,7 +2988,7 @@ cmd_doctor() {
 	local json=0 nofail=0 repo= out file="$WORK/doctor-rows" seen="$WORK/doctor-seen" rc=0
 	local h scope plugin version path source inrepo stale lock lockver lock_cell n drift=0 stale_n=0 tab
 	local lock_tree actual_tree tree_bad= missing_rec= rec
-	local pi_agent omp_plugins cursor_plugins id fold proj
+	local pi_agent omp_plugins cursor_plugins codex_plugins id fold proj
 	while [ $# -gt 0 ]; do
 		case $1 in
 		--json) json=1; shift ;;
@@ -2944,6 +3066,16 @@ cmd_doctor() {
 		plugin=${path##*/}
 		version=$(doctor_manifest_version "$path") || continue
 		doctor_add "$file" cursor local "$plugin" "$version" "$path" cursor-local 0 0
+	done
+
+	# Codex：marketplace 缓存是 <CODEX_HOME>/plugins/cache/<marketplace>/<插件>/<版本>。
+	codex_plugins=${CODEX_HOME:-$HOME/.codex}/plugins
+	for path in "$codex_plugins"/cache/jstack/*/*; do
+		[ -d "$path" ] || continue
+		plugin=$(dirname "$path")
+		plugin=${plugin##*/}
+		version=${path##*/}
+		doctor_add "$file" codex cache "$plugin" "$version" "$path" codex-cache 0 0
 	done
 
 	# 仓库 vendor 树。
@@ -3070,6 +3202,7 @@ harness_present() { # <harness>
 	pi) command -v pi >/dev/null 2>&1 ;;
 	omp) command -v omp >/dev/null 2>&1 ;;
 	cursor) command -v cursor >/dev/null 2>&1 || [ -d "${CURSOR_HOME:-$HOME/.cursor}" ] ;;
+	codex) command -v codex >/dev/null 2>&1 ;;
 	*) return 1 ;;
 	esac
 }
@@ -3164,6 +3297,40 @@ install_agent() { # <仓库> <vendor> <名字> <dry>
 	} >"$dst"
 }
 
+# Codex 的自定义 agent 是 TOML（.codex/agents/<name>.toml），Claude 的是带 YAML frontmatter 的 Markdown。
+# 项目级安装按 name / description / developer_instructions 转换；Codex 没有 background 字段，frontmatter 其余键丢弃。
+# developer_instructions 用 TOML 的无转义多行字面量（'''），正文里的反斜杠、引号和反引号都原样保留。
+install_codex_agents() { # <仓库> <vendor> <dry>
+	local repo=$1 vendor=$2 dry=$3 name src dst desc body
+	for name in poteto-agent comment-sicko; do
+		src="$vendor/plugins/pstack/agents/$name.md"
+		dst="$repo/.codex/agents/$name.toml"
+		if [ "$dry" -eq 1 ]; then
+			say "  转换 pstack agents/$name.md 到 .codex/agents/$name.toml"
+			continue
+		fi
+		[ -f "$src" ] || die "vendor 里缺少 pstack agents/$name.md"
+		desc=$(awk 'NR == 1 && $0 == "---" { fm = 1; next }
+			fm == 1 && $0 == "---" { exit }
+			fm == 1 && /^description:/ { sub(/^description:[[:space:]]*/, ""); print; exit }' "$src")
+		[ -n "$desc" ] || die "$src 的 frontmatter 里没有 description"
+		desc=$(printf '%s' "$desc" | sed 's/\\/\\\\/g; s/"/\\"/g')
+		body=$(awk 'BEGIN { fm = 0 } /^---$/ { fm++; next } fm >= 2' "$src")
+		mkdir -p "$repo/.codex/agents"
+		if [ -e "$dst" ] && ! grep -q 'generated by jstack install' "$dst"; then
+			die "$dst 已存在且不是 jstack 生成的；先备份或移走"
+		fi
+		{
+			printf '# generated by jstack install --scope project; source: .jstack/vendor/plugins/pstack/agents/%s.md\n' "$name"
+			printf 'name = "%s"\n' "$name"
+			printf 'description = "%s"\n' "$desc"
+			printf "developer_instructions = '''\n"
+			printf '%s\n' "$body"
+			printf "'''\n"
+		} >"$dst"
+	done
+}
+
 install_claude_hooks() { # <仓库> <dry>：项目级 hooks 指向 vendor，重复运行不重复追加
 	local repo=$1 dry=$2 settings cur new
 	settings="$repo/.claude/settings.json"
@@ -3220,7 +3387,7 @@ harness_records() { # <harness>：lock 里记录、doctor 会核对的安装入�
 	local h=$1 d p e
 	case $h in
 	claude-code) d=.claude/skills ;;
-	pi | omp) d=.agents/skills ;;
+	pi | omp | codex) d=.agents/skills ;;
 	cursor) d=.cursor/skills ;;
 	*) return 1 ;;
 	esac
@@ -3234,6 +3401,9 @@ harness_records() { # <harness>：lock 里记录、doctor 会核对的安装入�
 	fi
 	if [ "$h" = cursor ]; then
 		printf '%s\n' .cursor/hooks.json
+	fi
+	if [ "$h" = codex ]; then
+		printf '%s\n' .codex/agents/poteto-agent.toml .codex/agents/comment-sicko.toml
 	fi
 }
 
@@ -3272,13 +3442,14 @@ write_lock() { # <仓库> <harness>...：install 是唯一写 lock 的命令
 }
 
 install_project() { # <仓库> <dry> <harness>...
-	local repo=$1 dry=$2 vendor="$repo/.jstack/vendor" h d p e rel
+	local repo=$1 dry=$2 vendor h d p e rel
 	shift 2
+	vendor="$repo/.jstack/vendor"
 	install_vendor "$repo" "$dry"
 	for h in "$@"; do
 		case $h in
 		claude-code) d=.claude/skills ;;
-		pi | omp) d=.agents/skills ;;
+		pi | omp | codex) d=.agents/skills ;;
 		cursor) d=.cursor/skills ;;
 		*) die "未知 harness：$h" ;;
 		esac
@@ -3302,6 +3473,10 @@ install_project() { # <仓库> <dry> <harness>...
 	# Cursor 的项目 hooks 与 Claude 同源，但事件名和输出协议是 Cursor 原生的。
 	if printf '%s\n' "$@" | grep -qx cursor; then
 		install_cursor_hooks "$repo" "$dry"
+	fi
+	# Codex 从 .agents/skills 读 skill（和 Pi/OMP 共用），自定义 agent 要转成 TOML。
+	if printf '%s\n' "$@" | grep -qx codex; then
+		install_codex_agents "$repo" "$vendor" "$dry"
 	fi
 	if [ "$dry" -eq 0 ]; then
 		write_lock "$repo" "$@"
@@ -3336,6 +3511,23 @@ install_omp_user() {
 	omp plugin install pstack@jstack spec@jstack flow@jstack
 	install_omp_extension
 	say "✓ 已安装 OMP 插件；重开 OMP 会话生效。"
+}
+
+install_codex_user() {
+	local p
+	command -v codex >/dev/null 2>&1 || die "需要 Codex CLI（codex）"
+	codex plugin marketplace add "$ROOT" --json >/dev/null 2>&1 ||
+		die "codex plugin marketplace add $ROOT 失败"
+	for p in $PLUGINS; do
+		# 已在 jstack marketplace 下装过就跳过；codex plugin add 不是幂等的幂等写法。
+		if codex plugin list 2>/dev/null | grep -qE "^${p}@jstack[[:space:]]+installed"; then
+			continue
+		fi
+		codex plugin add "$p@jstack" --json >/dev/null 2>&1 ||
+			die "codex plugin add $p@jstack 失败"
+	done
+	say "✓ 已在 Codex 里添加 jstack marketplace 并安装 pstack、spec、flow"
+	say "重开 Codex 会话；用 \$flow:route 或 /skills 选择器验证。"
 }
 
 install_claude_user() { # <scope>
@@ -3424,7 +3616,7 @@ cmd_install() {
 		[ -n "$repo" ] || repo=$PWD
 		repo=$(cd "$repo" 2>/dev/null && pwd -P) || die "--repo 指向的目录不存在"
 		if [ "$all" -eq 1 ]; then
-			for h in claude-code pi omp cursor; do
+			for h in claude-code pi omp cursor codex; do
 				if harness_present "$h"; then
 					hs="$hs $h"
 				else
@@ -3466,6 +3658,12 @@ cmd_install() {
 			any=1
 		else
 			say "! 没找到 Cursor，跳过"
+		fi
+		if harness_present codex; then
+			install_codex_user
+			any=1
+		else
+			say "! 没找到 Codex，跳过"
 		fi
 		[ "$any" -eq 1 ] || die "没有探测到已安装的 harness"
 		return
