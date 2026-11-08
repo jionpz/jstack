@@ -15,4 +15,4 @@ A provider is written `` `<plugin>:<skill>` `` for the skill's `SKILL.md`, or ``
 | verify | Evidence that the change works on the real surface: the command run and what it showed | No evidence means not done; the flow Stop hook enforces it | `pstack:principle-prove-it-works` |
 | review | Every finding fixed or dismissed with a concrete reason | A contested design gets an adversarial review before landing | `pstack:interrogate` `pstack:swarm` |
 | land | Commits on a branch; a PR when the repo has a remote | Nothing on the must-stop list (must-stop.md) without the user | `pstack:poteto-mode/playbooks/opening-a-pr.md` |
-| archive | Tickets closed with their evidence; GLOSSARY.md and ADRs current; merged worktrees cleaned | None | - |
+| archive | Tickets closed with their evidence; GLOSSARY.md and ADRs current; gbrain written back; merged worktrees cleaned; each lesson routed or dropped | A ticket closes only on evidence; no worktree with uncommitted work is removed; every lesson is routed or dropped with a reason | `flow:archive` `pstack:poteto-mode/playbooks/worktree-cleanup.md` |

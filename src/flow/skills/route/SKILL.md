@@ -59,7 +59,8 @@ Take the stages in path order. For each one, read its providers from the locate 
 - **review.** interrogate checks the change. swarm runs only when the review gate calls for an adversarial review of a contested design.
 - **execute.** Follow poteto-mode and let it pick its playbook. Its playbook already runs verification, review, and Opening a PR, so do not run verify, review, or land a second time. When poteto-mode finishes, check the gate of each later stage on the path against what now exists. Run a stage's provider only for a gate that is still unmet, then check again.
 - **land.** In a repo with no remote, commits on a branch meet the gate. Never push or open a PR for a repo the user did not point you at.
-- **A stage whose provider is `-`** and that this skill does not describe (archive, until it gets a provider): write one line, `Skipped: <stage> has no provider yet.`, and go on.
+- **archive.** Follow the archive providers. The archive skill closes tickets with evidence, updates GLOSSARY.md and ADRs, writes back to gbrain, and routes lessons; the worktree playbook cleans merged worktrees. The gate is in stages.md.
+- **A stage whose provider is `-`**: write one line, `Skipped: <stage> has no provider yet.`, and go on.
 
 For L, work the ticket frontier: a ticket starts only when every ticket that blocks it is done. Run execute through land once per ticket, and mark the ticket done in the tracker when its verify gate passes. Many independent tickets, or a multi-day effort, go to poteto-mode's Orchestrate or Multi-phase plan playbook instead of one ticket at a time.
 

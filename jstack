@@ -109,6 +109,21 @@ fm_unknown_keys() {
 	done
 }
 
+# 列出 frontmatter 里未加引号、值中又含「冒号+空格」的行，每行"文件: 行内容"。
+# YAML 的 plain scalar 不允许 ": "，Cursor 的加载器遇到这种 frontmatter 会静默丢掉整个 skill。
+fm_plain_colon() {
+	local f
+	for f in "$@"; do
+		[ -f "$f" ] || continue
+		awk 'NR==1 && $0!="---"{exit} NR>1 && /^---$/{exit}
+			NR>1 && /^[A-Za-z_][A-Za-z0-9_-]*:[ \t]/ {
+				v = $0; sub(/^[^:]*:[ \t]*/, "", v)
+				if (v ~ /^["'"'"'|>\[]/) next
+				if (v ~ /: /) print FILENAME ": " $0
+			}' "$f"
+	done
+}
+
 # 把 $1 manifest 里的 version 改成 $2。manifest 可以是 Claude 或 Cursor 方言。
 set_manifest_version() {
 	local manifest=$1 version=$2
@@ -409,9 +424,9 @@ const { loadPlugins } = require(loader);
     process.exit(1);
   }
   const has = (plugin, list, name) => (by.get(plugin)?.[list] || []).some(x => x.name === name);
-  if (!has('flow', 'skills', 'route') || !has('pstack', 'skills', 'poteto-mode') ||
+  if (!has('flow', 'skills', 'route') || !has('flow', 'skills', 'archive') || !has('pstack', 'skills', 'poteto-mode') ||
       !has('spec', 'skills', 'grill-with-docs') || !has('pstack', 'agents', 'poteto-agent')) {
-    console.error('Cursor loader: 缺少 route / poteto-mode / grill-with-docs / poteto-agent');
+    console.error('Cursor loader: 缺少 route / archive / poteto-mode / grill-with-docs / poteto-agent');
     process.exit(1);
   }
   console.log(`plugins=${names} flow.skills=${by.get('flow').skills.length} pstack.skills=${by.get('pstack').skills.length} pstack.agents=${by.get('pstack').agents.length} spec.skills=${by.get('spec').skills.length}`);
@@ -830,6 +845,12 @@ cmd_check() {
 			fm_unknown_keys 'name|description|tools|disallowedTools|model|maxTurns|autoCompactWindow|skills|memory|background|effort|isolation|color|omitClaudeMd|experimental' \
 				"$OUT"/agents/*.md
 		)
+		bad_yaml=$(fm_plain_colon "$OUT"/skills/*/SKILL.md "$OUT"/skills/*/*/SKILL.md)
+		if [ -n "$bad_yaml" ]; then
+			say "✗ plugins/$PLUGIN 的 frontmatter 有未加引号又含「: 」的值，Cursor 加载器会丢掉整个 skill，需要加引号："
+			printf '%s\n' "$bad_yaml" | sed 's/^/  /' | head -10
+			rc=1
+		fi
 		if [ -n "$hits" ]; then
 			say "✗ plugins/$PLUGIN 的 frontmatter 里有 Claude Code 不认识的键，会被静默忽略，需要补丁："
 			printf '%s\n' "$hits" | sed 's/^/  /' | head -20

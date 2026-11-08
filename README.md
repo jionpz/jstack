@@ -6,7 +6,7 @@ jionpz 长期维护的 AI 开发工作流。目标是少占用人的注意力：
 
 - **pstack**：原版 [pstack](https://github.com/cursor/plugins/tree/main/pstack)（Lauren Tan，MIT），负责执行。Claude Code 用上游的 Claude Code 树，Cursor 用上游原生树，Pi/OMP 通过 `docs/harness/agents.md` 在运行时映射工具名和模型。
 - **spec**：[Matt Pocock 的 skills](https://github.com/mattpocock/skills)（MIT）里负责需求澄清和任务拆解的几个，产出的 spec 和 tickets 交给 pstack 执行。
-- **flow**：jstack 自己写的衔接层，只有一个 `route` skill。工程任务进来时它自动分级，按大小把 spec 和 pstack 接起来，见下面"分工"一节。
+- **flow**：jstack 自己写的衔接层，有 `route` 和 `archive` 两个 skill。`route` 给工程任务分级并驱动全部阶段；`archive` 负责收尾：关票、更新领域文档、写回 gbrain、清理 worktree、分流教训。见下面"分工"一节。
 
 pstack 和 spec 都锁定在上游某个提交，另外叠加了 jstack 自己的少量补丁。flow 没有上游，源码在 `src/flow/`。
 
@@ -145,7 +145,7 @@ Cursor 的本地插件加载器只接受 `~/.cursor/plugins/local` 内的符号�
 | XL（跨会话、跨阶段） | 先用 wayfinder 规划，再对每块按 L 走；需要换会话时 handoff |
 | 提问、调查 | 只走 execute，产出就是带出处的回答 |
 
-execute 交给 poteto-mode。它的 playbook 已经包含验证、审查和开 PR，route 只补其后仍未满足的门禁。仓库没有 remote 时，分支上的提交就满足 land。archive 还没有提供者，暂时跳过并在报告里写明。
+execute 交给 poteto-mode。它的 playbook 已经包含验证、审查和开 PR，route 只补其后仍未满足的门禁。仓库没有 remote 时，分支上的提交就满足 land。archive 交给 `flow:archive`：关票并附证据、补 GLOSSARY/ADR、写回 gbrain、按 pstack 的 worktree-cleanup 清理已合并的 worktree，并把教训分流到项目约定库或 jionpz/jstack 的 issue。
 
 route 只在三处停下来问你，其余全部自动推进：
 
@@ -286,7 +286,7 @@ git diff -- upstream/     # 看上游改了什么
 1. 每个 `plugins/<插件>` 是否等于构建结果（防手改），包括 `pstack-cursor`
 2. 每棵 `upstream/<树>` 的内容哈希是否等于锁文件里 `tree` 字段记录的（防手改副本；flow 没有上游，跳过）
 3. 各插件脚本里有没有写死的 Cursor 路径
-4. skill 和 agent 的 frontmatter 里有没有 Claude Code 不认识的键
+4. skill 和 agent 的 frontmatter：有没有 Claude Code 不认识的键；skill 的 frontmatter 里有没有未加引号又含 `: ` 的值（Cursor 的加载器用严格 YAML，遇到这种值会静默丢掉整个 skill）
 5. skill 里通过 Skill 工具调用的 skill 是否都收进了插件
 6. spec/flow 的 Cursor manifest 是否和 Claude manifest 同名、同版本、同样的 skill 列表
 7. `plugins/pstack-cursor` 是否是 Cursor 插件 `pstack`，skills 和 agents 是否齐全
@@ -297,7 +297,7 @@ git diff -- upstream/     # 看上游改了什么
 12. flow 的 `stage.sh` 和三个 hook（`tests/flow-hooks.sh`）：对 `plugins/flow` 产物喂 JSON、断言输出和状态文件，有 jq 和没有 jq 两种路径都测；macOS 上用 `/bin/bash`（3.2）运行
 13. 模型分层命令（`./jstack models`）：在临时 HOME 里跑 init、set、apply、status，核对 17 个角色行、settings.json 的模型 env 和原有键、备份幂等、`--dry-run` 不落盘、预算降级，以及今日 token 统计
 
-第 3、4、5 项专门查 adapter 管不到的地方：脚本和 frontmatter 都不经过模型，上游新引入的 Cursor 依赖在同步时就能发现；第 5 项查的是 spec 这种"只收一部分 skill"的插件有没有漏掉依赖。`claude plugin validate` 不查 frontmatter 键，也不查插件内部 skill 之间的调用关系。全部通过才提交。
+第 3、4、5 项专门查 adapter 管不到的地方：脚本和 frontmatter 都不经过模型，上游新引入的 Cursor 依赖在同步时就能发现；第 5 项查的是 spec 这种"只收一部分 skill"的插件有没有漏掉依赖。`claude plugin validate` 不查 frontmatter 键，也不查插件内部 skill 之间的调用关系，更不查 YAML 合法性，所以 `: ` 这种写法只能由第 4 项拦。全部通过才提交。
 
 ### 跨 harness smoke
 

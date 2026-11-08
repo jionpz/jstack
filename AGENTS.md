@@ -6,7 +6,7 @@ jstack 是用户长期维护的整条 AI 开发工作流。flow 定义工作流�
 
 - `pstack`：原版 pstack（Lauren Tan）的 Claude Code 版，源码 vendor 自 cursor/plugins 的 `harness/pstack/claude-code`。Cursor 用上游原生的 `pstack/` 树，单独构建为 Cursor-native 产物。
 - `spec`：Matt Pocock skills 里负责需求澄清和任务拆解的几个，vendor 自 mattpocock/skills。产出交给 pstack 的 `poteto-mode` 执行。
-- `flow`：jstack 自己写的衔接层，只有一个 `route` skill，按 `src/flow/skills/route/stages.md` 的阶段表驱动任务走完全部阶段，把每个阶段交给表里的提供者。没有上游，源码在 `src/flow/`，直接改源码再 `./jstack build`。
+- `flow`：jstack 自己写的衔接层，有 `route` 和 `archive` 两个 skill：`route` 按 `src/flow/skills/route/stages.md` 的阶段表驱动任务走完全部阶段，把每个阶段交给表里的提供者。没有上游，源码在 `src/flow/`，直接改源码再 `./jstack build`。
 
 - `upstream/<插件>/` 是上游原样副本，只能由 `./jstack sync <插件>` 写入。`pstack`（Claude Code 版）和 `pstack-cursor`（Cursor 原生版）都是整棵树；spec 只取 `jstack` 脚本里 `PICK` 列出的文件和目录。
 - `plugins/<插件>/` 是构建产物，只能由 `./jstack build` 写入。`plugins/pstack-cursor/` 是 Cursor 原生产物，不进 Claude marketplace；`./jstack install-cursor` 把 pstack、spec、flow 三个产物复制到 Cursor 的本地插件目录（flow 的 `hooks/` 只为 Claude Code 写过，复制时排除）。Cursor 的本地插件加载器拒绝指向 `~/.cursor/plugins/local` 之外的符号链接，所以这里只复制。
