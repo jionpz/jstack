@@ -1,7 +1,7 @@
 {
   "name": "flow",
   "displayName": "flow",
-  "version": "0.1.0+jstack.6784f94",
+  "version": "0.1.0+jstack.83203d3",
   "description": "jstack 自己的衔接层：工程任务进来时按大小和清晰度分级，自动把 spec（澄清、拆解）和 pstack（执行）接起来，只在约定的检查点停下来问人。",
   "author": {
     "name": "jionpz"

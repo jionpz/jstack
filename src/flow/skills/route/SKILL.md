@@ -51,6 +51,8 @@ State the size and the stage path in one sentence. Then record the path with `st
 | Right before you stop to ask the user anything | `stage.sh ask` |
 | After the finish report | `stage.sh end` |
 
+A repo's `.jstack/config.json` can replace the stage table (`stages_file`) and add must-stop entries. The "仓库配置" line the harness injects each turn shows the values in effect; drop any stage on your path that the table no longer has, and leave `stage.sh start` to reject stages outside its table.
+
 Once execute has started on a path that includes verify, the harness will not let you end the turn until evidence is recorded, or until you have run `stage.sh ask` and your reply asks the user a question. Entering execute again, as for the next ticket, clears the earlier evidence. Record real evidence; never record a placeholder or ask a token question to get past the gate.
 
 Take the stages in path order. For each one, read its providers from the locate output and follow them, then check the stage's gate. Mark a stage done only when its gate is met, and write its output into the todo item: a decision list, a spec path, a commit, the verification command and what it showed.
@@ -72,7 +74,7 @@ Ask the user only at these points. Everything else proceeds.
 
 1. **Clarification round.** grill-with-docs asks in rounds. Each round lists every open question at once, numbered, with your recommended answer, worded so "yes" accepts it. Look facts up yourself; only decisions reach the user.
 2. **Breakdown sign-off (L and XL only).** Present the spec's testing seams and the ticket breakdown together in one message, before you publish either. This single approval covers both to-spec's seam check and to-tickets' quiz.
-3. **Must-stop actions**, at any size and under any autonomy grant: everything in [must-stop.md](must-stop.md), next to this file. It is the only such list. The flow guard hook makes the harness ask before the shell commands it can detect; the rest you must recognize yourself. Collect these and ask them in one round, each with options and a recommendation.
+3. **Must-stop actions**, at any size and under any autonomy grant: everything in [must-stop.md](must-stop.md), next to this file, plus every entry in the repo config's `must_stop`. The plugin list is the only built-in list. The flow guard hook makes the harness ask before the shell commands it can detect; the rest you must recognize yourself. Collect these and ask them in one round, each with options and a recommendation.
 
 Once the user approves the breakdown, execute without further check-ins. poteto-mode's own Autonomy section still applies, including its Always-pause list.
 

@@ -7,7 +7,7 @@ route=${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd -P)}/skills/route
 . "$route/lib.sh" || exit 0
 
 main() {
-	local input tool cmd segs pats line hook re n best= hit= tab action reason
+	local input tool cmd segs pats line hook rest re src hit_src= n best= hit= tab action reason cfg
 	input=$(cat)
 	tool=$(jstack_json_str tool_name "$input")
 	[ -z "$tool" ] || [ "$tool" = Bash ] || return 0
@@ -16,25 +16,43 @@ main() {
 	fi
 	[ -n "$cmd" ] || return 0
 	segs=$(printf '%s\n' "$cmd" | awk '{ gsub(/&&|\|\||[;|]/, "\n"); print }')
-	pats=$(awk '/^```patterns[ \t]*$/ { f = 1; next } f && /^```/ { exit } f && NF' "$route/must-stop.md")
+	# 内置模式加仓库追加的模式，每条带来源列：builtin / repo。
+	pats=$(
+		awk '/^```patterns[ \t]*$/ { f = 1; next } f && /^```/ { exit } f && NF' "$route/must-stop.md" |
+			awk -F'\t' 'NF >= 2 { print $1 "\t" $2 "\tbuiltin" }'
+		if repo_pats=$(jstack_cfg_patterns 2>/dev/null); then
+			printf '%s\n' "$repo_pats" | awk -F'\t' 'NF >= 2 { print $1 "\t" $2 "\trepo" }'
+		fi
+	)
 	tab=$(printf '\t')
 	while IFS= read -r line; do
-		hook=${line%%"$tab"*} re=${line#*"$tab"}
-		[ -n "$hook" ] && [ "$re" != "$line" ] || continue
+		hook=${line%%"$tab"*}
+		rest=${line#*"$tab"}
+		re=${rest%%"$tab"*}
+		src=${rest#*"$tab"}
+		[ -n "$hook" ] && [ "$re" != "$rest" ] || continue
 		n=$(printf '%s\n' "$segs" | grep -nE -- "$re" | head -1 | cut -d: -f1)
 		[ -n "$n" ] || continue
-		if [ -z "$best" ] || [ "$n" -lt "$best" ]; then best=$n hit=$hook; fi
+		if [ -z "$best" ] || [ "$n" -lt "$best" ]; then best=$n hit=$hook hit_src=$src; fi
 	done <<<"$pats"
 	[ -n "$hit" ] || return 0
-	action=$(awk -F'|' -v h="\`$hit\`" '
-		/^## / { sec = ($0 ~ /^## Must stop[ \t]*$/); next }
-		sec && /^\|/ {
-			a = $2; k = $3
-			gsub(/^[ \t]+|[ \t]+$/, "", a); gsub(/^[ \t]+|[ \t]+$/, "", k)
-			if (k == h) { print a; exit }
-		}
-	' "$route/must-stop.md")
-	reason="jstack must-stop: ${action:-$hit}. Confirm before it runs."
+	if [ "$hit_src" = repo ]; then
+		cfg=$(jstack_repo_config) || cfg=
+		action=
+		[ -z "$cfg" ] || action=$(jq -r --arg h "$hit" \
+			'(.must_stop // [])[] | select((.hook // .action) == $h) | .action // empty' "$cfg" 2>/dev/null | head -1)
+		reason="jstack must-stop: ${action:-${hit}}（仓库追加）. Confirm before it runs."
+	else
+		action=$(awk -F'|' -v h="\`$hit\`" '
+			/^## / { sec = ($0 ~ /^## Must stop[ \t]*$/); next }
+			sec && /^\|/ {
+				a = $2; k = $3
+				gsub(/^[ \t]+|[ \t]+$/, "", a); gsub(/^[ \t]+|[ \t]+$/, "", k)
+				if (k == h) { print a; exit }
+			}
+		' "$route/must-stop.md")
+		reason="jstack must-stop: ${action:-$hit}. Confirm before it runs."
+	fi
 	printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"%s"}}\n' \
 		"$(jstack_json_escape "$reason")"
 }

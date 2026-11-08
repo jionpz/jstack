@@ -554,6 +554,167 @@ check_locate() {
 	return $rc
 }
 
+# 仓库级配置（.jstack/config.json，ADR-0006）：校验当前仓库的配置，并在临时仓库里验证 hooks 与 stage.sh 的行为。
+repo_config_errors() {
+	local root=$1 cfg=$1/.jstack/config.json f p re rows out st rc=0
+	[ -f "$cfg" ] || return 0
+	if ! jq -e 'type == "object"' "$cfg" >/dev/null 2>&1; then
+		echo "不是合法的 JSON 对象"
+		return 1
+	fi
+	out=$(jq -r '
+		(if has("models") then "仓库级不能有 models：模型只在用户级配置" else empty end),
+		(if has("providers") then "仓库级不能有 providers：模型只在用户级配置" else empty end),
+		(if has("api_key") then "仓库级不能有 api_key" else empty end),
+		(if (.tracker.type? != null) and ((.tracker.type | type) != "string" or ((.tracker.type == "github" or .tracker.type == "local") | not)) then "tracker.type 只能是 github 或 local" else empty end),
+		(if (.verify.command? != null) and ((.verify.command | type) != "string") then "verify.command 必须是字符串" else empty end),
+		(if (.verify.timeout_s? != null) and ((.verify.timeout_s | type) != "number") then "verify.timeout_s 必须是数字" else empty end),
+		(if (.stages_file? != null) and ((.stages_file | type) != "string") then "stages_file 必须是字符串" else empty end),
+		(if (.must_stop? != null) and ((.must_stop | type) != "array") then "must_stop 必须是数组" else empty end),
+		((.must_stop // [])[] | select((.action? // "") == "") | "must_stop 的每一项都要有非空 action")
+	' "$cfg") || rc=1
+	if [ -n "$out" ]; then
+		printf '%s\n' "$out"
+		rc=1
+	fi
+	f=$(jq -r '.stages_file // empty' "$cfg") || rc=1
+	if [ -n "$f" ]; then
+		case $f in
+		/*) p=$f ;;
+		*) p=$root/$f ;;
+		esac
+		if [ ! -f "$p" ]; then
+			echo "stages_file 指向的文件不存在：$p"
+			rc=1
+		else
+			rows=$(awk -F'|' '
+				/^## / { sec = ($0 ~ /^## Stages[ \t]*$/); next }
+				!sec { next }
+				/^\|/ { rows++ }
+				rows && !/^\|/ { exit }
+				!/^\|/ || rows == 1 || /^\|[-:| \t]+$/ { next }
+				{ gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2 }
+			' "$p")
+			if [ -z "$rows" ]; then
+				echo "stages_file 里没有解析出阶段：$p"
+				rc=1
+			elif ! printf '%s\n' "$rows" | grep -qx execute; then
+				echo "stages_file 缺少 execute 阶段：$p"
+				rc=1
+			fi
+		fi
+	fi
+	# 每条 regex 要是能编译的 ERE；grep -E 的退出码 2 表示编译失败。
+	while IFS= read -r re; do
+		[ -n "$re" ] || continue
+		st=0
+		printf '' | grep -E -- "$re" >/dev/null 2>&1 || st=$?
+		if [ "$st" -gt 1 ]; then
+			echo "must_stop 的 regex 不是合法的 ERE：$re"
+			rc=1
+		fi
+	done < <(jq -r '(.must_stop // [])[] | .regex // empty' "$cfg")
+	return $rc
+}
+check_repo_config() {
+	local r="$WORK/repo-config" flow="$ROOT/plugins/flow" rc=0 out errs
+	if [ -f "$ROOT/.jstack/config.json" ]; then
+		if ! errs=$(repo_config_errors "$ROOT"); then
+			say "✗ 仓库级配置不合法："
+			printf '%s\n' "$errs" | sed 's/^/  /' | head -20
+			rc=1
+		else
+			say "✓ 仓库级配置合法"
+		fi
+	fi
+	if ! command -v jq >/dev/null; then
+		say "- 没有 jq，跳过仓库级配置的行为用例"
+		return $rc
+	fi
+	mkdir -p "$r/.jstack" "$r/.git" "$r/state"
+	cat >"$r/.jstack/config.json" <<'JSON'
+{
+  "tracker": { "type": "local" },
+  "must_stop": [
+    { "action": "运行 ./deploy.sh", "hook": "deploy", "regex": "(^|[[:space:]/])\\./deploy\\.sh([[:space:]]|$)" }
+  ],
+  "stages_file": ".jstack/stages.md",
+  "verify": { "command": "./scripts/verify.sh" }
+}
+JSON
+cat >"$r/.jstack/stages.md" <<'MD'
+# 仓库自己的阶段表
+
+## Stages
+
+| Stage | Output | Gate | Providers |
+|---|---|---|---|
+| size | One sentence | None | `flow:route` |
+| execute | The change | None | `pstack:poteto-mode` |
+| verify | Evidence | No evidence means not done | `pstack:principle-prove-it-works` |
+| land | Commits | must-stop | `pstack:poteto-mode/playbooks/opening-a-pr.md` |
+MD
+	if ! errs=$(repo_config_errors "$r"); then
+		say "✗ 仓库级配置的正例被误判："
+		printf '%s\n' "$errs" | sed 's/^/  /' | head -10
+		rc=1
+	fi
+	# stage.sh 读 stages_file：接受表里的阶段，拒绝表外的阶段。
+	if ! out=$(cd "$r" && CLAUDE_CODE_SESSION_ID=cfg-check JSTACK_STATE_DIR="$r/state" \
+		bash "$flow/skills/route/stage.sh" start execute,verify 2>&1); then
+		say "✗ 仓库 stages_file：stage.sh start 拒绝了表里的阶段：$out"
+		rc=1
+	elif (cd "$r" && CLAUDE_CODE_SESSION_ID=cfg-check JSTACK_STATE_DIR="$r/state" \
+		bash "$flow/skills/route/stage.sh" start clarify >/dev/null 2>&1); then
+		say "✗ 仓库 stages_file：stage.sh start 接受了表外的 clarify"
+		rc=1
+	fi
+	# guard.sh 合并仓库追加的模式，reason 标明来源。
+	out=$(cd "$r" && printf '%s' '{"session_id":"cfg-check","tool_name":"Bash","tool_input":{"command":"./deploy.sh --all"}}' |
+		bash "$flow/hooks/guard.sh" 2>/dev/null)
+	case $out in
+	*'"permissionDecision":"ask"'*'（仓库追加）'*) ;;
+	*)
+		say "✗ 仓库追加的 must-stop 没有被 guard.sh 拦下并标明来源：$out"
+		rc=1
+		;;
+	esac
+	# prompt.sh 注入仓库配置，route 才能看到 stages_file / tracker / 验证命令。
+	out=$(cd "$r" && printf '%s' '{"session_id":"cfg-check"}' |
+		JSTACK_STATE_DIR="$r/state" bash "$flow/hooks/prompt.sh" 2>/dev/null)
+	case $out in
+	*"仓库配置："*"阶段表=.jstack/stages.md"*"验证命令=./scripts/verify.sh"*) ;;
+	*)
+		say "✗ prompt.sh 没有注入仓库配置：$out"
+		rc=1
+		;;
+	esac
+	# 坏配置要报出来，而不是静默当成没有。
+	mkdir -p "$r/bad/.jstack" "$r/bad/.git"
+	printf '{ "must_stop": [\n' >"$r/bad/.jstack/config.json"
+	if errs=$(repo_config_errors "$r/bad"); then
+		say "✗ 非法的仓库配置没有被 check 发现"
+		rc=1
+	fi
+	mkdir -p "$r/forbidden/.jstack" "$r/forbidden/.git"
+	printf '{"models":{"claude-code":{"premium":"p/x"}}}\n' >"$r/forbidden/.jstack/config.json"
+	if errs=$(repo_config_errors "$r/forbidden"); then
+		say "✗ 仓库级配置里的 models 没有被 check 拒绝"
+		rc=1
+	fi
+	mkdir -p "$r/badstage/.jstack" "$r/badstage/.git"
+	printf '{"stages_file":".jstack/stages.md"}\n' >"$r/badstage/.jstack/config.json"
+	printf '# x\n\n## Stages\n\n| Stage | Output | Gate | Providers |\n|---|---|---|---|\n| clarify | x | x | `flow:route` |\n' >"$r/badstage/.jstack/stages.md"
+	if errs=$(repo_config_errors "$r/badstage"); then
+		say "✗ 缺 execute 的 stages_file 没有被 check 发现"
+		rc=1
+	fi
+	if [ "$rc" -eq 0 ]; then
+		say "✓ 仓库级配置：current 校验、stages_file、guard 追加模式、提示注入、坏配置检测都通过"
+	fi
+	return $rc
+}
+
 # 模型分层命令的验收：全部在临时 HOME 里跑，不碰真实配置，不联网。
 check_models() {
 	local h="$WORK/models-home" cfg settings rule usage out n role a b rc=0 backups before after today yesterday
@@ -913,6 +1074,7 @@ cmd_check() {
 	fi
 	check_models || rc=1
 	check_locate || rc=1
+	check_repo_config || rc=1
 	# 阶段门禁对构建产物测。macOS 上用 /bin/bash 跑，确认 hook 在系统自带的 bash 3.2 下也能用。
 	if "$([ -x /bin/bash ] && echo /bin/bash || echo bash)" "$ROOT/tests/flow-hooks.sh" >"$WORK/hooks" 2>&1; then
 		say "✓ flow 的 stage.sh 和 hooks 测试通过（$(grep -c '^✓' "$WORK/hooks") 项）"

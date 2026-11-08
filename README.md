@@ -147,6 +147,8 @@ Cursor 的本地插件加载器只接受 `~/.cursor/plugins/local` 内的符号�
 
 execute 交给 poteto-mode。它的 playbook 已经包含验证、审查和开 PR，route 只补其后仍未满足的门禁。仓库没有 remote 时，分支上的提交就满足 land。archive 交给 `flow:archive`：关票并附证据、补 GLOSSARY/ADR、写回 gbrain、按 pstack 的 worktree-cleanup 清理已合并的 worktree，并把教训分流到项目约定库或 jionpz/jstack 的 issue。
 
+仓库可以用 `<repo>/.jstack/config.json` 调整这套流程：`stages_file` 整表替换阶段表，`must_stop` 追加必须停项（`guard.sh` 会拦），`tracker` / `domain_docs` / `verify` 声明任务账本、文档位置和验证命令。字段表和读取规则见 [`docs/agents/jstack-config.md`](docs/agents/jstack-config.md)（ADR-0006）；没有这个文件时行为与以前完全一致。
+
 route 只在三处停下来问你，其余全部自动推进：
 
 1. **澄清轮**：grill 把所有当前能问的问题一次列出，每个都带推荐答案，回答"是"就采纳。仓库还没跑过 setup 时，setup 的问题也并进这一轮。
@@ -298,6 +300,7 @@ git diff -- upstream/     # 看上游改了什么
 11. 评测任务自检（`./jstack eval --selftest`）：每个任务的 check 在初始状态下失败、在参考解下通过
 12. flow 的 `stage.sh` 和三个 hook（`tests/flow-hooks.sh`）：对 `plugins/flow` 产物喂 JSON、断言输出和状态文件，有 jq 和没有 jq 两种路径都测；macOS 上用 `/bin/bash`（3.2）运行
 13. 模型分层命令（`./jstack models`）：在临时 HOME 里跑 init、set、apply、status，核对 17 个角色行、settings.json 的模型 env 和原有键、备份幂等、`--dry-run` 不落盘、预算降级，以及今日 token 统计
+14. 仓库级配置（`<repo>/.jstack/config.json`，ADR-0006）：当前仓库有配置时校验字段与 `stages_file`；在临时仓库里验证 `stage.sh` 按 `stages_file` 收/拒阶段、`guard.sh` 合并 `must_stop` 并在 reason 里标明“仓库追加”、`prompt.sh` 注入配置，坏 JSON、禁用键、缺 `execute` 都要报出来
 
 第 3、4、5 项专门查 adapter 管不到的地方：脚本和 frontmatter 都不经过模型，上游新引入的 Cursor 依赖在同步时就能发现；第 5 项查的是 spec 这种"只收一部分 skill"的插件有没有漏掉依赖。`claude plugin validate` 不查 frontmatter 键，也不查插件内部 skill 之间的调用关系，更不查 YAML 合法性，所以 `: ` 这种写法只能由第 4 项拦。全部通过才提交。
 

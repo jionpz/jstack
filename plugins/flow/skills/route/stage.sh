@@ -7,6 +7,7 @@ set -eu
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 . "$here/lib.sh"
 stages=${JSTACK_STAGES_FILE:-$here/stages.md}
+[ -n "${JSTACK_STAGES_FILE:-}" ] || stages=$(jstack_stages_path "$stages")
 
 usage() {
 	cat >&2 <<'EOF'
@@ -38,6 +39,8 @@ start)
 	[ $# -eq 1 ] && [ -n "$1" ] || usage
 	[ -f "$stages" ] || die "找不到阶段表 ${stages}"
 	known=$(jstack_stage_rows "$stages" | cut -f1)
+	[ -n "$known" ] || die "阶段表 ${stages} 里没有解析出任何阶段"
+	printf '%s\n' "$known" | grep -qx execute || die "阶段表 ${stages} 缺少 execute 阶段"
 	bad=
 	old_ifs=$IFS
 	IFS=,

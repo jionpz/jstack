@@ -55,12 +55,13 @@ Claude Code 有 `--scope project`，其余 harness 只有用户级安装；四�
 | 层 | 文件 | 只放 | 不放 |
 |---|---|---|---|
 | 用户级 | `~/.jstack/config.json` | 跨仓库不变项：模型分层（premium / bulk / 角色覆盖）、预算与并发上限、通知字段（留给 #13） | 任何仓库相关内容 |
-| 仓库级 | `<repo>/.jstack/config.json` | 随仓库变化项：tracker、领域文档位置、must-stop 追加、阶段表覆盖、验证命令 | 模型名、provider、凭据 |
+| 仓库级 | `<repo>/.jstack/config.json` | 随仓库变化项：tracker、领域文档位置、must-stop 追加、阶段表文件、验证命令 | 模型名、provider、凭据 |
 
 - 格式统一为 JSON：`jq` 已是运行时依赖，不引入 YAML 解析器。
 - 读取顺序：仓库级覆盖用户级；缺省值写在字段表里。仓库根由 `.jstack/config.json` 向上发现，`JSTACK_REPO` 可覆盖（测试用）。
 - 字段表是 `docs/agents/jstack-config.md`，每个字段写明归属、默认值和读取方。
 - **模型名只出现在用户级**。仓库级配置里出现 `models` 视为错误，`./jstack check` 拒绝，避免把数据流向写进业务仓库。
+- **阶段表只有一个覆盖机制**：`stages_file` 指向一份同格式的表，整表替换。按阶段合并 provider 的写法被否——同一种需求两套机制，还要处理"覆盖后阶段的产出与门禁从哪来"的歧义；整表文件共用同一份解析器和校验，换提供者、加阶段、删阶段都只改一个文件。route 生成路线时丢掉表里不存在的阶段。
 - 现有 `~/.config/jstack/models.json` 是过渡形态：`./jstack models` 继续可读，写入一律落到 `~/.jstack/config.json` 的 `models` 段（由 #24 迁移，旧路径保留只读兼容一个版本周期）。
 
 ### 5. 不新建第五套安装器
@@ -80,9 +81,9 @@ flow 的三个 hook（阶段注入、Stop 证据、must-stop guard）目前只�
 | 定制点 | 归宿 |
 |---|---|
 | tracker 类型 / 本地目录 / 标签 | 仓库级 `tracker` |
-| 领域文档：GLOSSARY、ADR、约定库位置 | 仓库级 `docs` |
-| must-stop 追加项与新增命令模式 | 仓库级 `must_stop` |
-| 阶段表覆盖（换提供者、跳过阶段） | 仓库级 `stages` |
+| 领域文档：GLOSSARY、ADR、约定库位置 | 仓库级 `domain_docs` |
+| must-stop 追加项与新增命令模式 | 仓库级 `must_stop[]` |
+| 阶段表（整表替换：换提供者、加阶段、删阶段） | 仓库级 `stages_file` |
 | 项目验证命令 | 仓库级 `verify` |
 | 模型分层与角色映射 | 用户级 `models` |
 | 预算 / 并发上限 | 用户级 `budget` |

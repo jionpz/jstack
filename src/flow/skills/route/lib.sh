@@ -70,3 +70,72 @@ jstack_hook_sid() {
 }
 
 jstack_json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
+# 仓库根：JSTACK_REPO 优先；否则从当前目录向上，遇到 .jstack/config.json 或 .git 停。
+jstack_repo_root() {
+	local d=${JSTACK_REPO:-$PWD}
+	[ -n "$d" ] || return 1
+	while :; do
+		[ -f "$d/.jstack/config.json" ] && { printf '%s\n' "$d"; return 0; }
+		[ -d "$d/.git" ] && { printf '%s\n' "$d"; return 0; }
+		[ "$d" = / ] && return 1
+		d=$(dirname "$d")
+	done
+}
+
+# 仓库级配置的路径；没有配置文件时返回 1。
+jstack_repo_config() {
+	local root
+	root=$(jstack_repo_root) || return 1
+	[ -f "$root/.jstack/config.json" ] || return 1
+	printf '%s\n' "$root/.jstack/config.json"
+}
+
+# 用 jq 表达式读仓库级配置；没有 jq 或没有配置时返回 1。
+jstack_cfg() {
+	local cfg
+	jstack_has_jq || return 1
+	cfg=$(jstack_repo_config) || return 1
+	jq -r "$1" "$cfg" 2>/dev/null
+}
+
+# 配置读不了时给提示注入用的一行警告；正常时不输出。
+jstack_config_warning() {
+	local cfg
+	cfg=$(jstack_repo_config) || return 0
+	if ! jstack_has_jq; then
+		printf '仓库配置 %s 需要 jq，当前没有 jq，追加项未生效\n' "$cfg"
+	elif ! jq -e 'type == "object"' "$cfg" >/dev/null 2>&1; then
+		printf '仓库配置 %s 不是合法的 JSON 对象，追加项未生效\n' "$cfg"
+	fi
+}
+
+# 阶段表路径：仓库配置里的 stages_file 优先，否则用 $1。相对路径按仓库根解析。
+jstack_stages_path() {
+	local root f
+	root=$(jstack_repo_root) || { printf '%s\n' "$1"; return 0; }
+	f=$(jstack_cfg '.stages_file // empty') || { printf '%s\n' "$1"; return 0; }
+	[ -n "$f" ] || { printf '%s\n' "$1"; return 0; }
+	case $f in
+	/*) printf '%s\n' "$f" ;;
+	*) printf '%s\n' "$root/$f" ;;
+	esac
+}
+
+# 仓库级配置里要注入提示的项，每行 "键=值"；没有配置或都取默认值时无输出。
+jstack_cfg_summary() {
+	jstack_cfg '
+		(if (.stages_file // "") != "" then "阶段表=" + .stages_file else empty end),
+		(if (.tracker.type // "") != "" then "tracker=" + .tracker.type else empty end),
+		(if (.verify.command // "") != "" then "验证命令=" + .verify.command else empty end),
+		((.must_stop // []) | length) as $m |
+			(if $m > 0 then "must-stop 追加=" + ($m | tostring) + " 条" else empty end)
+	'
+}
+
+# 仓库追加的 must-stop 命令模式，每行 "hook<TAB>正则"。
+# 用 \u0001 拼字段再换成 TAB：@tsv 会把正则里的反斜杠再转义一次。
+jstack_cfg_patterns() {
+	jstack_cfg '(.must_stop // [])[] | select(.regex != null and .regex != "") |
+		"\(.hook // .action // "repo")\u0001\(.regex)"' | tr '\001' '\t'
+}

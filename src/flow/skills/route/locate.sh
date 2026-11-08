@@ -29,7 +29,9 @@ pi_npm=$pi_agent/npm/node_modules
 omp_plugins=${OMP_PLUGINS_DIR:-$home/.omp/plugins}
 claude_plugins=${CLAUDE_PLUGINS_DIR:-$home/.claude/plugins}
 cursor_plugins=${CURSOR_PLUGINS_DIR:-$home/.cursor/plugins}
+. "$(dirname "$src")/lib.sh" 2>/dev/null || true
 stages=${JSTACK_STAGES_FILE:-$(dirname "$src")/stages.md}
+[ -n "${JSTACK_STAGES_FILE:-}" ] || stages=$(jstack_stages_path "$stages")
 [ -f "$stages" ] || { echo "locate: 找不到阶段表 ${stages}" >&2; exit 1; }
 # 只在当前 harness 的目录里找备用安装，避免把 Cursor 路由到 Claude Code 的 pstack 树。
 case $root in

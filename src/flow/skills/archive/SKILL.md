@@ -10,7 +10,7 @@ The archive stage's provider. Work through the sections in order. Skip a section
 
 ## 1. Close the tickets
 
-Read `docs/agents/issue-tracker.md` for where tickets live. If it is missing, use the tracker the task actually used.
+Read `docs/agents/issue-tracker.md` for where tickets live. If the repo has `.jstack/config.json`, its `tracker` section wins: `type` (`github` or `local`), `local_dir`, and `label`. If both are missing, use the tracker the task actually used.
 
 - **GitHub issues:** `gh issue close <n> --repo <owner/repo> --comment "<evidence>"`, where the evidence names the commits, the verification command, and what it showed.
 - **Local markdown:** set `**Status:** done` in the ticket file and append an `## Evidence` section with the commit SHAs and the verification command and result.
@@ -19,8 +19,8 @@ Read `docs/agents/issue-tracker.md` for where tickets live. If it is missing, us
 
 ## 2. Keep the domain docs current
 
-- A new or changed domain term: update `GLOSSARY.md` with the definition and what to avoid calling it. Follow `spec:domain-modeling` when it is on the locate list.
-- A decision with lasting consequences: add the next-numbered ADR under `docs/adr/` with context, decision, and consequences.
+- A new or changed domain term: update the glossary at `domain_docs.glossary` (`GLOSSARY.md` by default) with the definition and what to avoid calling it. Follow `spec:domain-modeling` when it is on the locate list.
+- A decision with lasting consequences: add the next-numbered ADR under `domain_docs.adr` (`docs/adr/` by default) with context, decision, and consequences.
 - Write only what this task actually settled. Do not restate code or restate the ticket.
 
 ## 3. Write back to gbrain
@@ -44,7 +44,7 @@ Read pstack's worktree-cleanup playbook at the path `locate.sh` printed for `pst
 
 A lesson is a correction, a trap, or a process change this task produced. For each one:
 
-- **Project-specific** (coding conventions, local setup): append it to `docs/agents/conventions/<topic>.md` when the repo has that directory. If it does not, skip and say the repo has no conventions library yet.
+- **Project-specific** (coding conventions, local setup): append it to `<domain_docs.conventions>/<topic>.md` (`docs/agents/conventions/` by default) when the repo has that directory. If it does not, skip and say the repo has no conventions library yet.
 - **Workflow-level** (jstack itself should change): search `gh issue list --repo jionpz/jstack --state open --search "<keywords>"` first. Open a new issue only when no open issue already covers it: `gh issue create --repo jionpz/jstack --title "<title>" --body "<what happened, what should change, evidence>"`. At most three per task; drop the rest with one line each.
 - If `gh` is unavailable or the repo has no remote, print the issue text instead of creating it.
 

@@ -147,4 +147,69 @@ done
 unset JSTACK_NO_JQ
 t "guard.sh 在插件目录不完整时放行" sh -c 'printf "%s" "$1" | CLAUDE_PLUGIN_ROOT=$2 "$3" "$4" | grep -q . && exit 1 || exit 0' _ "$(bash_input 'rm -rf x')" "$T/nowhere" "$BASH" "$H/guard.sh"
 
+# 仓库级配置：.jstack/config.json 追加 must-stop、替换阶段表、注入提示。
+REPO="$T/repo"
+SID2=test-session-0002
+mkdir -p "$REPO/.jstack" "$REPO/.git"
+cat >"$REPO/.jstack/config.json" <<'JSON'
+{
+  "tracker": { "type": "local" },
+  "must_stop": [
+    { "action": "运行 ./deploy.sh", "hook": "deploy", "regex": "(^|[[:space:]/])\\./deploy\\.sh([[:space:]]|$)" }
+  ],
+  "stages_file": ".jstack/stages.md",
+  "verify": { "command": "./scripts/verify.sh" }
+}
+JSON
+cat >"$REPO/.jstack/stages.md" <<'MD'
+# 仓库自己的阶段表
+
+## Stages
+
+| Stage | Output | Gate | Providers |
+|---|---|---|---|
+| size | One sentence | None | `flow:route` |
+| execute | The change | None | `pstack:poteto-mode` |
+| verify | Evidence | No evidence means not done | `pstack:principle-prove-it-works` |
+| land | Commits | must-stop | `pstack:poteto-mode/playbooks/opening-a-pr.md` |
+MD
+repo_stage() { (cd "$REPO" && CLAUDE_CODE_SESSION_ID=$SID2 "$BASH" "$ST" "$@"); }
+repo_hook() { (cd "$REPO" && printf '%s' "$2" | "$BASH" "$H/$1.sh"); }
+repo_state="$JSTACK_STATE_DIR/$SID2"
+repo_prompt_in() { printf '{"session_id":"%s","hook_event_name":"UserPromptSubmit","prompt":"hi"}' "$SID2"; }
+repo_asks() {
+	local out
+	out=$(repo_hook guard "$(bash_input "$1")")
+	valid_json "$out" && printf '%s' "$out" | grep -qF '"permissionDecision":"ask"' &&
+		printf '%s' "$out" | grep -qF 'jstack must-stop: 运行 ./deploy.sh（仓库追加）. Confirm before it runs.'
+}
+if command -v jq >/dev/null; then
+	t "仓库配置：guard.sh 问 ./deploy.sh 并标明仓库追加" repo_asks './deploy.sh --all'
+	t "仓库配置：guard.sh 仍问内置的 rm -rf" sh -c '
+		out=$(cd "$1" && printf "%s" "$2" | "$3" "$4")
+		printf "%s" "$out" | grep -qF "permissionDecision" && printf "%s" "$out" | grep -qF "Recursive forced delete"' \
+		_ "$REPO" "$(bash_input 'rm -rf build')" "$BASH" "$H/guard.sh"
+	repo_stage start execute,verify >/dev/null
+	t "仓库配置：stage.sh start 接受 stages_file 里的阶段" test "$(sed -n 's/^path //p' "$repo_state")" = execute,verify
+	t "仓库配置：stage.sh start 拒绝表外阶段" not repo_stage start clarify
+	t "仓库配置：prompt.sh 注入仓库配置" sh -c '
+		out=$(cd "$1" && printf "%s" "$2" | "$3" "$4")
+		printf "%s\n" "$out" | grep -qF "仓库配置：阶段表=.jstack/stages.md" &&
+		printf "%s\n" "$out" | grep -qF "tracker=local" &&
+		printf "%s\n" "$out" | grep -qF "验证命令=./scripts/verify.sh" &&
+		printf "%s\n" "$out" | grep -qF "must-stop 追加=1 条"' \
+		_ "$REPO" "$(repo_prompt_in)" "$BASH" "$H/prompt.sh"
+	repo_stage end >/dev/null
+fi
+BAD="$T/badrepo"
+mkdir -p "$BAD/.jstack" "$BAD/.git"
+printf '{ "must_stop": [\n' >"$BAD/.jstack/config.json"
+t "仓库配置坏掉时 prompt.sh 警告配置未生效" sh -c '
+	out=$(cd "$1" && printf "%s" "$2" | "$3" "$4")
+	printf "%s\n" "$out" | grep -qF "不是合法的 JSON 对象"' _ "$BAD" "$(prompt_in)" "$BASH" "$H/prompt.sh"
+t "仓库配置坏掉时 stage.sh 不受影响" sh -c 'cd "$1" && CLAUDE_CODE_SESSION_ID=$2 "$3" "$4" start execute,verify >/dev/null' _ "$BAD" "$SID2" "$BASH" "$ST"
+t "没有 jq 时仓库追加的 must-stop 不生效" sh -c '
+	out=$(cd "$1" && printf "%s" "$2" | JSTACK_NO_JQ=1 "$3" "$4")
+	[ -z "$out" ]' _ "$REPO" "$(bash_input './deploy.sh')" "$BASH" "$H/guard.sh"
+
 [ "$fails" -eq 0 ]
