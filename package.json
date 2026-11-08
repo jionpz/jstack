@@ -11,6 +11,9 @@
     "flow"
   ],
   "pi": {
+    "extensions": [
+      "./plugins/flow/extensions/pi.ts"
+    ],
     "skills": [
       "./plugins/pstack/skills",
       "./plugins/spec/skills",

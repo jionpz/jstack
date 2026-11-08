@@ -230,19 +230,21 @@ route 只在三处停下来问你，其余全部自动推进：
 
 ### 结构门禁（hooks）
 
-flow 插件自带三个门禁（Claude Code 的 `src/flow/hooks/hooks.json`，Cursor 的 `hooks/hooks.cursor.json`），把两条门禁从提示词变成结构。hook 只读状态文件，不调模型；任何内部错误都无输出地放行，不会卡住会话。
+flow 插件自带三个门禁（Claude Code 的 `src/flow/hooks/hooks.json`，Cursor 的 `hooks/hooks.cursor.json`，Pi / OMP 的 `src/flow/extensions/*.ts`），把阶段门禁从提示词变成结构。Pi / OMP 的扩展只是协议翻译，判定仍由同一组 hook 脚本做。hook 只读状态文件，不调模型；任何内部错误都无输出地放行，不会卡住会话。各 harness 的能力、接入方式和降级见 [`docs/harness/gates.md`](docs/harness/gates.md)。
 
 - **阶段提示（UserPromptSubmit，`prompt.sh`）**：你每发一条消息，就把当前阶段、阶段路径、这一阶段在 `stages.md` 里的产出和门禁、下一阶段以及 `stage.sh` 的用法注入上下文，并清掉"等待用户回答"标记。没有阶段记录时什么也不做。
 - **验证门禁（Stop，`stop.sh`）**：路径含 verify、已经进入 execute 或之后的阶段、却一条验证证据都没记录时，拦下这次结束，让 agent 先验证并用 `stage.sh evidence` 记录。agent 运行过 `stage.sh ask` 且这一轮的回复里确实向你提了问题、或者这一轮本身就是被 Stop hook 拦回来的，都放行。每次进入 execute 会清掉之前的证据，L 路径的下一张 ticket 要重新验证。
-- **红线守卫（Claude Code 的 PreToolUse / Cursor 的 beforeShellExecution，只看 shell 命令，`guard.sh`）**：命令在 `;`、`&&`、`||`、`|`、换行处切段，任一段命中 `must-stop.md` 的 patterns 就让 harness 先问你，原因写明命中的是哪条必须停事项。它不看阶段状态，对所有会话生效，包括没走 route 的会话。
+- **红线守卫（Claude Code 的 PreToolUse / Cursor 的 beforeShellExecution / Pi、OMP 的 bash `tool_call`，只看 shell 命令，`guard.sh`）**：命令在 `;`、`&&`、`||`、`|`、换行处切段，任一段命中 `must-stop.md` 的 patterns 就让 harness 先问你，原因写明命中的是哪条必须停事项。它不看阶段状态，对所有会话生效，包括没走 route 的会话。
 
-route 用同目录的 `stage.sh` 记录阶段（`start`、`enter`、`evidence`、`ask`、`end`、`show`）。状态按会话存成纯文本 `${JSTACK_STATE_DIR:-${XDG_STATE_HOME:-~/.local/state}/jstack/sessions}/<会话 id>`，`start` 时顺带删掉 7 天没动过的旧记录。会话 id 取 Claude Code 的 `CLAUDE_CODE_SESSION_ID` 或 Cursor 的 `CURSOR_CONVERSATION_ID`；两个都没有的 harness 里 `stage.sh` 只打印一行说明，不做任何事。
+route 用同目录的 `stage.sh` 记录阶段（`start`、`enter`、`evidence`、`ask`、`end`、`show`）。状态按会话存成纯文本 `${JSTACK_STATE_DIR:-${XDG_STATE_HOME:-~/.local/state}/jstack/sessions}/<会话 id>`，`start` 时顺带删掉 7 天没动过的旧记录。会话 id 依次取 `JSTACK_SESSION_ID`（OMP 扩展写入）、`PI_SESSION_ID`（Pi）、`CLAUDE_CODE_SESSION_ID`、`CURSOR_CONVERSATION_ID`；都没有的 harness（当前是 Codex）里 `stage.sh` 只打印一行说明，不做任何事。
 
 Cursor 的 hook 是它自己的事件和协议，不复用 Claude 的 `hooks.json`：`beforeShellExecution` 对应 guard（`permission: ask` 会弹出确认），`beforeSubmitPrompt` 对应阶段提示（输出 `additional_context`），`stop` 对应验证门禁（输出 `followup_message`）。Cursor 的 `stop` 输入没有最后一条回复，所以标了 `ask` 时只能直接放行，无法像 Claude 那样核对回复里是否真的提了问题；`stop` 的 `loop_limit` 设为 3，避免反复拦住同一轮。`./jstack install-cursor` 现在会复制完整插件树，Cursor 加载器按 `.cursor-plugin/plugin.json` 的 `hooks` 字段只加载 `hooks.cursor.json`。项目级安装同样会写 `.cursor/hooks.json`，命令指向 `.jstack/vendor`。
 
-Pi、OMP、Codex 还没有实现对应的 hook，`stage.sh` 在那里拿不到会话 id，只打印一行说明，不做任何事。
+Pi 和 OMP 用扩展承载同一套门禁，不复制判定逻辑：根 `package.json` 的 `pi.extensions` 指向 `plugins/flow/extensions/pi.ts`（`./jstack install-pi` 装好即生效）；OMP 的插件清单不收 Claude 格式 hooks，`./jstack install` 在 `~/.omp/agent/extensions/jstack-flow-gates.ts` 写一个入口文件，转出 `plugins/flow/extensions/omp.ts`。扩展把 `before_agent_start` 对应到阶段提示、`agent_before_settle` / `session_stop` 对应到验证门禁、`tool_call` 只对 bash 对应到红线守卫。Pi 没有 harness 维护的 `stop_hook_active`，扩展自己限制每条用户消息最多拦 3 次；OMP 在 `session_start` 把会话 id 写进 `JSTACK_SESSION_ID`，子 shell 继承，`stage.sh` 才能和 Claude / Cursor 用同一套状态文件。非交互运行时没有人能回答确认框，must-stop 命中会直接拒绝执行。
 
-实测过两种模式：交互式会话里（包括 `bypassPermissions`）guard 的"先问"会弹出确认框，标题是命令和命中的必须停事项；`claude -p` 这类非交互运行没有人能回答，"先问"变成拒绝执行，命令不会运行。Stop 门禁同样在 `-p` 下生效。
+Codex 还没有 hook 事件，也拿不到会话 id（归 #16）：`stage.sh` 在那里只打印一行说明，不做任何事，route 的收尾报告要写明门禁未生效。
+
+实测过两种模式：交互式会话里（包括 `bypassPermissions`）guard 的"先问"会弹出确认框，标题是命令和命中的必须停事项；`claude -p`、`pi -p`、`omp -p` 这类非交互运行没有人能回答，"先问"变成拒绝执行，命令不会运行。Stop 门禁同样在 `-p` 下生效；Pi 和 OMP 的实测已收进 `./jstack smoke pi` / `./jstack smoke omp`。
 
 ## 为什么这样做
 
@@ -284,9 +286,10 @@ plugins/spec/                    spec 构建产物，带 Claude 和 Cursor 两�
 src/flow/                        flow 的源码，jstack 自己维护，可以直接改
 plugins/flow/                    flow 构建产物，带 Claude 和 Cursor 两个 manifest，等于 src/flow 再加版本戳，不要手改
 docs/harness/agents.md           Pi/OMP/Claude Code 共用的 adapter，把 pstack 里的 Cursor 名称映射到各 harness
+docs/harness/gates.md            门禁能力矩阵：各 harness 支持哪些事件、怎么接、怎么降级
 docs/adr/                        决策记录；ADR-0006 定义项目级接入与用户级 / 仓库级两层配置
 docs/agents/jstack-config.md     两级配置的字段表：归属、默认值、读取方（ADR-0006）
-package.json                     Pi package manifest，pi.skills 指向三个插件的 skills
+package.json                     Pi package manifest，pi.skills 指向三个插件的 skills，pi.extensions 指向 flow 的门禁扩展
 upstream/pstack.lock.json        锁定的 pstack（Claude Code 树）上游：仓库、路径、提交、版本、副本内容哈希
 upstream/pstack-cursor.lock.json 锁定的 pstack（Cursor 原生树）上游，字段同上
 upstream/spec.lock.json          锁定的 spec 上游，字段同上
@@ -350,11 +353,11 @@ git diff -- upstream/     # 看上游改了什么
 5. skill 里通过 Skill 工具调用的 skill 是否都收进了插件
 6. spec/flow 的 Cursor manifest 是否和 Claude manifest 同名、同版本、同样的 skill 列表
 7. `plugins/pstack-cursor` 是否是 Cursor 插件 `pstack`，skills 和 agents 是否齐全
-8. 根目录 `package.json` 是否把三个插件的 skills 都暴露给 Pi
+8. 根目录 `package.json` 是否把三个插件的 skills 和 flow 的门禁扩展（`pi.extensions`）都暴露给 Pi
 9. `stages.md` 里的每个提供者是否在六种布局下都找得到：用 `plugins/` 产物在临时的假 HOME 里复制出本地 marketplace、Claude GitHub 缓存、OMP 缓存、Cursor 本地插件、Pi npm 包，再加一种入口软链（`<tmp>/.agents/skills/route` 指向仓库里的 flow skill），从各自的 flow 副本运行 `locate.sh`，路径必须落在该布局自己的树里；再把一个提供者换成 `spec:no-such-skill`，`locate.sh` 必须失败并点名它
 10. `claude plugin validate` 是否通过（marketplace 和全部插件）
 11. 评测任务自检（`./jstack eval --selftest`）：每个任务的 check 在初始状态下失败、在参考解下通过
-12. flow 的 `stage.sh` 和三个 hook（`tests/flow-hooks.sh`）：对 `plugins/flow` 产物喂 JSON、断言输出和状态文件，Claude Code 和 Cursor 两种输入/输出协议都测，有 jq 和没有 jq 两种路径也都测；macOS 上用 `/bin/bash`（3.2）运行
+12. flow 的 `stage.sh` 和三个 hook（`tests/flow-hooks.sh`）：对 `plugins/flow` 产物喂 JSON、断言输出和状态文件，Claude Code 和 Cursor 两种输入/输出协议都测，会话 id 的四级回退（`JSTACK_SESSION_ID`、`PI_SESSION_ID`、`CLAUDE_CODE_SESSION_ID`、`CURSOR_CONVERSATION_ID`）也测，有 jq 和没有 jq 两种路径也都测；macOS 上用 `/bin/bash`（3.2）运行
 13. 模型分层命令（`./jstack models`）：在临时 HOME 里跑 init、set、apply、status，核对四个 harness 的规则文件、Pi/OMP 标记块合并与首次确认、旧配置迁移备份、roles 覆盖、settings.json 的模型 env 和原有键、备份幂等、`--dry-run` 不落盘、预算降级，以及今日 token 统计
 14. 仓库级配置（`<repo>/.jstack/config.json`，ADR-0006）：当前仓库有配置时校验字段与 `stages_file`；在临时仓库里验证 `stage.sh` 按 `stages_file` 收/拒阶段、`guard.sh` 合并 `must_stop` 并在 reason 里标明“仓库追加”、`prompt.sh` 注入配置，坏 JSON、禁用键、缺 `execute` 都要报出来
 15. `./jstack doctor`：临时 HOME 构造 Claude user/project、Pi package、OMP 缓存、Cursor 本地插件、vendor 和 lock 六种来源，核对表格与 `--json` 的值；篡改 lock 版本或源目录版本后必须报漂移并返回非 0，`--no-fail` 只警告
@@ -367,8 +370,8 @@ git diff -- upstream/     # 看上游改了什么
 `check --smoke` 在静态检查之后，对**本机已安装**的 harness 各跑一遍 headless 链路；没安装的 harness 会打印跳过原因，不算失败。也可以单独运行：
 
 ```bash
-./jstack smoke pi       # skill 目录、/skill:poteto-mode、route locate.sh、poteto-agent
-./jstack smoke omp      # skill:// URI、隐藏入口按路径读、route、task 派发 poteto-agent
+./jstack smoke pi       # skill 目录、/skill:poteto-mode、route locate.sh、poteto-agent、阶段门禁
+./jstack smoke omp      # skill:// URI、隐藏入口按路径读、route、task 派发 poteto-agent、阶段门禁
 ./jstack smoke cursor   # 调用 Cursor 自带 plugins-loader 检查三个插件、hooks 和 route
 ./jstack smoke all      # 三个都跑（= ./jstack check --smoke）
 ```

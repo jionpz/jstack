@@ -72,13 +72,14 @@ jstack_json_true() {
 }
 
 # hook 的会话 id：Claude Code 是 session_id，Cursor 是 conversation_id；
-# 输入里没有时用 shell 里的 CLAUDE_CODE_SESSION_ID / CURSOR_CONVERSATION_ID。
+# 输入里没有时依次看 shell 环境：JSTACK_SESSION_ID（flow 的 OMP 扩展写入进程环境）、
+# PI_SESSION_ID（Pi 的 bash 工具注入）、CLAUDE_CODE_SESSION_ID、CURSOR_CONVERSATION_ID。
 # Cursor 的会话 id 是 UUID，它的 shell 环境变量只做 URI 编码，UUID 原样保留，两边值一致。
 jstack_hook_sid() {
 	local sid
 	sid=$(jstack_json_str session_id "$1")
 	[ -n "$sid" ] || sid=$(jstack_json_str conversation_id "$1")
-	printf '%s\n' "${sid:-${CLAUDE_CODE_SESSION_ID:-${CURSOR_CONVERSATION_ID:-}}}"
+	printf '%s\n' "${sid:-${JSTACK_SESSION_ID:-${PI_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-${CURSOR_CONVERSATION_ID:-}}}}}"
 }
 
 jstack_json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }

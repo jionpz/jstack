@@ -6,7 +6,7 @@ set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
-unset CLAUDE_CODE_SESSION_ID CURSOR_CONVERSATION_ID JSTACK_NO_JQ JSTACK_STAGES_FILE
+unset JSTACK_SESSION_ID PI_SESSION_ID CLAUDE_CODE_SESSION_ID CURSOR_CONVERSATION_ID JSTACK_NO_JQ JSTACK_STAGES_FILE
 export CLAUDE_PLUGIN_ROOT="$ROOT/plugins/flow" JSTACK_STATE_DIR="$T/state"
 SID=test-session-0001
 ST="$CLAUDE_PLUGIN_ROOT/skills/route/stage.sh"
@@ -112,7 +112,10 @@ t "flow 的 Cursor 清单指向 hooks.cursor.json" grep -q '"hooks"[[:space:]]*:
 
 t "stage.sh 没有会话 id 时只打印说明" sh -c '[ "$("$1" "$2" start nope 2>&1)" = "jstack: 这个 harness 没有会话 id，阶段门禁不生效" ] && [ ! -e "$3" ]' _ "$BASH" "$ST" "$JSTACK_STATE_DIR"
 t "stage.sh 在 Cursor 会话里用 CURSOR_CONVERSATION_ID" sh -c 'CURSOR_CONVERSATION_ID=cursor-session "$1" "$2" start execute >/dev/null && [ -f "$3/cursor-session" ]' _ "$BASH" "$ST" "$JSTACK_STATE_DIR"
-rm -f "$JSTACK_STATE_DIR/cursor-session"
+t "stage.sh 在 Pi 会话里用 PI_SESSION_ID" sh -c 'PI_SESSION_ID=pi-session "$1" "$2" start execute >/dev/null && [ -f "$3/pi-session" ]' _ "$BASH" "$ST" "$JSTACK_STATE_DIR"
+t "stage.sh 在 OMP 会话里用 JSTACK_SESSION_ID" sh -c 'JSTACK_SESSION_ID=omp-session "$1" "$2" start execute >/dev/null && [ -f "$3/omp-session" ]' _ "$BASH" "$ST" "$JSTACK_STATE_DIR"
+t "stage.sh 的会话 id 依次取 JSTACK_SESSION_ID、PI_SESSION_ID、Claude、Cursor" sh -c 'JSTACK_SESSION_ID=omp-session PI_SESSION_ID=pi-session CLAUDE_CODE_SESSION_ID=$4 CURSOR_CONVERSATION_ID=$4 "$1" "$2" start execute >/dev/null && [ -f "$3/omp-session" ]' _ "$BASH" "$ST" "$JSTACK_STATE_DIR" "$SID"
+rm -f "$JSTACK_STATE_DIR/cursor-session" "$JSTACK_STATE_DIR/pi-session" "$JSTACK_STATE_DIR/omp-session"
 t "stage.sh start 不认识的阶段时失败" not stage start execute,deploy
 t "stage.sh start 失败时不写状态" test ! -e "$STATE"
 t "stage.sh enter 没有状态时失败" not stage enter execute
@@ -134,6 +137,12 @@ for mode in jq nojq; do
 	t "[$mode] stop.sh 输入没有 session_id 时用 CLAUDE_CODE_SESSION_ID" sh -c '
 		out=$(printf "{\"stop_hook_active\":false}" | CLAUDE_CODE_SESSION_ID=$1 "$2" "$3")
 		printf "%s" "$out" | grep -qF "\"decision\":\"block\""' _ "$SID" "$BASH" "$H/stop.sh"
+	t "[$mode] stop.sh 输入没有 session_id 时用 PI_SESSION_ID" sh -c '
+		out=$(printf "{\"stop_hook_active\":false}" | PI_SESSION_ID=$1 "$2" "$3")
+		printf "%s" "$out" | grep -qF "\"decision\":\"block\""' _ "$SID" "$BASH" "$H/stop.sh"
+	t "[$mode] stop.sh 的 JSTACK_SESSION_ID 优先于 PI_SESSION_ID" sh -c '
+		out=$(printf "{\"stop_hook_active\":false}" | JSTACK_SESSION_ID=other-session PI_SESSION_ID=$1 "$2" "$3")
+		[ -z "$out" ]' _ "$SID" "$BASH" "$H/stop.sh"
 	t "[$mode] guard.sh 对 Cursor 的 beforeShellExecution 返回 permission=ask" cursor_asks 'rm -rf build' 'Recursive forced delete (`rm -rf` and its variants)'
 	t "[$mode] guard.sh 对 Cursor 的 preToolUse 降级为 deny" cursor_denies 'rm -rf build' 'Recursive forced delete (`rm -rf` and its variants)'
 	t "[$mode] stop.sh 对 Cursor 的 completed 返回 followup_message" cursor_blocks
