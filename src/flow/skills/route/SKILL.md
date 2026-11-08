@@ -37,9 +37,21 @@ Decide from the request and a quick look at the repo. Do not ask the user to siz
 
 When the repo's own CLAUDE.md or `.claude/rules/` defines different sizes, spec locations, or gates, the repo wins.
 
-State the size and the stage path in one sentence. Then open a todo list with one item per stage on the path, each naming its gate from stages.md. Start without waiting for confirmation.
+State the size and the stage path in one sentence. Then record the path with `stage.sh` (next section) and open a todo list with one item per stage on the path, each naming its gate from stages.md. Start without waiting for confirmation.
 
 ## 3. Walk the stages
+
+`stage.sh` sits next to this SKILL.md and records where the task is, so the flow hooks can enforce the gates structurally. In Claude Code, run it as `"${CLAUDE_SKILL_DIR}/stage.sh"`. In a harness without flow hooks it prints a notice and does nothing, so run it anyway.
+
+| When | Command |
+|---|---|
+| Right after sizing | `stage.sh start <stage>,<stage>,...` with the path in order |
+| Entering each stage | `stage.sh enter <stage>` |
+| Each piece of verification evidence | `stage.sh evidence "<command> -> <what it showed>"` |
+| Right before you stop to ask the user anything | `stage.sh ask` |
+| After the finish report | `stage.sh end` |
+
+Once execute has started on a path that includes verify, the harness will not let you end the turn until evidence is recorded, or until you have run `stage.sh ask` and your reply asks the user a question. Entering execute again, as for the next ticket, clears the earlier evidence. Record real evidence; never record a placeholder or ask a token question to get past the gate.
 
 Take the stages in path order. For each one, read its providers from the locate output and follow them, then check the stage's gate. Mark a stage done only when its gate is met, and write its output into the todo item: a decision list, a spec path, a commit, the verification command and what it showed.
 
@@ -59,7 +71,7 @@ Ask the user only at these points. Everything else proceeds.
 
 1. **Clarification round.** grill-with-docs asks in rounds. Each round lists every open question at once, numbered, with your recommended answer, worded so "yes" accepts it. Look facts up yourself; only decisions reach the user.
 2. **Breakdown sign-off (L and XL only).** Present the spec's testing seams and the ticket breakdown together in one message, before you publish either. This single approval covers both to-spec's seam check and to-tickets' quiz.
-3. **Always-pause decisions**, at any size. A business rule or product behavior the evidence cannot settle, a breaking public API or schema change, irreversible data operations, production, permissions, or security changes, a major architecture change with no ADR, and cost, legal, or privacy exposure. Collect these and ask them in one round, each with options and a recommendation.
+3. **Must-stop actions**, at any size and under any autonomy grant: everything in [must-stop.md](must-stop.md), next to this file. It is the only such list. The flow guard hook makes the harness ask before the shell commands it can detect; the rest you must recognize yourself. Collect these and ask them in one round, each with options and a recommendation.
 
 Once the user approves the breakdown, execute without further check-ins. poteto-mode's own Autonomy section still applies, including its Always-pause list.
 

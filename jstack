@@ -648,6 +648,14 @@ cmd_check() {
 		say "✓ Pi package manifest 暴露了 pstack、spec、flow 三个插件的 skills"
 	fi
 	check_locate || rc=1
+	# 阶段门禁对构建产物测。macOS 上用 /bin/bash 跑，确认 hook 在系统自带的 bash 3.2 下也能用。
+	if "$([ -x /bin/bash ] && echo /bin/bash || echo bash)" "$ROOT/tests/flow-hooks.sh" >"$WORK/hooks" 2>&1; then
+		say "✓ flow 的 stage.sh 和 hooks 测试通过（$(grep -c '^✓' "$WORK/hooks") 项）"
+	else
+		say "✗ flow 的 stage.sh 和 hooks 测试未通过："
+		grep -v '^✓' "$WORK/hooks" | sed 's/^/  /'
+		rc=1
+	fi
 	if command -v claude >/dev/null; then
 		claude plugin validate "$ROOT" >"$WORK/validate" 2>&1 || failed=1
 		for p in $PLUGINS; do
@@ -779,7 +787,12 @@ cmd_install_cursor() {
 			esac
 		fi
 		mkdir -p "$target"
-		rsync -a --delete "$src/" "$target/"
+		# flow 的 hooks 只为 Claude Code 写过、测过；Cursor 会自动加载 hooks/hooks.json，所以不带过去。
+		if [ "$name" = flow ]; then
+			rsync -a --delete --delete-excluded --exclude /hooks/ "$src/" "$target/"
+		else
+			rsync -a --delete "$src/" "$target/"
+		fi
 		say "✓ 已复制 Cursor $name 到 $target"
 	done
 	say "在 Cursor 里重开窗口或运行 /reload；用 /poteto-mode、/route 验证。"

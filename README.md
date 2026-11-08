@@ -130,6 +130,20 @@ route 只在三处停下来问你，其余全部自动推进：
   （没收录 `triage` skill，所以不会自动写 `docs/agents/triage-labels.md`。）
 - **handoff 写到 `$TMPDIR`**，不是仓库。它本来就是为了把当前会话交接给下一个 agent，不是长期文档。
 
+### 结构门禁（hooks）
+
+flow 插件自带三个 Claude Code hook（`src/flow/hooks/hooks.json`），把两条门禁从提示词变成结构。hook 只读状态文件，不调模型；任何内部错误都无输出地放行，不会卡住会话。
+
+- **阶段提示（UserPromptSubmit，`prompt.sh`）**：你每发一条消息，就把当前阶段、阶段路径、这一阶段在 `stages.md` 里的产出和门禁、下一阶段以及 `stage.sh` 的用法注入上下文，并清掉"等待用户回答"标记。没有阶段记录时什么也不做。
+- **验证门禁（Stop，`stop.sh`）**：路径含 verify、已经进入 execute 或之后的阶段、却一条验证证据都没记录时，拦下这次结束，让 agent 先验证并用 `stage.sh evidence` 记录。agent 运行过 `stage.sh ask` 且这一轮的回复里确实向你提了问题、或者这一轮本身就是被 Stop hook 拦回来的，都放行。每次进入 execute 会清掉之前的证据，L 路径的下一张 ticket 要重新验证。
+- **红线守卫（PreToolUse，只看 Bash，`guard.sh`）**：命令在 `;`、`&&`、`||`、`|`、换行处切段，任一段命中 `must-stop.md` 的 patterns 就让 Claude Code 先问你，原因写明命中的是哪条必须停事项。它不看阶段状态，对所有会话生效，包括没走 route 的会话。
+
+route 用同目录的 `stage.sh` 记录阶段（`start`、`enter`、`evidence`、`ask`、`end`、`show`）。状态按会话存成纯文本 `${JSTACK_STATE_DIR:-${XDG_STATE_HOME:-~/.local/state}/jstack/sessions}/<会话 id>`，`start` 时顺带删掉 7 天没动过的旧记录。会话 id 取 Claude Code 给 Bash 工具和 hook 的 `CLAUDE_CODE_SESSION_ID`。
+
+目前只在 Claude Code 生效。Pi、OMP、Cursor、Codex 还没有实现对应的 hook，`stage.sh` 在那里拿不到会话 id，只打印一行说明，不做任何事。Cursor 的插件加载器会自动发现 `hooks/hooks.json` 并在它自己的宿主里跑，所以 `./jstack install-cursor` 复制 flow 时排除 `hooks/`，不把没测过的 hook 交给 Cursor。
+
+实测过两种模式：交互式会话里（包括 `bypassPermissions`）guard 的"先问"会弹出确认框，标题是命令和命中的必须停事项；`claude -p` 这类非交互运行没有人能回答，"先问"变成拒绝执行，命令不会运行。Stop 门禁同样在 `-p` 下生效。
+
 ## 为什么这样做
 
 pstack 上游 `cursor/plugins` 已经官方维护一份 Claude Code 版：[`harness/pstack/claude-code`](https://github.com/cursor/plugins/tree/main/harness/pstack/claude-code)。它由上游脚本从 `pstack/` 生成，上游 CI 会检查 skill 里用到的每个 Cursor 名称在 adapter 映射表里都有对应的一行。凡是用到 Cursor 名称的 SKILL.md，都加了一句"先读 adapter"，由模型在运行时把 `Task`、`readonly`、模型名等映射成 Claude Code 的写法。
@@ -180,6 +194,7 @@ evals/fixture/                   评测用的种子项目，每个样本复制�
 evals/tasks/<任务>/              评测任务：prompt.md、check.sh、solution.patch 或 answer.md、可选的 seed/
 evals/results.jsonl              评测记录，每个样本一行，只追加
 evals/reports/<日期>.md          评测报告，每次运行追加一节
+tests/flow-hooks.sh              flow 阶段门禁和 hooks 的测试（check 会跑）
 jstack                           维护脚本：install / install-pi / install-cursor / sync / build / check / smoke / eval
 ```
 
@@ -237,6 +252,7 @@ git diff -- upstream/     # 看上游改了什么
 9. `stages.md` 里的每个提供者是否在五种安装布局下都找得到：用 `plugins/` 产物在临时的假 HOME 里复制出本地 marketplace、Claude GitHub 缓存、OMP 缓存、Cursor 本地插件、Pi npm 包，从各自的 flow 副本运行 `locate.sh`，路径必须落在该布局自己的树里；再把一个提供者换成 `spec:no-such-skill`，`locate.sh` 必须失败并点名它
 10. `claude plugin validate` 是否通过（marketplace 和全部插件）
 11. 评测任务自检（`./jstack eval --selftest`）：每个任务的 check 在初始状态下失败、在参考解下通过
+12. flow 的 `stage.sh` 和三个 hook（`tests/flow-hooks.sh`）：对 `plugins/flow` 产物喂 JSON、断言输出和状态文件，有 jq 和没有 jq 两种路径都测；macOS 上用 `/bin/bash`（3.2）运行
 
 第 3、4、5 项专门查 adapter 管不到的地方：脚本和 frontmatter 都不经过模型，上游新引入的 Cursor 依赖在同步时就能发现；第 5 项查的是 spec 这种"只收一部分 skill"的插件有没有漏掉依赖。`claude plugin validate` 不查 frontmatter 键，也不查插件内部 skill 之间的调用关系。全部通过才提交。
 

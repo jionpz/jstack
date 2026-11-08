@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# flow 插件阶段门禁的测试：对构建产物 plugins/flow 运行 stage.sh 和三个 hook，喂 JSON、断言输出和状态文件。
+# 每项打印一行 ✓ 或 ✗，有 ✗ 时 exit 1。./jstack check 用 /bin/bash 跑它，顺带确认兼容 macOS 的 bash 3.2：
+# 脚本都用当前解释器 $BASH 运行，而不是各自的 shebang。
+set -u
+ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
+T=$(mktemp -d)
+trap 'rm -rf "$T"' EXIT
+unset CLAUDE_CODE_SESSION_ID JSTACK_NO_JQ JSTACK_STAGES_FILE
+export CLAUDE_PLUGIN_ROOT="$ROOT/plugins/flow" JSTACK_STATE_DIR="$T/state"
+SID=test-session-0001
+ST="$CLAUDE_PLUGIN_ROOT/skills/route/stage.sh"
+H="$CLAUDE_PLUGIN_ROOT/hooks"
+STATE="$JSTACK_STATE_DIR/$SID"
+fails=0
+
+t() {
+	local name=$1
+	shift
+	if "$@" >/dev/null 2>&1; then echo "✓ $name"; else echo "✗ $name"; fails=$((fails + 1)); fi
+}
+stage() { CLAUDE_CODE_SESSION_ID=$SID "$BASH" "$ST" "$@"; }
+hook() { printf '%s' "$2" | "$BASH" "$H/$1.sh"; }
+state_is() { [ "$(cat "$STATE")" = "$(printf '%s\n' "$@")" ]; }
+silent() { [ -z "$("$@")" ]; }
+not() { ! "$@"; }
+prints() { [ "$("${@:2}")" = "$1" ]; }
+valid_json() {
+	if command -v jq >/dev/null; then printf '%s' "$1" | jq -e . >/dev/null; else printf '%s' "$1" | grep -q '^{.*}$'; fi
+}
+blocks() {
+	local out
+	out=$(hook stop "$1")
+	valid_json "$out" && printf '%s' "$out" | grep -qF '"decision":"block"' &&
+		printf '%s' "$out" | grep -qF 'jstack verify' && printf '%s' "$out" | grep -qF "$ST"
+}
+asks() {
+	local out
+	out=$(hook guard "$(bash_input "$1")")
+	valid_json "$out" && printf '%s' "$out" | grep -qF '"permissionDecision":"ask"' &&
+		printf '%s' "$out" | grep -qF "jstack must-stop: $2. Confirm before it runs."
+}
+bash_input() {
+	local cmd
+	cmd=$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')
+	printf '{"session_id":"%s","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"%s"}}' "$SID" "$cmd"
+}
+stop_in() { printf '{"session_id":"%s","hook_event_name":"Stop","stop_hook_active":%s,"last_assistant_message":"%s"}' "${2:-$SID}" "${1:-false}" "${3:-完成了。}"; }
+prompt_in() { printf '{"session_id":"%s","hook_event_name":"UserPromptSubmit","prompt":"hi"}' "$SID"; }
+old_file_cleaned() {
+	mkdir -p "$JSTACK_STATE_DIR"
+	touch -t 202001010000 "$JSTACK_STATE_DIR/stale-session"
+	stage start execute,verify && [ ! -e "$JSTACK_STATE_DIR/stale-session" ]
+}
+prompt_shows() {
+	local out
+	out=$(hook prompt "$(prompt_in)")
+	printf '%s\n' "$out" | grep -qF '当前阶段 execute' &&
+		printf '%s\n' "$out" | grep -qF '路径：clarify → [execute] → verify → land' &&
+		printf '%s\n' "$out" | grep -qF 'The change, committed in small verified units' &&
+		printf '%s\n' "$out" | grep -qF '本阶段门禁：None' &&
+		printf '%s\n' "$out" | grep -qF "\"$ST\" enter verify" &&
+		[ "$(printf '%s' "$out" | LC_ALL=en_US.UTF-8 wc -m | tr -d ' ')" -lt 1500 ]
+}
+prompt_gate() { hook prompt "$(prompt_in)" | grep -qF '本阶段门禁：No evidence means not done'; }
+
+for f in "$ST" "$H/prompt.sh" "$H/stop.sh" "$H/guard.sh"; do
+	t "${f#"$CLAUDE_PLUGIN_ROOT"/} 可执行" test -x "$f"
+done
+if command -v jq >/dev/null; then
+	t "hooks.json 注册了 UserPromptSubmit、PreToolUse(Bash)、Stop" jq -e '
+		(.hooks.UserPromptSubmit[0].hooks[0].command | endswith("/hooks/prompt.sh")) and
+		(.hooks.PreToolUse[0].matcher == "Bash") and
+		(.hooks.PreToolUse[0].hooks[0].command | endswith("/hooks/guard.sh")) and
+		(.hooks.Stop[0].hooks[0].command | endswith("/hooks/stop.sh"))' "$H/hooks.json"
+fi
+
+t "stage.sh 没有会话 id 时只打印说明" sh -c '[ "$("$1" "$2" start nope 2>&1)" = "jstack: 这个 harness 没有会话 id，阶段门禁不生效" ] && [ ! -e "$3" ]' _ "$BASH" "$ST" "$JSTACK_STATE_DIR"
+t "stage.sh start 不认识的阶段时失败" not stage start execute,deploy
+t "stage.sh start 失败时不写状态" test ! -e "$STATE"
+t "stage.sh enter 没有状态时失败" not stage enter execute
+stage start clarify,execute,verify,land >/dev/null
+t "stage.sh start 的状态文件" state_is 'path clarify,execute,verify,land' 'stage clarify'
+t "stop.sh 在 clarify 阶段放行" silent hook stop "$(stop_in)"
+stage ask >/dev/null
+stage ask >/dev/null
+t "stage.sh ask 只加一行 ask" state_is 'path clarify,execute,verify,land' 'stage clarify' 'ask'
+stage enter execute >/dev/null
+t "stage.sh enter 更新阶段并清掉 ask" state_is 'path clarify,execute,verify,land' 'stage execute'
+t "stage.sh enter 不在路径上的阶段时失败" not stage enter review
+t "stage.sh evidence 空文本时失败" not stage evidence "  "
+for mode in jq nojq; do
+	if [ $mode = nojq ]; then export JSTACK_NO_JQ=1; else command -v jq >/dev/null || continue; fi
+	t "[$mode] stop.sh 在 execute 阶段没有证据时拦下" blocks "$(stop_in)"
+	t "[$mode] stop.sh 的 stop_hook_active=true 时放行" silent hook stop "$(stop_in true)"
+	t "[$mode] stop.sh 对别的会话放行" silent hook stop "$(stop_in false other-session)"
+	t "[$mode] stop.sh 输入没有 session_id 时用 CLAUDE_CODE_SESSION_ID" sh -c '
+		out=$(printf "{\"stop_hook_active\":false}" | CLAUDE_CODE_SESSION_ID=$1 "$2" "$3")
+		printf "%s" "$out" | grep -qF "\"decision\":\"block\""' _ "$SID" "$BASH" "$H/stop.sh"
+	stage ask >/dev/null
+	t "[$mode] stop.sh 标了 ask 但回复没有提问时仍拦下" blocks "$(stop_in)"
+	t "[$mode] stop.sh 标了 ask 且回复向用户提问时放行" silent hook stop "$(stop_in false "$SID" "排序按 due 还是按标题？")"
+	t "[$mode] prompt.sh 有状态时注入当前阶段、产出、门禁和下一步" prompt_shows
+	t "[$mode] prompt.sh 清掉 ask" state_is 'path clarify,execute,verify,land' 'stage execute'
+	stage enter verify >/dev/null
+	t "[$mode] prompt.sh 注入 verify 阶段的门禁" prompt_gate
+	t "[$mode] stop.sh 在 verify 阶段没有证据时拦下" blocks "$(stop_in)"
+	stage enter execute >/dev/null
+done
+unset JSTACK_NO_JQ
+stage evidence './run-tests' '->' "12 passed
+0 failed" >/dev/null
+t "stage.sh evidence 把参数拼成一行追加" state_is 'path clarify,execute,verify,land' 'stage execute' 'evidence ./run-tests -> 12 passed 0 failed'
+t "stop.sh 有证据时放行" silent hook stop "$(stop_in)"
+stage enter verify >/dev/null
+stage enter execute >/dev/null
+t "stage.sh 再次进入 execute 时清掉旧证据" state_is 'path clarify,execute,verify,land' 'stage execute'
+t "stop.sh 下一张 ticket 没有新证据时拦下" blocks "$(stop_in)"
+stage start execute >/dev/null
+t "stop.sh 在路径不含 verify 时放行" silent hook stop "$(stop_in)"
+stage start verify,land >/dev/null
+t "stop.sh 在路径不含 execute 时放行" silent hook stop "$(stop_in)"
+stage end >/dev/null
+t "stage.sh end 删掉状态文件" test ! -e "$STATE"
+t "stage.sh show 没有状态时打印 none" prints none stage show
+t "stop.sh 没有状态时放行" silent hook stop "$(stop_in)"
+t "prompt.sh 没有状态时不输出" silent hook prompt "$(prompt_in)"
+t "stage.sh start 顺带删掉 7 天前的状态文件" old_file_cleaned
+stage end >/dev/null
+
+for mode in jq nojq; do
+	if [ $mode = nojq ]; then export JSTACK_NO_JQ=1; else command -v jq >/dev/null || continue; fi
+	t "[$mode] guard.sh 问 rm -rf build" asks 'rm -rf build' 'Recursive forced delete (`rm -rf` and its variants)'
+	t "[$mode] guard.sh 问 cd x && rm -fr y" asks 'cd x && rm -fr y' 'Recursive forced delete (`rm -rf` and its variants)'
+	t "[$mode] guard.sh 问 /bin/rm -rf x" asks '/bin/rm -rf x' 'Recursive forced delete (`rm -rf` and its variants)'
+	t "[$mode] guard.sh 问 git push --force" asks 'git push --force' 'Force push (`--force`, `-f`, `--force-with-lease`, a `+` refspec)'
+	t "[$mode] guard.sh 问 git push origin +main" asks 'git push origin +main' 'Force push (`--force`, `-f`, `--force-with-lease`, a `+` refspec)'
+	t "[$mode] guard.sh 问 sudo ls" asks 'sudo ls' 'Any `sudo`'
+	t "[$mode] guard.sh 问换行后的 sudo" asks 'echo ok
+sudo ls' 'Any `sudo`'
+	t "[$mode] guard.sh 报命令里最靠前的命中" asks 'sudo true; rm -rf x' 'Any `sudo`'
+	for c in 'rm -r x' 'rm -f x' 'git push origin main' 'git push --follow-tags' 'echo sudoku'; do
+		t "[$mode] guard.sh 放行 $c" silent hook guard "$(bash_input "$c")"
+	done
+	t "[$mode] guard.sh 放行非 Bash 工具" silent hook guard '{"session_id":"x","tool_name":"Write","tool_input":{"file_path":"/tmp/rm -rf x","content":"sudo ls"}}'
+done
+unset JSTACK_NO_JQ
+t "guard.sh 在插件目录不完整时放行" sh -c 'printf "%s" "$1" | CLAUDE_PLUGIN_ROOT=$2 "$3" "$4" | grep -q . && exit 1 || exit 0' _ "$(bash_input 'rm -rf x')" "$T/nowhere" "$BASH" "$H/guard.sh"
+
+[ "$fails" -eq 0 ]

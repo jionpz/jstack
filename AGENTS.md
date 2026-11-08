@@ -9,7 +9,7 @@ jstack 是用户长期维护的整条 AI 开发工作流。flow 定义工作流�
 - `flow`：jstack 自己写的衔接层，只有一个 `route` skill，按 `src/flow/skills/route/stages.md` 的阶段表驱动任务走完全部阶段，把每个阶段交给表里的提供者。没有上游，源码在 `src/flow/`，直接改源码再 `./jstack build`。
 
 - `upstream/<插件>/` 是上游原样副本，只能由 `./jstack sync <插件>` 写入。`pstack`（Claude Code 版）和 `pstack-cursor`（Cursor 原生版）都是整棵树；spec 只取 `jstack` 脚本里 `PICK` 列出的文件和目录。
-- `plugins/<插件>/` 是构建产物，只能由 `./jstack build` 写入。`plugins/pstack-cursor/` 是 Cursor 原生产物，不进 Claude marketplace；`./jstack install-cursor` 把 pstack、spec、flow 三个产物复制到 Cursor 的本地插件目录。Cursor 的本地插件加载器拒绝指向 `~/.cursor/plugins/local` 之外的符号链接，所以这里只复制。
+- `plugins/<插件>/` 是构建产物，只能由 `./jstack build` 写入。`plugins/pstack-cursor/` 是 Cursor 原生产物，不进 Claude marketplace；`./jstack install-cursor` 把 pstack、spec、flow 三个产物复制到 Cursor 的本地插件目录（flow 的 `hooks/` 只为 Claude Code 写过，复制时排除）。Cursor 的本地插件加载器拒绝指向 `~/.cursor/plugins/local` 之外的符号链接，所以这里只复制。
 - spec 和 flow 同时带 `.claude-plugin/plugin.json`（Claude Code）和 `.cursor-plugin/plugin.json`（Cursor）。两个 manifest 的 `name` 必须等于插件名，`version` 由 `build` 同步重写；`jstack check` 会核对。spec 的 Cursor manifest 由 `patches/spec/0003-cursor-manifest.patch` 新建，flow 的直接放在 `src/flow/.cursor-plugin/`。
 - 要修改某个插件，就在 `patches/<插件>/` 下加补丁，格式见 README 的"维护"一节。不要直接改上面两个目录。`pstack-cursor` 是上游原生树，默认不打补丁。
 - 补丁只修上游管不到、或不能原样收的部分：
