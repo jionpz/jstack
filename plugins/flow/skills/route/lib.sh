@@ -53,6 +53,15 @@ jstack_json_str() {
 	fi
 }
 
+# hook 输入 $2 里顶层数字字段 $1 的值（转成字符串）。
+jstack_json_num() {
+	if jstack_has_jq; then
+		printf '%s' "$2" | jq -r --arg k "$1" '.[$k] // empty | tostring'
+	else
+		printf '%s' "$2" | tr '\n' ' ' | sed -nE "s/.*\"$1\"[[:space:]]*:[[:space:]]*([0-9]+).*/\\1/p" | head -1
+	fi
+}
+
 # hook 输入 $2 里顶层字段 $1 是否为 true。
 jstack_json_true() {
 	if jstack_has_jq; then
@@ -62,11 +71,14 @@ jstack_json_true() {
 	fi
 }
 
-# hook 的会话 id：先取输入里的 session_id，取不到再用 CLAUDE_CODE_SESSION_ID。
+# hook 的会话 id：Claude Code 是 session_id，Cursor 是 conversation_id；
+# 输入里没有时用 shell 里的 CLAUDE_CODE_SESSION_ID / CURSOR_CONVERSATION_ID。
+# Cursor 的会话 id 是 UUID，它的 shell 环境变量只做 URI 编码，UUID 原样保留，两边值一致。
 jstack_hook_sid() {
 	local sid
 	sid=$(jstack_json_str session_id "$1")
-	printf '%s\n' "${sid:-${CLAUDE_CODE_SESSION_ID:-}}"
+	[ -n "$sid" ] || sid=$(jstack_json_str conversation_id "$1")
+	printf '%s\n' "${sid:-${CLAUDE_CODE_SESSION_ID:-${CURSOR_CONVERSATION_ID:-}}}"
 }
 
 jstack_json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }

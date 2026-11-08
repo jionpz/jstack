@@ -10,5 +10,6 @@
   "keywords": ["workflow", "router", "pstack", "spec"],
   "category": "developer-tools",
   "tags": ["workflow", "router"],
-  "skills": "./skills/"
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.cursor.json"
 }

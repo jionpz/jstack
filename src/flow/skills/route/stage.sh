@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 记录当前任务走到 stages.md 的哪个阶段，供 flow 插件的 hooks 执行门禁。状态文件格式见 lib.sh。
-# 会话 id 取 CLAUDE_CODE_SESSION_ID；没有它的 harness 里打印一行说明，什么也不做。
+# 会话 id 取 CLAUDE_CODE_SESSION_ID（Claude Code）或 CURSOR_CONVERSATION_ID（Cursor）；
+# 没有它的 harness 里打印一行说明，什么也不做。
 # JSTACK_STAGES_FILE 可覆盖阶段表的路径，只用于测试。
 # 变量后紧跟中文标点时必须写成 ${VAR}：macOS 的 bash 3.2 在 UTF-8 locale 下会把标点首字节算进变量名。
 set -eu
@@ -22,7 +23,7 @@ EOF
 }
 die() { printf 'jstack: %s\n' "$*" >&2; exit 1; }
 
-sid=${CLAUDE_CODE_SESSION_ID:-}
+sid=${CLAUDE_CODE_SESSION_ID:-${CURSOR_CONVERSATION_ID:-}}
 if [ -z "$sid" ]; then
 	echo "jstack: 这个 harness 没有会话 id，阶段门禁不生效"
 	exit 0

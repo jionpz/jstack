@@ -6,7 +6,7 @@ set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
-unset CLAUDE_CODE_SESSION_ID JSTACK_NO_JQ JSTACK_STAGES_FILE
+unset CLAUDE_CODE_SESSION_ID CURSOR_CONVERSATION_ID JSTACK_NO_JQ JSTACK_STAGES_FILE
 export CLAUDE_PLUGIN_ROOT="$ROOT/plugins/flow" JSTACK_STATE_DIR="$T/state"
 SID=test-session-0001
 ST="$CLAUDE_PLUGIN_ROOT/skills/route/stage.sh"
@@ -47,6 +47,34 @@ bash_input() {
 }
 stop_in() { printf '{"session_id":"%s","hook_event_name":"Stop","stop_hook_active":%s,"last_assistant_message":"%s"}' "${2:-$SID}" "${1:-false}" "${3:-完成了。}"; }
 prompt_in() { printf '{"session_id":"%s","hook_event_name":"UserPromptSubmit","prompt":"hi"}' "$SID"; }
+cursor_shell_in() { printf '{"conversation_id":"%s","hook_event_name":"beforeShellExecution","command":"%s","cwd":"/tmp","sandbox":false}' "$SID" "$1"; }
+cursor_pre_in() { printf '{"conversation_id":"%s","hook_event_name":"preToolUse","tool_name":"Shell","tool_input":{"command":"%s"}}' "$SID" "$1"; }
+cursor_stop_in() { printf '{"conversation_id":"%s","hook_event_name":"stop","status":"%s","loop_count":%s}' "${2:-$SID}" "${1:-completed}" "${3:-0}"; }
+cursor_prompt_in() { printf '{"conversation_id":"%s","hook_event_name":"beforeSubmitPrompt","prompt":"hi"}' "$SID"; }
+cursor_asks() {
+	local out
+	out=$(hook guard "$(cursor_shell_in "$1")")
+	valid_json "$out" && printf '%s' "$out" | grep -qF '"permission":"ask"' &&
+		printf '%s' "$out" | grep -qF "jstack must-stop: $2. Confirm before it runs."
+}
+cursor_denies() {
+	local out
+	out=$(hook guard "$(cursor_pre_in "$1")")
+	valid_json "$out" && printf '%s' "$out" | grep -qF '"permission":"deny"' &&
+		printf '%s' "$out" | grep -qF "jstack must-stop: $2. Confirm before it runs."
+}
+cursor_blocks() {
+	local out
+	out=$(hook stop "$(cursor_stop_in "${1:-completed}" "$SID" "${2:-0}")")
+	valid_json "$out" && printf '%s' "$out" | grep -qF '"followup_message"' &&
+		printf '%s' "$out" | grep -qF 'jstack verify'
+}
+cursor_prompts() {
+	local out
+	out=$(hook prompt "$(cursor_prompt_in)")
+	valid_json "$out" && printf '%s' "$out" | grep -qF '"additional_context"' &&
+		printf '%s' "$out" | grep -qF '当前阶段 execute'
+}
 old_file_cleaned() {
 	mkdir -p "$JSTACK_STATE_DIR"
 	touch -t 202001010000 "$JSTACK_STATE_DIR/stale-session"
@@ -73,9 +101,18 @@ if command -v jq >/dev/null; then
 		(.hooks.PreToolUse[0].matcher == "Bash") and
 		(.hooks.PreToolUse[0].hooks[0].command | endswith("/hooks/guard.sh")) and
 		(.hooks.Stop[0].hooks[0].command | endswith("/hooks/stop.sh"))' "$H/hooks.json"
+	t "hooks.cursor.json 注册了 Cursor 原生事件" jq -e '
+		(.version == 1) and
+		(.hooks.beforeShellExecution[0].command | endswith("/hooks/guard.sh")) and
+		(.hooks.beforeSubmitPrompt[0].command | endswith("/hooks/prompt.sh")) and
+		(.hooks.stop[0].command | endswith("/hooks/stop.sh")) and
+		(.hooks.stop[0].loop_limit == 3)' "$H/hooks.cursor.json"
 fi
+t "flow 的 Cursor 清单指向 hooks.cursor.json" grep -q '"hooks"[[:space:]]*:[[:space:]]*"\./hooks/hooks\.cursor\.json"' "$CLAUDE_PLUGIN_ROOT/.cursor-plugin/plugin.json"
 
 t "stage.sh 没有会话 id 时只打印说明" sh -c '[ "$("$1" "$2" start nope 2>&1)" = "jstack: 这个 harness 没有会话 id，阶段门禁不生效" ] && [ ! -e "$3" ]' _ "$BASH" "$ST" "$JSTACK_STATE_DIR"
+t "stage.sh 在 Cursor 会话里用 CURSOR_CONVERSATION_ID" sh -c 'CURSOR_CONVERSATION_ID=cursor-session "$1" "$2" start execute >/dev/null && [ -f "$3/cursor-session" ]' _ "$BASH" "$ST" "$JSTACK_STATE_DIR"
+rm -f "$JSTACK_STATE_DIR/cursor-session"
 t "stage.sh start 不认识的阶段时失败" not stage start execute,deploy
 t "stage.sh start 失败时不写状态" test ! -e "$STATE"
 t "stage.sh enter 没有状态时失败" not stage enter execute
@@ -97,10 +134,18 @@ for mode in jq nojq; do
 	t "[$mode] stop.sh 输入没有 session_id 时用 CLAUDE_CODE_SESSION_ID" sh -c '
 		out=$(printf "{\"stop_hook_active\":false}" | CLAUDE_CODE_SESSION_ID=$1 "$2" "$3")
 		printf "%s" "$out" | grep -qF "\"decision\":\"block\""' _ "$SID" "$BASH" "$H/stop.sh"
+	t "[$mode] guard.sh 对 Cursor 的 beforeShellExecution 返回 permission=ask" cursor_asks 'rm -rf build' 'Recursive forced delete (`rm -rf` and its variants)'
+	t "[$mode] guard.sh 对 Cursor 的 preToolUse 降级为 deny" cursor_denies 'rm -rf build' 'Recursive forced delete (`rm -rf` and its variants)'
+	t "[$mode] stop.sh 对 Cursor 的 completed 返回 followup_message" cursor_blocks
+	t "[$mode] stop.sh 对 Cursor 的 aborted 放行" silent hook stop "$(cursor_stop_in aborted)"
+	t "[$mode] stop.sh 在 Cursor 达到 loop_limit 后放行" silent hook stop "$(cursor_stop_in completed "$SID" 3)"
+	t "[$mode] stop.sh 对别的 Cursor 会话放行" silent hook stop "$(cursor_stop_in completed other-session)"
 	stage ask >/dev/null
 	t "[$mode] stop.sh 标了 ask 但回复没有提问时仍拦下" blocks "$(stop_in)"
 	t "[$mode] stop.sh 标了 ask 且回复向用户提问时放行" silent hook stop "$(stop_in false "$SID" "排序按 due 还是按标题？")"
+	t "[$mode] stop.sh 在 Cursor 标了 ask 时放行（无法核对回复）" silent hook stop "$(cursor_stop_in)"
 	t "[$mode] prompt.sh 有状态时注入当前阶段、产出、门禁和下一步" prompt_shows
+	t "[$mode] prompt.sh 对 Cursor 的 beforeSubmitPrompt 注入 additional_context" cursor_prompts
 	t "[$mode] prompt.sh 清掉 ask" state_is 'path clarify,execute,verify,land' 'stage execute'
 	stage enter verify >/dev/null
 	t "[$mode] prompt.sh 注入 verify 阶段的门禁" prompt_gate

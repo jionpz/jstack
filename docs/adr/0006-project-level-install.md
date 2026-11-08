@@ -32,6 +32,7 @@ Claude Code 有 `--scope project`，其余 harness 只有用户级安装；四�
 - 只把 9 个入口 skill 链到各 harness 的项目 skill 目录：flow 的 `route`、`archive`，pstack 的 `poteto-mode`，spec 的 `grill-with-docs`、`to-spec`、`to-tickets`、`wayfinder`、`handoff`、`setup-matt-pocock-skills`。其余 skill 由 `locate.sh` 按物理路径读取，不进入发现目录。
 - 发现目录按实测：Claude Code 用 `.claude/skills`，Pi 和 OMP 共用 `.agents/skills`（两者都按项目向上查找），Cursor 用 `.cursor/skills`。链接用相对路径，仓库搬走也有效。
 - Claude Code 不注册 marketplace：入口 skill 链进 `.claude/skills`，`poteto-agent`、`comment-sicko` 复制到 `.claude/agents`，flow 的三个 hook 写进项目 `.claude/settings.json`，命令用 `${CLAUDE_PROJECT_DIR}` 指向 vendor。
+- Cursor 项目级同样只链入口：flow 的三个 hook 写进项目 `.cursor/hooks.json`（Cursor 原生事件与输出协议），命令用 `${CURSOR_PROJECT_DIR}` 指向 vendor。
 
 ### 3. lock：安装可核查
 
@@ -73,7 +74,7 @@ Claude Code 有 `--scope project`，其余 harness 只有用户级安装；四�
 
 ### 6. 门禁可降级，不可静默
 
-flow 的三个 hook（阶段注入、Stop 证据、must-stop guard）目前只有 Claude Code 实现。其余 harness 按 #27 / #28 的调研结果落地能承载的部分；承载不了的写进 `docs/harness/agents.md` 的降级说明，并由 route 在收尾报告里点名"本次跳过了哪些门禁"。仓库级 `must_stop` 追加项在所有 harness 上都是**必须停**清单的一部分，即使该 harness 没有 guard 脚本，route 也必须自己识别。
+flow 的三个 hook（阶段注入、Stop 证据、must-stop guard）目前有 Claude Code 和 Cursor 两套实现。Cursor 用自己的 hooks 配置（`.cursor-plugin/plugin.json` 声明 `hooks/hooks.cursor.json`，项目级写 `.cursor/hooks.json`）承载同样三件事：`beforeShellExecution` 对应 guard 并支持 `ask`，`beforeSubmitPrompt` 对应阶段提示，`stop` 对应验证门禁；Cursor 的 `stop` 输入没有最后一条回复，标了 `ask` 时只能直接放行。其余 harness 按 #28 的调研结果落地能承载的部分；承载不了的写进 adapter 的降级说明，并由 route 在收尾报告里点名"本次跳过了哪些门禁"。仓库级 `must_stop` 追加项在所有 harness 上都是**必须停**清单的一部分，即使该 harness 没有 guard 脚本，route 也必须自己识别。
 
 ### 7. 模型变更仍是数据流向变更
 
@@ -106,7 +107,7 @@ flow 的三个 hook（阶段注入、Stop 证据、must-stop guard）目前只�
 | F4 | OMP 的项目 skill 目录与软链行为 | #26 已实测：OMP 按 cwd 向上找 `.agents/skills`，也认 `.omp/skills`；项目级与 Pi 共用 `.agents/skills` |
 | F5 | Cursor 项目 `.cursor/skills` 是否接受指向仓库内的符号链接（已知本地插件目录拒绝 `~/.cursor/plugins/local` 之外的链接） | #26 部分实测：Cursor 应用内置 `.cursor/skills` 扫描；软链的真机加载仍需手动验证（`smoke cursor` 只覆盖本地插件加载器） |
 | F6 | Pi extension / OMP hook 能否承载阶段注入、Stop 证据检查、命令 guard 中的哪些 | #28 |
-| F7 | Cursor 的 hooks（若存在）事件模型能否承载 guard / Stop；不能时如何降级 | #27 |
+| F7 | Cursor 的 hooks（若存在）事件模型能否承载 guard / Stop；不能时如何降级 | #27 已实测：Cursor 3.27 有完整 hooks 运行时。插件清单可指向 Cursor 原生配置；`beforeShellExecution` 的 `ask` 会弹确认（`preToolUse` 的 `ask` 不执行，降级为 `deny`），`stop` 输出 `followup_message`，`beforeSubmitPrompt` 输出 `additional_context`。`stop` 输入没有最后一条回复，`ask` 只能无条件放行。项目级写 `.cursor/hooks.json` |
 | F8 | 四个 harness 同时存在用户级与项目级安装时的优先级与去重规则 | #25 |
 
 ## 被否方案

@@ -433,7 +433,13 @@ const { loadPlugins } = require(loader);
     console.error('Cursor loader: 缺少 route / archive / poteto-mode / grill-with-docs / poteto-agent');
     process.exit(1);
   }
-  console.log(`plugins=${names} flow.skills=${by.get('flow').skills.length} pstack.skills=${by.get('pstack').skills.length} pstack.agents=${by.get('pstack').agents.length} spec.skills=${by.get('spec').skills.length}`);
+  const h = by.get('flow')?.hooks?.config?.hooks || {};
+  const missing = ['beforeShellExecution', 'beforeSubmitPrompt', 'stop'].filter(e => !Array.isArray(h[e]) || h[e].length === 0);
+  if (missing.length) {
+    console.error(`Cursor loader: flow hooks 缺少 ${missing.join(', ')}`);
+    process.exit(1);
+  }
+  console.log(`plugins=${names} flow.skills=${by.get('flow').skills.length} pstack.skills=${by.get('pstack').skills.length} pstack.agents=${by.get('pstack').agents.length} spec.skills=${by.get('spec').skills.length} flow.hooks=${Object.keys(h).sort().join('+')}`);
 })();
 JS
 		say "✗ Cursor 插件加载器失败"
@@ -441,6 +447,29 @@ JS
 		return 1
 	fi
 	say "✓ Cursor: $(cat "$out")"
+	# 按 Cursor 的 hook 协议喂输入，确认三个门禁脚本在安装副本里都能工作。
+	mkdir -p "$WORK/smoke/state"
+	printf 'path execute,verify\nstage execute\n' >"$WORK/smoke/state/cursor-smoke"
+	out="$WORK/smoke/cursor-hooks.txt"
+	if ! printf '{"conversation_id":"cursor-smoke","hook_event_name":"beforeShellExecution","command":"rm -rf build","cwd":"/tmp","sandbox":false}' |
+		JSTACK_STATE_DIR="$WORK/smoke/state" bash "$root/flow/hooks/guard.sh" >"$out" 2>/dev/null ||
+		! grep -q '"permission":"ask"' "$out" || ! grep -qF 'jstack must-stop' "$out"; then
+		say "✗ Cursor: beforeShellExecution 没有对 rm -rf 返回 ask"
+		return 1
+	fi
+	if ! printf '{"conversation_id":"cursor-smoke","hook_event_name":"stop","status":"completed","loop_count":0}' |
+		JSTACK_STATE_DIR="$WORK/smoke/state" bash "$root/flow/hooks/stop.sh" >"$out" 2>/dev/null ||
+		! grep -q '"followup_message"' "$out" || ! grep -qF 'jstack verify' "$out"; then
+		say "✗ Cursor: stop 没有在缺证据时返回 followup_message"
+		return 1
+	fi
+	if ! printf '{"conversation_id":"cursor-smoke","hook_event_name":"beforeSubmitPrompt","prompt":"hi"}' |
+		JSTACK_STATE_DIR="$WORK/smoke/state" bash "$root/flow/hooks/prompt.sh" >"$out" 2>/dev/null ||
+		! grep -q '"additional_context"' "$out" || ! grep -qF '当前阶段 execute' "$out"; then
+		say "✗ Cursor: beforeSubmitPrompt 没有注入阶段提示"
+		return 1
+	fi
+	say "✓ Cursor: hooks 按 Cursor 协议工作（must-stop ask、Stop 拦下、阶段提示）"
 	out="$WORK/smoke/cursor-route.txt"
 	if bash "$root/flow/skills/route/locate.sh" >"$out" 2>"$out.err"; then
 		if [ "$(cut -f1 "$out")" = "$(local_providers)" ]; then
@@ -1309,6 +1338,14 @@ SH
 		say "✗ .claude/settings.json 里的 flow hooks 不是三条"
 		rc=1
 	fi
+	if ! jq -e '
+		(.version == 1) and
+		([.hooks[][].command // empty] | map(select(contains(".jstack/vendor/plugins/flow"))) | length == 3) and
+		([.hooks[][].command // empty] | map(select(contains("hooks/hooks"))) | length == 0)
+	' "$r/.cursor/hooks.json" >/dev/null 2>&1; then
+		say "✗ .cursor/hooks.json 里的 flow hooks 不是三条"
+		rc=1
+	fi
 
 	# lock：版本、树哈希、四个 harness 的记录。
 	tree=$(jq -r '.vendor.tree // empty' "$r/.jstack/lock.json" 2>/dev/null || true)
@@ -1353,13 +1390,13 @@ SH
 
 	# 重复运行：不新增链接、不重复 hooks、lock 不变。
 	before=$({ LC_ALL=C /bin/ls -lA "$r/.claude/skills" "$r/.agents/skills" "$r/.cursor/skills"
-		cat "$r/.claude/settings.json" "$r/.jstack/lock.json"; } | sha256_stream)
+		cat "$r/.claude/settings.json" "$r/.cursor/hooks.json" "$r/.jstack/lock.json"; } | sha256_stream)
 	if ! PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" install --all --scope project --repo "$r" >/dev/null 2>&1; then
 		say "✗ 重复运行 install 失败"
 		rc=1
 	fi
 	after=$({ LC_ALL=C /bin/ls -lA "$r/.claude/skills" "$r/.agents/skills" "$r/.cursor/skills"
-		cat "$r/.claude/settings.json" "$r/.jstack/lock.json"; } | sha256_stream)
+		cat "$r/.claude/settings.json" "$r/.cursor/hooks.json" "$r/.jstack/lock.json"; } | sha256_stream)
 	if [ "$before" != "$after" ]; then
 		say "✗ 重复运行 install 改变了安装产物（hooks、链接或 lock）"
 		rc=1
@@ -1394,15 +1431,24 @@ assert all(r["lock"] == "ok" for r in vendor), vendor
 		say "✗ 恢复入口链接失败"
 		rc=1
 	fi
+	rm -f "$r/.cursor/hooks.json"
+	if PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" doctor --repo "$r" >/dev/null 2>&1; then
+		say "✗ .cursor/hooks.json 缺失时 doctor 没有失败"
+		rc=1
+	fi
+	if ! PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" install --all --scope project --repo "$r" >/dev/null 2>&1; then
+		say "✗ 恢复 .cursor/hooks.json 失败"
+		rc=1
+	fi
 
 	if [ "$rc" -eq 0 ]; then
-		say "✓ 项目级安装：vendor、9 个入口、Claude hooks、lock、四 harness 的 locate（Pi/OMP 共用 .agents）、幂等、dry-run 与 doctor 都通过"
+		say "✓ 项目级安装：vendor、9 个入口、Claude hooks、Cursor hooks、lock、四 harness 的 locate（Pi/OMP 共用 .agents）、幂等、dry-run 与 doctor 都通过"
 	fi
 	return $rc
 }
 
 cmd_check() {
-	local rc=0 p hits failed= smoke=
+	local rc=0 p hits failed= smoke= hooks_rel=
 	while [ $# -gt 0 ]; do
 		case $1 in
 		--smoke) smoke=1; shift ;;
@@ -1496,6 +1542,20 @@ cmd_check() {
 			[ "$(json_get version "$OUT/.cursor-plugin/plugin.json")" = "$(json_get version "$OUT/$MANIFEST")" ] ||
 				hits="${hits:+$hits, }version"
 			grep -q '"skills"[[:space:]]*:' "$OUT/.cursor-plugin/plugin.json" || hits="${hits:+$hits, }skills"
+			# flow 的 Cursor 清单声明自己的 hooks 文件（Cursor 原生事件和协议，不复用 Claude 的 hooks.json）。
+			if grep -q '"hooks"[[:space:]]*:' "$OUT/.cursor-plugin/plugin.json"; then
+				hooks_rel=$(json_get hooks "$OUT/.cursor-plugin/plugin.json")
+				if [ ! -f "$OUT/$hooks_rel" ]; then
+					hits="${hits:+$hits, }hooks 文件不存在"
+				elif ! jq -e '
+					(.version == 1) and
+					((.hooks.beforeShellExecution // []) | length == 1) and
+					((.hooks.beforeSubmitPrompt // []) | length == 1) and
+					((.hooks.stop // []) | length == 1)
+				' "$OUT/$hooks_rel" >/dev/null 2>&1; then
+					hits="${hits:+$hits, }hooks 事件不完整"
+				fi
+			fi
 			# spec 的两个 manifest 都列了 10 个 skill 路径，增删时不能只改一边。
 			if grep -q '"skills"[[:space:]]*:' "$OUT/$MANIFEST"; then
 				diff <(grep -o '"\./skills/[^"]*"' "$OUT/$MANIFEST" | sort) \
@@ -2872,6 +2932,32 @@ install_claude_hooks() { # <仓库> <dry>：项目级 hooks 指向 vendor，重�
 	[ "$new" = "$cur" ] || printf '%s\n' "$new" >"$settings"
 }
 
+install_cursor_hooks() { # <仓库> <dry>：项目级 Cursor hooks 指向 vendor，重复运行不重复追加
+	local repo=$1 dry=$2 hooks cur new
+	hooks="$repo/.cursor/hooks.json"
+	if [ "$dry" -eq 1 ]; then
+		say "  写 .cursor/hooks.json 的 flow hooks（beforeShellExecution / beforeSubmitPrompt / stop）"
+		return 0
+	fi
+	mkdir -p "$repo/.cursor"
+	cur=
+	[ ! -f "$hooks" ] || cur=$(cat "$hooks")
+	[ -n "$cur" ] || cur='{}'
+	new=$(printf '%s\n' "$cur" | jq --arg root '${CURSOR_PROJECT_DIR}/.jstack/vendor/plugins/flow' '
+		def clean:
+			map(select(((.command // "") | contains(".jstack/vendor/plugins/flow")) | not));
+		.version = 1 |
+		.hooks = (.hooks // {}) |
+		.hooks.beforeShellExecution = ((.hooks.beforeShellExecution // []) | clean)
+			+ [{command: ("\"" + $root + "\"/hooks/guard.sh"), timeout: 10}] |
+		.hooks.beforeSubmitPrompt = ((.hooks.beforeSubmitPrompt // []) | clean)
+			+ [{command: ("\"" + $root + "\"/hooks/prompt.sh"), timeout: 10}] |
+		.hooks.stop = ((.hooks.stop // []) | clean)
+			+ [{command: ("\"" + $root + "\"/hooks/stop.sh"), timeout: 10, loop_limit: 3}]
+	') || die "写 $hooks 失败：现有内容不是合法的 JSON"
+	[ "$new" = "$cur" ] || printf '%s\n' "$new" >"$hooks"
+}
+
 harness_records() { # <harness>：lock 里记录、doctor 会核对的安装入口
 	local h=$1 d p e
 	case $h in
@@ -2887,6 +2973,9 @@ harness_records() { # <harness>：lock 里记录、doctor 会核对的安装入�
 	done
 	if [ "$h" = claude-code ]; then
 		printf '%s\n' .claude/agents/poteto-agent.md .claude/agents/comment-sicko.md
+	fi
+	if [ "$h" = cursor ]; then
+		printf '%s\n' .cursor/hooks.json
 	fi
 }
 
@@ -2951,6 +3040,10 @@ install_project() { # <仓库> <dry> <harness>...
 		install_agent "$repo" "$vendor" poteto-agent "$dry"
 		install_agent "$repo" "$vendor" comment-sicko "$dry"
 		install_claude_hooks "$repo" "$dry"
+	fi
+	# Cursor 的项目 hooks 与 Claude 同源，但事件名和输出协议是 Cursor 原生的。
+	if printf '%s\n' "$@" | grep -qx cursor; then
+		install_cursor_hooks "$repo" "$dry"
 	fi
 	if [ "$dry" -eq 0 ]; then
 		write_lock "$repo" "$@"
@@ -3149,12 +3242,9 @@ cmd_install_cursor() {
 			esac
 		fi
 		mkdir -p "$target"
-		# flow 的 hooks 只为 Claude Code 写过、测过；Cursor 会自动加载 hooks/hooks.json，所以不带过去。
-		if [ "$name" = flow ]; then
-			rsync -a --delete --delete-excluded --exclude /hooks/ "$src/" "$target/"
-		else
-			rsync -a --delete "$src/" "$target/"
-		fi
+		# flow 的 .cursor-plugin/plugin.json 指向 hooks/hooks.cursor.json，Cursor 加载器会自己发现并运行；
+		# hooks/hooks.json 是 Claude Code 的格式，留在副本里不影响 Cursor（清单只认 cursor 那份）。
+		rsync -a --delete "$src/" "$target/"
 		say "✓ 已复制 Cursor $name 到 $target"
 	done
 	say "在 Cursor 里重开窗口或运行 /reload；用 /poteto-mode、/route 验证。"

@@ -62,6 +62,7 @@
 | `~/.claude/rules/pstack-models.md`、`~/.cursor/rules/pstack-models.mdc`、`~/.omp/agent/rules/pstack-models.md`、`~/.omp/agent/config.yml` 的 `modelRoles` 块、`~/.pi/agent/AGENTS.md` 的角色表块 | 全部由用户级 `models` 生成，禁止手改；`./jstack models apply` 是唯一写入方。Pi/OMP 的共享文件只改 `jstack:models` 标记块，块外不碰；首次写入前确认（`--yes` 跳过），写前备份 |
 | `src/flow/skills/route/stages.md`、`must-stop.md` | 插件内置的默认值；仓库级 `stages_file` 整表替换阶段表，`must_stop` 在读取时追加，都不改插件文件 |
 | `.jstack/vendor/`、`.jstack/lock.json` | 项目级安装的产物，只能由 `./jstack install --all --scope project` 写入；`./jstack doctor` 核对版本、vendor 树哈希和入口链接。不要手改 |
+| `.claude/settings.json`、`.cursor/hooks.json` | 项目级安装写入的 harness hooks：只追加 flow 的三条门禁，按 `.jstack/vendor/plugins/flow` 路径去重，文件里的其它 hooks 保留。两份文件的格式和事件名不同（Claude Code / Cursor 原生） |
 | 业务仓库自己的 `AGENTS.md` | jstack 不读不写。项目级接入只动 `.jstack/`、生成的 harness 配置和入口链接，不往 `AGENTS.md` 里塞内容 |
 
 ## 示例
