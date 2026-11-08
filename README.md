@@ -27,6 +27,35 @@ pstack 和 spec 都锁定在上游某个提交，另外叠加了 jstack 自己�
 
 ## 安装
 
+### 项目级接入（推荐）
+
+一台新机器、一个新仓库，一条命令完成接入：
+
+```bash
+./jstack install --all --scope project --repo /path/to/repo
+```
+
+`--all` 探测本机已装的 harness（Claude Code、Pi、OMP、Cursor），没装的跳过并提示。产物全部落在仓库里：
+
+```
+<repo>/.jstack/
+├── config.json          # 仓库级配置（可选，ADR-0006）
+├── lock.json            # 安装锁：jstack 版本与 commit、vendor 树哈希、上游 commit、插件版本、各 harness 的入口记录
+└── vendor/
+    ├── .claude-plugin/marketplace.json
+    └── plugins/{pstack,spec,flow}/
+```
+
+- vendor 保留完整插件树，不摊平 skill。
+- 只把 9 个入口 skill 链进发现目录：`route`、`archive`、`poteto-mode`、spec 的 `grill-with-docs`、`to-spec`、`to-tickets`、`wayfinder`、`handoff`、`setup-matt-pocock-skills`。其余 skill 留在 vendor，由 `locate.sh` 按物理路径定位。
+- 发现目录：Claude Code 用 `.claude/skills`，Pi 和 OMP 共用 `.agents/skills`，Cursor 用 `.cursor/skills`。链接是相对路径，仓库搬走也有效。
+- Claude Code 另外复制 `poteto-agent`、`comment-sicko` 到 `.claude/agents`，并把 flow 的三个 hook 写进 `.claude/settings.json`，命令用 `${CLAUDE_PROJECT_DIR}` 指向 vendor；不注册 marketplace。
+- 重复运行幂等；`--dry-run` 只打印；不写任何用户级文件。安装完成后提交 `.jstack/`、三个入口目录和 `.claude/` 的产物。
+
+同一个 harness 不要同时做用户级和项目级安装：插件或入口会加载两次，flow 的 hooks 也会跑两遍。换仓库时用项目级；只想全局装一次时用用户级。
+
+`./jstack doctor --repo <repo>` 会核对 vendor 版本、树哈希、lock 记录与入口链接，任何一处对不上都返回非 0。
+
 ### Claude Code
 
 本机已经有这个目录时，一条命令即可：
@@ -327,6 +356,7 @@ git diff -- upstream/     # 看上游改了什么
 13. 模型分层命令（`./jstack models`）：在临时 HOME 里跑 init、set、apply、status，核对四个 harness 的规则文件、Pi/OMP 标记块合并与首次确认、旧配置迁移备份、roles 覆盖、settings.json 的模型 env 和原有键、备份幂等、`--dry-run` 不落盘、预算降级，以及今日 token 统计
 14. 仓库级配置（`<repo>/.jstack/config.json`，ADR-0006）：当前仓库有配置时校验字段与 `stages_file`；在临时仓库里验证 `stage.sh` 按 `stages_file` 收/拒阶段、`guard.sh` 合并 `must_stop` 并在 reason 里标明“仓库追加”、`prompt.sh` 注入配置，坏 JSON、禁用键、缺 `execute` 都要报出来
 15. `./jstack doctor`：临时 HOME 构造 Claude user/project、Pi package、OMP 缓存、Cursor 本地插件、vendor 和 lock 六种来源，核对表格与 `--json` 的值；篡改 lock 版本或源目录版本后必须报漂移并返回非 0，`--no-fail` 只警告
+16. 项目级安装（`./jstack install --all --scope project`）：在临时仓库和假 HOME 里核对 vendor、9 个入口链接、Claude agents 与 hooks、lock 的版本与树哈希；三路 `locate.sh` 都要找全阶段表提供者，重复运行不改产物，`--dry-run` 不落盘，改 vendor 文件或删入口后 `doctor` 必须失败
 
 第 3、4、5 项专门查 adapter 管不到的地方：脚本和 frontmatter 都不经过模型，上游新引入的 Cursor 依赖在同步时就能发现；第 5 项查的是 spec 这种"只收一部分 skill"的插件有没有漏掉依赖。`claude plugin validate` 不查 frontmatter 键，也不查插件内部 skill 之间的调用关系，更不查 YAML 合法性，所以 `: ` 这种写法只能由第 4 项拦。全部通过才提交。
 

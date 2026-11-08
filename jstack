@@ -6,7 +6,10 @@
 # 另外构建 Cursor 原生版 pstack（同一个上游的 pstack/ 树），单独放在 plugins/pstack-cursor，不进 Claude marketplace；
 # spec 和 flow 同时带 .claude-plugin 和 .cursor-plugin 两个 manifest，Claude Code 和 Cursor 共用同一份产物。
 #
-#   ./jstack install [--scope user|project|local]  安装全部 Claude Code 插件，已装则刷新
+#   ./jstack install [--all] [--scope user|project] [--repo <dir>] [--dry-run]
+#                                                  默认装 Claude Code 用户级；--all 探测已装 harness 全部安装；
+#                                                  --scope project 写 <repo>/.jstack/vendor 与 lock，把入口 skill 链进
+#                                                  各 harness 的项目 skill 目录；--dry-run 只打印
 #   ./jstack install-pi                            安装 Pi package，并把 pstack agents 接到 ~/.pi/agent/agents
 #   ./jstack install-cursor                        把 pstack、spec、flow 复制到 ~/.cursor/plugins/local/
 #                                                  （Cursor 拒绝指向该目录之外的符号链接，所以只复制）
@@ -1151,7 +1154,7 @@ PY
 
 # doctor 的验收：临时 HOME 构造 Claude / Pi / OMP / Cursor / vendor / lock，核对输出与漂移。
 check_doctor() {
-	local h="$WORK/doctor-home" r="$WORK/doctor-repo" bin="$WORK/doctor-bin" out rc=0
+	local h="$WORK/doctor-home" r="$WORK/doctor-repo" bin="$WORK/doctor-bin" out rc=0 tree
 	rm -rf "$h" "$r" "$bin"
 	mkdir -p "$h/.omp/plugins/cache/plugins/jstack___flow___1.2.3+jstack.abc" \
 		"$h/.cursor/plugins/local/spec/.claude-plugin" \
@@ -1163,7 +1166,8 @@ check_doctor() {
 	printf '{"version":"3.3.3"}\n' >"$h/.cursor/plugins/local/spec/.claude-plugin/plugin.json"
 	printf '{"version":"9.9.9"}\n' >"$r/.jstack/vendor/plugins/pstack/.claude-plugin/plugin.json"
 	printf '{"version":"1.0.0"}\n' >"$r/.jstack/vendor/plugins/flow/.claude-plugin/plugin.json"
-	printf '{"version":1,"plugins":{"pstack":{"version":"9.9.9"},"flow":{"version":"1.0.0"}}}\n' >"$r/.jstack/lock.json"
+	tree=$(tree_hash "$r/.jstack/vendor")
+	printf '{"version":1,"vendor":{"tree":"%s"},"plugins":{"pstack":{"version":"9.9.9"},"flow":{"version":"1.0.0"}}}\n' "$tree" >"$r/.jstack/lock.json"
 	cat >"$bin/claude" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' '[{"id":"pstack@jstack","version":"9.9.9","scope":"user","installPath":"/fake/user/pstack","readFromFolder":"/fake/src/pstack","folderVersion":"9.9.9"},{"id":"flow@jstack","version":"1.0.0","scope":"project","installPath":"/fake/proj/flow","readFromFolder":"/fake/src/flow","folderVersion":"1.0.0","projectPath":"$r"}]'
@@ -1202,7 +1206,7 @@ PY
 	fi
 
 	# 篡改 lock：版本漂移要失败；--no-fail 只警告。
-	printf '{"version":1,"plugins":{"pstack":{"version":"9.9.9"},"flow":{"version":"0.0.0"}}}\n' >"$r/.jstack/lock.json"
+	printf '{"version":1,"vendor":{"tree":"%s"},"plugins":{"pstack":{"version":"9.9.9"},"flow":{"version":"0.0.0"}}}\n' "$tree" >"$r/.jstack/lock.json"
 	if PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" doctor --repo "$r" >/dev/null 2>&1; then
 		say "✗ lock 版本被篡改后 doctor 没有失败"
 		rc=1
@@ -1218,7 +1222,7 @@ PY
 	}
 
 	# 源目录版本漂移（本地 marketplace 的记录落后）也要失败。
-	printf '{"version":1,"plugins":{"pstack":{"version":"9.9.9"},"flow":{"version":"1.0.0"}}}\n' >"$r/.jstack/lock.json"
+	printf '{"version":1,"vendor":{"tree":"%s"},"plugins":{"pstack":{"version":"9.9.9"},"flow":{"version":"1.0.0"}}}\n' "$tree" >"$r/.jstack/lock.json"
 	cat >"$bin/claude" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' '[{"id":"pstack@jstack","version":"9.9.9","scope":"user","installPath":"/fake/user/pstack","readFromFolder":"/fake/src/pstack","folderVersion":"9.9.10"},{"id":"flow@jstack","version":"1.0.0","scope":"project","installPath":"/fake/proj/flow","readFromFolder":"/fake/src/flow","folderVersion":"1.0.0","projectPath":"$r"}]'
@@ -1231,6 +1235,168 @@ EOF
 
 	if [ "$rc" -eq 0 ]; then
 		say "✓ doctor：六种来源的安装矩阵、--json、lock 漂移、--no-fail 都通过"
+	fi
+	return $rc
+}
+
+# 项目级安装：vendor、入口软链、Claude hooks、lock，以及 doctor 的树哈希与入口核对。
+check_install_project() {
+	local h="$WORK/install-home" r="$WORK/install-repo" bin="$WORK/install-bin" out want rc=0
+	local d count p e v tree before after link path err="$WORK/install.err"
+	rm -rf "$h" "$r" "$bin"
+	mkdir -p "$h" "$r" "$bin"
+	# mktemp 在 macOS 上给出 /var/...，locate.sh 会解析成 /private/var/...；先统一成物理路径再比较。
+	h=$(cd "$h" && pwd -P)
+	r=$(cd "$r" && pwd -P)
+	bin=$(cd "$bin" && pwd -P)
+	for p in claude pi omp cursor; do
+		cat >"$bin/$p" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-} ${2:-}" = "plugin list" ]; then printf '[]\n'; fi
+exit 0
+SH
+		chmod +x "$bin/$p"
+	done
+	want=$(stage_providers "$ROOT/plugins/flow/skills/route/stages.md")
+	[ -n "$want" ] || { say "✗ stages.md 没有提供者"; return 1; }
+
+	# --dry-run 不落盘。
+	if ! out=$(PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" install --all --scope project --repo "$r" --dry-run 2>&1); then
+		say "✗ install --dry-run 失败："
+		printf '%s\n' "$out" | tail -10 | sed 's/^/  /'
+		return 1
+	fi
+	if [ -e "$r/.jstack" ]; then
+		say "✗ install --dry-run 写了 .jstack"
+		return 1
+	fi
+
+	if ! out=$(PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" install --all --scope project --repo "$r" 2>&1); then
+		say "✗ install --all --scope project 失败："
+		printf '%s\n' "$out" | tail -20 | sed 's/^/  /'
+		return 1
+	fi
+
+	for p in $PLUGINS; do
+		[ -f "$r/.jstack/vendor/plugins/$p/.claude-plugin/plugin.json" ] || {
+			say "✗ vendor 缺少 $p"
+			rc=1
+		}
+	done
+	[ -f "$r/.jstack/vendor/.claude-plugin/marketplace.json" ] || {
+		say "✗ vendor 缺少 marketplace.json"
+		rc=1
+	}
+	for d in .claude/skills .agents/skills .cursor/skills; do
+		count=$(LC_ALL=C /bin/ls -A "$r/$d" 2>/dev/null | wc -l | tr -d ' ')
+		if [ "$count" != 9 ]; then
+			say "✗ $d 有 $count 个入口，预期 9（不能平铺全部 skill）"
+			rc=1
+		fi
+	done
+	for e in poteto-agent comment-sicko; do
+		grep -q 'generated by jstack install' "$r/.claude/agents/$e.md" 2>/dev/null || {
+			say "✗ 缺少 jstack 生成的 .claude/agents/$e.md"
+			rc=1
+		}
+	done
+	if ! jq -e --arg mark '.jstack/vendor/plugins/flow' '
+		[(.hooks.UserPromptSubmit // []), (.hooks.PreToolUse // []), (.hooks.Stop // [])]
+		| map(.[]? | .hooks[]?.command // "")
+		| map(select(contains($mark))) as $ours
+		| (($ours | length) == 3) and ([$ours[] | select(contains("hooks/hooks"))] | length) == 0
+	' "$r/.claude/settings.json" >/dev/null 2>&1; then
+		say "✗ .claude/settings.json 里的 flow hooks 不是三条"
+		rc=1
+	fi
+
+	# lock：版本、树哈希、四个 harness 的记录。
+	tree=$(jq -r '.vendor.tree // empty' "$r/.jstack/lock.json" 2>/dev/null || true)
+	if [ "$tree" != "$(tree_hash "$r/.jstack/vendor")" ]; then
+		say "✗ lock 的 vendor 树哈希与实际 vendor 不一致"
+		rc=1
+	fi
+	for p in $PLUGINS; do
+		v=$(json_get version "$ROOT/plugins/$p/.claude-plugin/plugin.json")
+		if [ "$(jq -r --arg p "$p" '.plugins[$p].version // empty' "$r/.jstack/lock.json" 2>/dev/null)" != "$v" ]; then
+			say "✗ lock 里 $p 的版本不是 $v"
+			rc=1
+		fi
+	done
+	if ! jq -e '(.harnesses | keys | sort) == ["claude-code", "cursor", "omp", "pi"]' "$r/.jstack/lock.json" >/dev/null 2>&1; then
+		say "✗ lock 的 harnesses 不是四个都记录"
+		rc=1
+	fi
+
+	# 四个 harness 的 route 入口都要 locate 到阶段表的全部提供者，且路径落在 vendor 里。
+	for link in .claude/skills/route .agents/skills/route .cursor/skills/route; do
+		if ! out=$(HOME="$h" bash "$r/$link/locate.sh" 2>"$err"); then
+			say "✗ 从 $link 运行 locate.sh 失败："
+			sed 's/^/  /' "$err" | head -10
+			rc=1
+			continue
+		fi
+		if [ "$(printf '%s\n' "$out" | cut -f1)" != "$want" ]; then
+			say "✗ 从 $link 定位的提供者与 stages.md 不一致"
+			rc=1
+		fi
+		while IFS= read -r path; do
+			case $path in
+			"$r/.jstack/vendor/"*) [ -f "$path" ] || {
+				say "✗ $path 不存在"
+				rc=1
+			} ;;
+			*) say "✗ $path 不在 vendor 里"; rc=1 ;;
+			esac
+		done < <(printf '%s\n' "$out" | cut -f2)
+	done
+
+	# 重复运行：不新增链接、不重复 hooks、lock 不变。
+	before=$({ LC_ALL=C /bin/ls -lA "$r/.claude/skills" "$r/.agents/skills" "$r/.cursor/skills"
+		cat "$r/.claude/settings.json" "$r/.jstack/lock.json"; } | sha256_stream)
+	if ! PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" install --all --scope project --repo "$r" >/dev/null 2>&1; then
+		say "✗ 重复运行 install 失败"
+		rc=1
+	fi
+	after=$({ LC_ALL=C /bin/ls -lA "$r/.claude/skills" "$r/.agents/skills" "$r/.cursor/skills"
+		cat "$r/.claude/settings.json" "$r/.jstack/lock.json"; } | sha256_stream)
+	if [ "$before" != "$after" ]; then
+		say "✗ 重复运行 install 改变了安装产物（hooks、链接或 lock）"
+		rc=1
+	fi
+
+	# doctor：刚装完一致；改一个 vendor 文件或删一个入口都要报出来。
+	if ! out=$(PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" doctor --repo "$r" --json 2>/dev/null); then
+		say "✗ doctor 对刚安装的仓库报了失败"
+		rc=1
+	elif ! printf '%s\n' "$out" | python3 -I -c '
+import json, sys
+rows = json.load(sys.stdin)
+vendor = [r for r in rows if r["harness"] == "vendor"]
+assert len(vendor) == 3, rows
+assert all(r["lock"] == "ok" for r in vendor), vendor
+'; then
+		say "✗ doctor --json 的 vendor 行不是三条 ok"
+		rc=1
+	fi
+	printf 'x\n' >"$r/.jstack/vendor/plugins/flow/tampered"
+	if PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" doctor --repo "$r" >/dev/null 2>&1; then
+		say "✗ vendor 被改过后 doctor 没有失败"
+		rc=1
+	fi
+	rm -f "$r/.jstack/vendor/plugins/flow/tampered"
+	rm -f "$r/.agents/skills/route"
+	if PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" doctor --repo "$r" >/dev/null 2>&1; then
+		say "✗ 入口链接缺失时 doctor 没有失败"
+		rc=1
+	fi
+	if ! PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" install --all --scope project --repo "$r" >/dev/null 2>&1; then
+		say "✗ 恢复入口链接失败"
+		rc=1
+	fi
+
+	if [ "$rc" -eq 0 ]; then
+		say "✓ 项目级安装：vendor、9 个入口、Claude hooks、lock、四 harness 的 locate（Pi/OMP 共用 .agents）、幂等、dry-run 与 doctor 都通过"
 	fi
 	return $rc
 }
@@ -1364,6 +1530,7 @@ cmd_check() {
 	check_locate || rc=1
 	check_repo_config || rc=1
 	check_doctor || rc=1
+	check_install_project || rc=1
 	# 阶段门禁对构建产物测。macOS 上用 /bin/bash 跑，确认 hook 在系统自带的 bash 3.2 下也能用。
 	if "$([ -x /bin/bash ] && echo /bin/bash || echo bash)" "$ROOT/tests/flow-hooks.sh" >"$WORK/hooks" 2>&1; then
 		say "✓ flow 的 stage.sh 和 hooks 测试通过（$(grep -c '^✓' "$WORK/hooks") 项）"
@@ -2380,6 +2547,7 @@ doctor_pi_tree() { # <文件> <已见文件> <包目录>
 cmd_doctor() {
 	local json=0 nofail=0 repo= out file="$WORK/doctor-rows" seen="$WORK/doctor-seen" rc=0
 	local h scope plugin version path source inrepo stale lock lockver lock_cell n drift=0 stale_n=0 tab
+	local lock_tree actual_tree tree_bad= missing_rec= rec
 	local pi_agent omp_plugins cursor_plugins id fold proj
 	while [ $# -gt 0 ]; do
 		case $1 in
@@ -2473,6 +2641,19 @@ cmd_doctor() {
 	# 核对 lock 与漂移，生成七列。
 	lock=
 	[ -z "$repo" ] || [ ! -f "$repo/.jstack/lock.json" ] || lock="$repo/.jstack/lock.json"
+	if [ -n "$lock" ]; then
+		if [ ! -d "$repo/.jstack/vendor" ]; then
+			tree_bad="lock 存在但 .jstack/vendor 不存在"
+		else
+			lock_tree=$(jq -r '.vendor.tree // empty' "$lock" 2>/dev/null || true)
+			actual_tree=$(tree_hash "$repo/.jstack/vendor")
+			if [ -z "$lock_tree" ]; then
+				tree_bad="lock 缺少 vendor.tree（运行 ./jstack install --all --scope project 重新生成）"
+			elif [ "$lock_tree" != "$actual_tree" ]; then
+				tree_bad="vendor 树哈希与 lock 不一致（lock $(printf '%s' "$lock_tree" | cut -c1-12)…，实际 $(printf '%s' "$actual_tree" | cut -c1-12)…）"
+			fi
+		fi
+	fi
 	: >"$WORK/doctor-final"
 	sort -t "$(printf '\t')" -k1,1 -k2,2 -k3,3 "$file" |
 		while IFS=$'\t' read -r h scope plugin version path source inrepo stale; do
@@ -2484,7 +2665,9 @@ cmd_doctor() {
 			elif [ -z "$lock" ]; then
 				lock_cell=no-lock
 			else
-				lockver=$(jq -r --arg p "$plugin" '.plugins[$p].version // empty' "$lock" 2>/dev/null || true)
+				lockver=$(jq -r --arg p "$plugin" \
+					'.plugins[$p] | if type == "object" then (.version // empty) else (. // empty) end' \
+					"$lock" 2>/dev/null || true)
 				if [ -z "$lockver" ]; then
 					lock_cell=missing
 				elif [ "$lockver" != "$version" ]; then
@@ -2501,6 +2684,21 @@ cmd_doctor() {
 	drift=$(awk -F'\t' '$7 ~ /^(drift|missing|stale)( |$)/ { n++ } END { print n + 0 }' "$WORK/doctor-final")
 	stale_n=$(awk -F'\t' '$7 == "stale" { n++ } END { print n + 0 }' "$WORK/doctor-final")
 	[ "$drift" -eq 0 ] || rc=1
+	# lock 里的安装入口必须还在，删掉一个入口 skill 也算安装与 lock 不一致。
+	if [ -n "$lock" ]; then
+		while IFS= read -r rec; do
+			[ -n "$rec" ] || continue
+			if [ -e "$repo/$rec" ]; then
+				continue
+			fi
+			case " $missing_rec " in
+			*" $rec "*) ;;
+			*) missing_rec="$missing_rec${missing_rec:+, }$rec" ;;
+			esac
+		done < <(jq -r '.harnesses[]?.records[]?' "$lock" 2>/dev/null || true)
+	fi
+	[ -z "$tree_bad" ] || rc=1
+	[ -z "$missing_rec" ] || rc=1
 
 	if [ "$json" -eq 1 ]; then
 		python3 -I - "$WORK/doctor-final" <<'PY'
@@ -2537,6 +2735,8 @@ PY
 			say "共 ${n} 条安装：${drift} 条与源目录或 lock 不一致（其中 ${stale_n} 条记录版本落后于源目录）。"
 		fi
 	fi
+	[ -z "$tree_bad" ] || say "! $tree_bad" >&2
+	[ -z "$missing_rec" ] || say "! lock 记录的安装入口不存在：$missing_rec" >&2
 	if [ "$rc" -ne 0 ] && [ "$nofail" -eq 1 ]; then
 		say "! 有版本漂移或 lock 不一致；--no-fail 下不返回失败。" >&2
 		rc=0
@@ -2544,15 +2744,234 @@ PY
 	return $rc
 }
 
-cmd_install() {
-	local scope=user p conflicts tool installed markets
-	while [ $# -gt 0 ]; do
-		case $1 in
-		--scope) scope=${2:?--scope 后面要跟 user、project 或 local}; shift 2 ;;
-		--scope=*) scope=${1#*=}; shift ;;
-		*) die "未知参数：$1" ;;
-		esac
+# ---- 安装：harness 探测、项目级 vendor 与 lock ----
+
+harness_present() { # <harness>
+	case $1 in
+	claude-code) command -v claude >/dev/null 2>&1 ;;
+	pi) command -v pi >/dev/null 2>&1 ;;
+	omp) command -v omp >/dev/null 2>&1 ;;
+	cursor) command -v cursor >/dev/null 2>&1 || [ -d "${CURSOR_HOME:-$HOME/.cursor}" ] ;;
+	*) return 1 ;;
+	esac
+}
+
+entry_skills() { # <插件>：要链进各 harness 项目 skill 目录的入口
+	case $1 in
+	flow) printf '%s\n' route archive ;;
+	pstack) printf '%s\n' poteto-mode ;;
+	spec) printf '%s\n' grill-with-docs to-spec to-tickets wayfinder handoff setup-matt-pocock-skills ;;
+	esac
+}
+
+plugin_skill_rel() { # <vendor> <插件> <入口>：skill 目录相对仓库根的路径
+	local vendor=$1 plugin=$2 name=$3 rel
+	for rel in "$name" "engineering/$name" "productivity/$name"; do
+		if [ -f "$vendor/plugins/$plugin/skills/$rel/SKILL.md" ]; then
+			printf '.jstack/vendor/plugins/%s/skills/%s\n' "$plugin" "$rel"
+			return 0
+		fi
 	done
+	return 1
+}
+
+sha256_stream() {
+	if command -v shasum >/dev/null 2>&1; then
+		shasum -a 256 | awk '{print $1}'
+	else
+		sha256sum | awk '{print $1}'
+	fi
+}
+
+link_entry() { # <仓库> <相对目录> <名字> <相对目标> <dry>
+	local repo=$1 dir=$2 name=$3 target=$4 dry=$5 path
+	path="$repo/$dir/$name"
+	if [ "$dry" -eq 1 ]; then
+		say "  链接 $dir/$name -> $target"
+		return 0
+	fi
+	mkdir -p "$repo/$dir"
+	if [ -L "$path" ]; then
+		[ "$(readlink "$path")" = "$target" ] ||
+			die "$path 已指向 $(readlink "$path")，不是这次安装的入口；先移走再装"
+	elif [ -e "$path" ]; then
+		die "$path 已存在且不是符号链接；先移走再装"
+	else
+		ln -s "$target" "$path"
+	fi
+}
+
+install_vendor() { # <仓库> <dry>
+	local repo=$1 dry=$2 vendor="$repo/.jstack/vendor" p need=0
+	for p in $PLUGINS; do
+		[ -f "$ROOT/plugins/$p/.claude-plugin/plugin.json" ] || need=1
+	done
+	if [ "$need" -eq 1 ]; then
+		if [ "$dry" -eq 1 ]; then
+			say "  先运行 ./jstack build"
+		else
+			cmd_build
+		fi
+	fi
+	if [ "$dry" -eq 1 ]; then
+		say "  复制 plugins/{pstack,spec,flow} 到 .jstack/vendor/plugins/"
+		say "  复制 .claude-plugin/marketplace.json 到 .jstack/vendor/.claude-plugin/"
+		return 0
+	fi
+	command -v rsync >/dev/null 2>&1 || die "项目级安装需要 rsync"
+	[ -f "$ROOT/.claude-plugin/marketplace.json" ] || die "缺少 .claude-plugin/marketplace.json"
+	mkdir -p "$vendor/plugins" "$vendor/.claude-plugin"
+	for p in $PLUGINS; do
+		rsync -a --delete "$ROOT/plugins/$p/" "$vendor/plugins/$p/"
+	done
+	cp "$ROOT/.claude-plugin/marketplace.json" "$vendor/.claude-plugin/marketplace.json"
+}
+
+install_agent() { # <仓库> <vendor> <名字> <dry>
+	local repo=$1 vendor=$2 name=$3 dry=$4 src dst
+	src="$vendor/plugins/pstack/agents/$name.md"
+	dst="$repo/.claude/agents/$name.md"
+	if [ "$dry" -eq 1 ]; then
+		say "  复制 pstack agents/$name.md 到 .claude/agents/"
+		return 0
+	fi
+	[ -f "$src" ] || die "vendor 里缺少 pstack agents/$name.md"
+	mkdir -p "$repo/.claude/agents"
+	if [ -e "$dst" ] && ! grep -q 'generated by jstack install' "$dst"; then
+		die "$dst 已存在且不是 jstack 生成的；先备份或移走"
+	fi
+	{
+		cat "$src"
+		printf '\n<!-- generated by jstack install --scope project; source: .jstack/vendor/plugins/pstack/agents/%s.md -->\n' "$name"
+	} >"$dst"
+}
+
+install_claude_hooks() { # <仓库> <dry>：项目级 hooks 指向 vendor，重复运行不重复追加
+	local repo=$1 dry=$2 settings cur new
+	settings="$repo/.claude/settings.json"
+	if [ "$dry" -eq 1 ]; then
+		say "  写 .claude/settings.json 的 flow hooks（UserPromptSubmit / PreToolUse / Stop）"
+		return 0
+	fi
+	mkdir -p "$repo/.claude"
+	cur=
+	[ ! -f "$settings" ] || cur=$(cat "$settings")
+	[ -n "$cur" ] || cur='{}'
+	new=$(printf '%s\n' "$cur" | jq --arg root '${CLAUDE_PROJECT_DIR}/.jstack/vendor/plugins/flow' '
+		def clean($mark):
+			map(.hooks = ((.hooks // []) | map(select((.command // "") | contains($mark) | not))))
+			| map(select((.hooks | length) > 0));
+		.hooks = (.hooks // {}) |
+		.hooks.UserPromptSubmit = ((.hooks.UserPromptSubmit // []) | clean(".jstack/vendor/plugins/flow"))
+			+ [{hooks: [{type: "command", command: ("\"" + $root + "\"/hooks/prompt.sh"), timeout: 10}]}] |
+		.hooks.PreToolUse = ((.hooks.PreToolUse // []) | clean(".jstack/vendor/plugins/flow"))
+			+ [{matcher: "Bash", hooks: [{type: "command", command: ("\"" + $root + "\"/hooks/guard.sh"), timeout: 10}]}] |
+		.hooks.Stop = ((.hooks.Stop // []) | clean(".jstack/vendor/plugins/flow"))
+			+ [{hooks: [{type: "command", command: ("\"" + $root + "\"/hooks/stop.sh"), timeout: 10}]}]
+	') || die "写 $settings 失败：现有内容不是合法的 JSON"
+	[ "$new" = "$cur" ] || printf '%s\n' "$new" >"$settings"
+}
+
+harness_records() { # <harness>：lock 里记录、doctor 会核对的安装入口
+	local h=$1 d p e
+	case $h in
+	claude-code) d=.claude/skills ;;
+	pi | omp) d=.agents/skills ;;
+	cursor) d=.cursor/skills ;;
+	*) return 1 ;;
+	esac
+	for p in $PLUGINS; do
+		for e in $(entry_skills "$p"); do
+			printf '%s\n' "$d/$e"
+		done
+	done
+	if [ "$h" = claude-code ]; then
+		printf '%s\n' .claude/agents/poteto-agent.md .claude/agents/comment-sicko.md
+	fi
+}
+
+write_lock() { # <仓库> <harness>...：install 是唯一写 lock 的命令
+	local repo=$1 vendor tree ver commit upstream plugins harnesses h recs
+	shift
+	vendor="$repo/.jstack/vendor"
+	tree=$(tree_hash "$vendor")
+	ver=$(json_get version "$ROOT/package.json")
+	commit=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || true)
+	upstream=$(for h in pstack pstack-cursor spec; do
+		[ -f "$ROOT/upstream/$h.lock.json" ] || continue
+		printf '%s\t%s\n' "$h" "$(jq -r '.sha // ""' "$ROOT/upstream/$h.lock.json")"
+	done | jq -Rn '[inputs | split("\t") | {key: .[0], value: .[1]}] | from_entries')
+	plugins=$(for h in $PLUGINS; do
+		printf '%s\t%s\n' "$h" "$(json_get version "$ROOT/plugins/$h/.claude-plugin/plugin.json")"
+	done | jq -Rn '[inputs | split("\t") | {key: .[0], value: {version: .[1]}}] | from_entries')
+	harnesses='{}'
+	for h in "$@"; do
+		recs=$(harness_records "$h" | jq -Rn '[inputs]')
+		harnesses=$(printf '%s\n' "$harnesses" |
+			jq --arg h "$h" --argjson r "$recs" '. + {($h): {scope: "project", records: $r}}')
+	done
+	printf '%s\n' "$harnesses" | jq --arg ver "$ver" --arg commit "$commit" --arg tree "$tree" \
+		--argjson upstream "$upstream" --argjson plugins "$plugins" '
+		{
+			version: 1,
+			jstack: ({version: $ver} + (if $commit == "" then {} else {commit: $commit} end)),
+			vendor: {tree: $tree},
+			upstream: $upstream,
+			plugins: $plugins,
+			harnesses: .
+		}' >"$WORK/lock.json" || die "生成 lock 失败"
+	mkdir -p "$repo/.jstack"
+	mv "$WORK/lock.json" "$repo/.jstack/lock.json"
+}
+
+install_project() { # <仓库> <dry> <harness>...
+	local repo=$1 dry=$2 vendor="$repo/.jstack/vendor" h d p e rel
+	shift 2
+	install_vendor "$repo" "$dry"
+	for h in "$@"; do
+		case $h in
+		claude-code) d=.claude/skills ;;
+		pi | omp) d=.agents/skills ;;
+		cursor) d=.cursor/skills ;;
+		*) die "未知 harness：$h" ;;
+		esac
+		if [ "$dry" -eq 1 ]; then
+			say "  链接 9 个入口 skill 到 $d"
+			continue
+		fi
+		for p in $PLUGINS; do
+			for e in $(entry_skills "$p"); do
+				rel=$(plugin_skill_rel "$vendor" "$p" "$e") || die "vendor 里缺少 $p 的入口 skill $e"
+				link_entry "$repo" "$d" "$e" "../../$rel" 0
+			done
+		done
+	done
+	# Claude Code 走仓库内的 skill 软链、agents 副本和项目 hooks，不注册 marketplace。
+	if printf '%s\n' "$@" | grep -qx claude-code; then
+		install_agent "$repo" "$vendor" poteto-agent "$dry"
+		install_agent "$repo" "$vendor" comment-sicko "$dry"
+		install_claude_hooks "$repo" "$dry"
+	fi
+	if [ "$dry" -eq 0 ]; then
+		write_lock "$repo" "$@"
+		say "✓ 项目级安装完成（${*}）：vendor 在 .jstack/vendor/，lock 在 .jstack/lock.json，提交这些文件和入口链接。"
+		say "  Pi / OMP 首次读取 .agents/skills 时会要求信任项目；Cursor 需要重开窗口。"
+	else
+		say "（--dry-run，不写任何文件）"
+	fi
+}
+
+install_omp_user() {
+	command -v omp >/dev/null 2>&1 || die "需要 OMP CLI（omp）"
+	if ! omp plugin marketplace list 2>/dev/null | grep -q '^[[:space:]]*jstack[[:space:]]'; then
+		omp plugin marketplace add "$ROOT"
+	fi
+	omp plugin install pstack@jstack spec@jstack flow@jstack
+	say "✓ 已安装 OMP 插件；重开 OMP 会话生效。"
+}
+
+install_claude_user() { # <scope>
+	local scope=$1 p conflicts tool installed scoped by_scope=0 installed_now=0 markets
 	command -v claude >/dev/null || die "需要 Claude Code CLI（claude）"
 	for p in $PLUGINS; do
 		[ -f "$ROOT/plugins/$p/.claude-plugin/plugin.json" ] || { cmd_build; break; }
@@ -2560,6 +2979,13 @@ cmd_install() {
 	# 先存进变量再 grep：直接用管道接 grep -q，grep 提前退出会让 claude 收到 SIGPIPE，在 pipefail 下误判。
 	installed=$(claude plugin list --json 2>/dev/null || true)
 	markets=$(claude plugin marketplace list --json 2>/dev/null || true)
+	# 同一插件在 user / project / local 各有一条记录；只把本次 scope 的记录当成“已装”。
+	scoped=$installed
+	if command -v jq >/dev/null 2>&1; then
+		scoped=$(printf '%s\n' "$installed" |
+			jq -r --arg s "$scope" '.[] | select((.scope // "") == $s) | .id' 2>/dev/null || true)
+		by_scope=1
+	fi
 	# 别的 marketplace 里的同名插件命令前缀相同，同时装会冲突，例如所有 pstack 移植版都是 /pstack:*。
 	# mattpocock-skills 是 Matt 的完整版：skill 和 spec 重复，还带 implement 编排，会和 poteto-mode 抢主编排。
 	conflicts=$(grep -oE "\"id\": *\"($(tr ' ' '|' <<<"$PLUGINS")|mattpocock-skills)@[^\"]*\"" <<<"$installed" |
@@ -2571,7 +2997,12 @@ cmd_install() {
 		claude plugin marketplace add "$ROOT" --scope "$scope"
 	fi
 	for p in $PLUGINS; do
-		if grep -q "\"id\": *\"$p@$MARKETPLACE\"" <<<"$installed"; then
+		if [ "$by_scope" -eq 1 ]; then
+			grep -qx "$p@$MARKETPLACE" <<<"$scoped" && installed_now=1 || installed_now=0
+		else
+			grep -q "\"id\": *\"$p@$MARKETPLACE\"" <<<"$scoped" && installed_now=1 || installed_now=0
+		fi
+		if [ "$installed_now" -eq 1 ]; then
 			claude plugin enable "$p@$MARKETPLACE" --scope "$scope" >/dev/null 2>&1 || true
 			# 本地 marketplace 的插件本来就从源目录加载；update 让 claude plugin list 里记的版本号跟上，
 			# marketplace 来自 GitHub 时则真正拉取新版本。
@@ -2599,6 +3030,79 @@ cmd_install() {
   4. 运行 /pstack:poteto-mode <任务描述> 开始工作。需求不清或任务较大时，先用 /spec:grill-with-docs、
      /spec:to-spec、/spec:to-tickets 澄清和拆解，再把 spec 或 ticket 交给 poteto-mode
 EOF
+}
+
+cmd_install() {
+	local scope=user all=0 repo= dry=0 h hs= any=0
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--all) all=1; shift ;;
+		--dry-run) dry=1; shift ;;
+		--repo)
+			repo=${2:?--repo 后面要跟仓库路径}
+			shift 2
+			;;
+		--scope)
+			scope=${2:?--scope 后面要跟 user、project 或 local}
+			shift 2
+			;;
+		--scope=*) scope=${1#*=}; shift ;;
+		*) die "未知参数：$1（用法：./jstack install [--all] [--scope user|project] [--repo <dir>] [--dry-run]）" ;;
+		esac
+	done
+	case $scope in user | project | local) ;; *) die "未知作用域：$scope（user、project 或 local）" ;; esac
+
+	if [ "$scope" = project ]; then
+		[ -n "$repo" ] || repo=$PWD
+		repo=$(cd "$repo" 2>/dev/null && pwd -P) || die "--repo 指向的目录不存在"
+		if [ "$all" -eq 1 ]; then
+			for h in claude-code pi omp cursor; do
+				if harness_present "$h"; then
+					hs="$hs $h"
+				else
+					say "! 没找到 $h，跳过"
+				fi
+			done
+		else
+			harness_present claude-code ||
+				die "没找到 Claude Code；加 --all 探测全部 harness，或先安装 claude"
+			hs=" claude-code"
+		fi
+		[ -n "$hs" ] || die "没有探测到已安装的 harness"
+		install_project "$repo" "$dry" $hs
+		return
+	fi
+
+	[ "$dry" -eq 0 ] || die "--dry-run 只用于 --scope project"
+	if [ "$all" -eq 1 ]; then
+		if harness_present claude-code; then
+			install_claude_user "$scope"
+			any=1
+		else
+			say "! 没找到 Claude Code，跳过"
+		fi
+		if harness_present pi; then
+			cmd_install_pi
+			any=1
+		else
+			say "! 没找到 Pi，跳过"
+		fi
+		if harness_present omp; then
+			install_omp_user
+			any=1
+		else
+			say "! 没找到 OMP，跳过"
+		fi
+		if harness_present cursor; then
+			cmd_install_cursor
+			any=1
+		else
+			say "! 没找到 Cursor，跳过"
+		fi
+		[ "$any" -eq 1 ] || die "没有探测到已安装的 harness"
+		return
+	fi
+	install_claude_user "$scope"
 }
 
 cmd_install_cursor() {

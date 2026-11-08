@@ -29,8 +29,9 @@ Claude Code 有 `--scope project`，其余 harness 只有用户级安装；四�
 ```
 
 - `vendor/plugins/` 保持完整的插件布局，不摊平 skill。路径解析、相对链接、adapter 引用都按插件目录原样工作。
-- 只把 **entry skill**（`disable-model-invocation: true` 的用户入口，如 `route` 和 spec 的入口）链接到各 harness 的项目 skill 目录；其余 skill 由 `locate.sh` 按绝对路径读取，不进入发现目录。具体目录与链接行为属于待验证事实，见下表。
-- Claude Code 走项目级 marketplace：项目 `.claude/settings.json` 里声明 `extraKnownMarketplaces` 指向 `./.jstack/vendor`，并写 `enabledPlugins`；skill 仍由插件加载器发现，不额外平铺。
+- 只把 9 个入口 skill 链到各 harness 的项目 skill 目录：flow 的 `route`、`archive`，pstack 的 `poteto-mode`，spec 的 `grill-with-docs`、`to-spec`、`to-tickets`、`wayfinder`、`handoff`、`setup-matt-pocock-skills`。其余 skill 由 `locate.sh` 按物理路径读取，不进入发现目录。
+- 发现目录按实测：Claude Code 用 `.claude/skills`，Pi 和 OMP 共用 `.agents/skills`（两者都按项目向上查找），Cursor 用 `.cursor/skills`。链接用相对路径，仓库搬走也有效。
+- Claude Code 不注册 marketplace：入口 skill 链进 `.claude/skills`，`poteto-agent`、`comment-sicko` 复制到 `.claude/agents`，flow 的三个 hook 写进项目 `.claude/settings.json`，命令用 `${CLAUDE_PROJECT_DIR}` 指向 vendor。
 
 ### 3. lock：安装可核查
 
@@ -38,17 +39,19 @@ Claude Code 有 `--scope project`，其余 harness 只有用户级安装；四�
 
 ```json
 {
-  "jstack":  { "version": "<构建版本戳>" },
-  "vendor":  { "tree": "<vendor 目录内容哈希>" },
+  "version": 1,
+  "jstack":  { "version": "0.1.0", "commit": "<jstack 仓库 commit>" },
+  "vendor":  { "tree": "<vendor 目录内容哈希（路径 + 内容）>" },
   "upstream": { "pstack": "<commit>", "pstack-cursor": "<commit>", "spec": "<commit>" },
-  "plugins": { "pstack": "<版本>", "spec": "<版本>", "flow": "<版本>" },
+  "plugins": { "pstack": { "version": "<版本>" }, "spec": { "version": "<版本>" }, "flow": { "version": "<版本>" } },
   "harnesses": {
-    "claude-code": { "scope": "project", "record": ".claude/settings.json" }
+    "claude-code": { "scope": "project", "records": [".claude/skills/route", ".claude/agents/poteto-agent.md", "..."] },
+    "pi": { "scope": "project", "records": [".agents/skills/route", "..."] }
   }
 }
 ```
 
-`./jstack doctor` 回答"每个 harness × 作用域装的是哪个版本、在哪里、来自哪棵树"，并与 lock 比对；不一致时报警。`install` 是唯一写 lock 的命令。
+`./jstack doctor` 回答"每个 harness × 作用域装的是哪个版本、在哪里、来自哪棵树"，并核对 vendor 树哈希、插件版本和 lock 里记录的入口路径；不一致时报警。`install` 是唯一写 lock 的命令。
 
 ### 4. 两级配置，单一来源
 
@@ -66,7 +69,7 @@ Claude Code 有 `--scope project`，其余 harness 只有用户级安装；四�
 
 ### 5. 不新建第五套安装器
 
-全部扩展 `./jstack` 子命令（install / doctor），底层仍用各 harness 的原生机制：Claude Code 用 plugin marketplace，Pi 用 package，OMP 用 plugin，Cursor 用本地插件目录复制。jstack 只负责编排、放置 vendor、写 lock 和核对。
+全部扩展 `./jstack` 子命令（install / doctor），底层仍用各 harness 的原生机制：Claude Code 用户级用 plugin marketplace、项目级用 skill 目录与 settings hooks，Pi 用 package 或 `.agents/skills`，OMP 用 plugin 或 `.agents/skills`，Cursor 用本地插件目录复制或 `.cursor/skills`。jstack 只负责编排、放置 vendor、写 lock 和核对。
 
 ### 6. 门禁可降级，不可静默
 
@@ -97,11 +100,11 @@ flow 的三个 hook（阶段注入、Stop 证据、must-stop guard）目前只�
 
 | # | 事实 | 谁验证 |
 |---|---|---|
-| F1 | Claude Code `extraKnownMarketplaces` 是否接受相对 `directory` source，且项目 `.claude/settings.json` 单独声明即可生效（不依赖用户级 marketplace） | #26 |
-| F2 | `claude plugin marketplace add --scope project` 是否只在首次注册时生效；已有用户级 marketplace 时如何改写为项目级 | #26 |
-| F3 | Pi 的项目 skill 目录（`.agents/skills`、`.pi/skills` 或其它）与软链跟随行为 | #26 |
-| F4 | OMP 的项目 skill 目录与软链行为 | #26 |
-| F5 | Cursor 项目 `.cursor/skills` 是否接受指向仓库内的符号链接（已知本地插件目录拒绝 `~/.cursor/plugins/local` 之外的链接） | #26 |
+| F1 | Claude Code `extraKnownMarketplaces` 是否接受相对 `directory` source，且项目 `.claude/settings.json` 单独声明即可生效（不依赖用户级 marketplace） | #26 实测后不采用：Claude 项目级走 `.claude/skills` 软链 + `.claude/settings.json` hooks，不注册 marketplace |
+| F2 | `claude plugin marketplace add --scope project` 是否只在首次注册时生效；已有用户级 marketplace 时如何改写为项目级 | #26 实测后不采用：项目 settings 的 path 会被写成绝对路径，仓库不可移植 |
+| F3 | Pi 的项目 skill 目录（`.agents/skills`、`.pi/skills` 或其它）与软链跟随行为 | #26 已实测：Pi 从 cwd 及祖先目录发现 `.agents/skills`，用户级 `~/.agents/skills` 单独算；软链按物理路径跟随，`locate.sh` 已验证 |
+| F4 | OMP 的项目 skill 目录与软链行为 | #26 已实测：OMP 按 cwd 向上找 `.agents/skills`，也认 `.omp/skills`；项目级与 Pi 共用 `.agents/skills` |
+| F5 | Cursor 项目 `.cursor/skills` 是否接受指向仓库内的符号链接（已知本地插件目录拒绝 `~/.cursor/plugins/local` 之外的链接） | #26 部分实测：Cursor 应用内置 `.cursor/skills` 扫描；软链的真机加载仍需手动验证（`smoke cursor` 只覆盖本地插件加载器） |
 | F6 | Pi extension / OMP hook 能否承载阶段注入、Stop 证据检查、命令 guard 中的哪些 | #28 |
 | F7 | Cursor 的 hooks（若存在）事件模型能否承载 guard / Stop；不能时如何降级 | #27 |
 | F8 | 四个 harness 同时存在用户级与项目级安装时的优先级与去重规则 | #25 |
