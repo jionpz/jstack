@@ -92,14 +92,18 @@ Cursor 的本地插件加载器只接受 `~/.cursor/plugins/local` 内的符号�
 
 ## 分工
 
-按任务大小决定要不要用 spec，不是每个任务都走一遍。下表由 `flow:route` 自动执行，不需要你选命令：
+工作流由 [`src/flow/skills/route/stages.md`](src/flow/skills/route/stages.md) 定义成固定阶段：size、clarify、plan、execute、verify、review、land、archive。每个阶段写明产出、门禁和当前提供者（ADR-0002）。`flow:route` 先分级，再按大小选出要走的阶段，逐个交给提供者，不需要你选命令：
 
-| 任务大小 | 用法 |
+| 任务大小 | 阶段路线 |
 |---|---|
-| XS / S（改文案、修一个 bug、单文件小改） | 直接 `/pstack:poteto-mode`，不经过 spec |
-| M（一个模块内的完整功能，边界清楚） | pstack 完整流程；只有需求存在多种合理解释时，用 `/spec:grill-with-docs` 澄清 |
-| L（新模块、跨模块改造） | `/spec:grill-with-docs` → `/spec:to-spec` → `/spec:to-tickets`，然后由 `/pstack:poteto-mode` 按 ticket 执行 |
-| XL（跨会话、跨阶段） | 在 L 的基础上用 `/spec:wayfinder` 维护一张决策地图，需要换会话时用 `/spec:handoff` |
+| XS / S（改文案、修一个 bug、单文件小改） | execute → verify → land → archive |
+| M，边界清楚 | execute → verify → review → land → archive |
+| M，需求有多种合理解释 | clarify → execute → verify → review → land → archive |
+| L（新模块、跨模块改造） | clarify → plan（spec + tickets）→ 每张 ticket 走 execute → land → archive |
+| XL（跨会话、跨阶段） | 先用 wayfinder 规划，再对每块按 L 走；需要换会话时 handoff |
+| 提问、调查 | 只走 execute，产出就是带出处的回答 |
+
+execute 交给 poteto-mode。它的 playbook 已经包含验证、审查和开 PR，route 只补其后仍未满足的门禁。仓库没有 remote 时，分支上的提交就满足 land。archive 还没有提供者，暂时跳过并在报告里写明。
 
 route 只在三处停下来问你，其余全部自动推进：
 
@@ -109,7 +113,7 @@ route 只在三处停下来问你，其余全部自动推进：
 
 签字之后由 poteto-mode 按 ticket 依赖顺序执行，不再停下来确认，poteto-mode 自己的 Always-pause 清单仍然有效。业务仓库的 `CLAUDE.md` 或 `.claude/rules/` 里定义了不同的分级、spec 位置或门禁时，以仓库为准。
 
-`disable-model-invocation: true` 的 skill（pstack 57 个、spec 6 个：5 个入口加 setup）不能被模型用 Skill 工具调用，Claude Code 会直接拒绝，提示 "reserved for explicit user invocation"。route 用随附的 `locate.sh` 找到这些入口 SKILL.md 的路径，然后直接读取并照着做，这也是 pstack 内部 skill 之间互相路由的方式。`locate.sh` 同时支持本地 marketplace 的 `plugins/<插件>/` 布局和 GitHub 安装的 `cache/jstack/<插件>/<版本>/` 布局。
+`disable-model-invocation: true` 的 skill（pstack 57 个、spec 6 个：5 个入口加 setup）不能被模型用 Skill 工具调用，Claude Code 会直接拒绝，提示 "reserved for explicit user invocation"。route 用随附的 `locate.sh` 找到这些提供者文件的路径，然后直接读取并照着做，这也是 pstack 内部 skill 之间互相路由的方式。`locate.sh` 不写死 skill 名，而是读同目录 `stages.md` 的 Providers 列：换掉某个阶段的提供者只改表里那一格。它支持本地 marketplace、Claude Code 的 GitHub 缓存、OMP 缓存、Cursor 本地插件和 Pi package 五种安装布局，任一提供者找不到就点名并以非 0 退出。
 
 几条硬规则：
 
@@ -230,8 +234,9 @@ git diff -- upstream/     # 看上游改了什么
 6. spec/flow 的 Cursor manifest 是否和 Claude manifest 同名、同版本、同样的 skill 列表
 7. `plugins/pstack-cursor` 是否是 Cursor 插件 `pstack`，skills 和 agents 是否齐全
 8. 根目录 `package.json` 是否把三个插件的 skills 都暴露给 Pi
-9. `claude plugin validate` 是否通过（marketplace 和全部插件）
-10. 评测任务自检（`./jstack eval --selftest`）：每个任务的 check 在初始状态下失败、在参考解下通过
+9. `stages.md` 里的每个提供者是否在五种安装布局下都找得到：用 `plugins/` 产物在临时的假 HOME 里复制出本地 marketplace、Claude GitHub 缓存、OMP 缓存、Cursor 本地插件、Pi npm 包，从各自的 flow 副本运行 `locate.sh`，路径必须落在该布局自己的树里；再把一个提供者换成 `spec:no-such-skill`，`locate.sh` 必须失败并点名它
+10. `claude plugin validate` 是否通过（marketplace 和全部插件）
+11. 评测任务自检（`./jstack eval --selftest`）：每个任务的 check 在初始状态下失败、在参考解下通过
 
 第 3、4、5 项专门查 adapter 管不到的地方：脚本和 frontmatter 都不经过模型，上游新引入的 Cursor 依赖在同步时就能发现；第 5 项查的是 spec 这种"只收一部分 skill"的插件有没有漏掉依赖。`claude plugin validate` 不查 frontmatter 键，也不查插件内部 skill 之间的调用关系。全部通过才提交。
 
@@ -247,6 +252,8 @@ git diff -- upstream/     # 看上游改了什么
 ```
 
 Pi 和 OMP 的 smoke 会实际启动模型、消耗 token，需要网络；它们是验收测试，不是每次提交的默认门禁。Cursor 没有可脚本化的 headless agent CLI，smoke 只验证加载器解析结果和 `locate.sh`，交互部分按 `docs/testing/cursor.md` 手动做。
+
+每条 headless 命令限时 `JSTACK_SMOKE_TIMEOUT` 秒，默认 600。超时会先 TERM、10 秒后仍在就 KILL，该项按运行失败处理。
 
 补丁打不上，说明上游改了那一段。对照 `upstream/<插件>` 重做补丁；如果上游已经修好，就直接删掉补丁。
 

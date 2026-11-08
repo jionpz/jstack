@@ -12,9 +12,10 @@
 #                                                  （Cursor 拒绝指向该目录之外的符号链接，所以只复制）
 #   ./jstack sync [插件 [ref]]                     拉取上游（不写插件就全部同步，ref 默认 main），然后 build
 #   ./jstack build                                 用 upstream/ + patches/（flow 用 src/flow）重建 plugins/
-#   ./jstack check [--smoke]                       校验构建产物、锁文件、Cursor 残留、frontmatter、skill 依赖、manifest、Pi package、评测题；
+#   ./jstack check [--smoke]                       校验构建产物、锁文件、Cursor 残留、frontmatter、skill 依赖、manifest、Pi package、阶段表提供者、评测题；
 #                                                  --smoke 额外跑已安装 harness 的 headless smoke（需要模型和网络）
 #   ./jstack smoke [pi|omp|cursor|all]             跑 Pi/OMP/Cursor 的 headless smoke；Cursor 只做加载器和 route 检查
+#                                                  每条 headless 命令限时 JSTACK_SMOKE_TIMEOUT 秒（默认 600），超时先 TERM，10 秒后 KILL
 #   ./jstack eval [--samples N] [--jobs N] [--model M] [--max-nudges N] [--keep] [任务名...]
 #                                                  用 claude -p 跑 evals/tasks 的固定任务，衡量工作流本身（需要模型和网络）；
 #                                                  结果追加到 evals/results.jsonl 和 evals/reports/<日期>.md
@@ -210,15 +211,42 @@ cmd_sync() {
 
 # 跑一条 headless 命令，把完整 JSON 留在 $2，失败时打印 stderr 末尾。
 smoke_run() {
-	local label=$1 out=$2
+	local label=$1 out=$2 limit=${JSTACK_SMOKE_TIMEOUT:-600} pid wd rc=0 deadline
 	shift 2
-	if "$@" >"$out" 2>"$out.err"; then
-		return 0
+	rm -f "$out.timeout"
+	"$@" </dev/null >"$out" 2>"$out.err" &
+	pid=$!
+	deadline=$(($(date +%s) + limit))
+	(
+		while kill -0 "$pid" 2>/dev/null; do
+			if [ "$(date +%s)" -ge "$deadline" ]; then
+				: >"$out.timeout"
+				kill -TERM "$pid" 2>/dev/null || true
+				for _ in 1 2 3 4 5 6 7 8 9 10; do
+					kill -0 "$pid" 2>/dev/null || exit 0
+					sleep 1
+				done
+				kill -KILL "$pid" 2>/dev/null || true
+				exit 0
+			fi
+			sleep 1
+		done
+	) &
+	wd=$!
+	wait "$pid" 2>/dev/null || rc=$?
+	wait "$wd" || true
+	if [ -e "$out.timeout" ]; then
+		say "✗ ${label} 超时（${limit} 秒）"
+		return 1
 	fi
+	[ "$rc" -ne 0 ] || return 0
 	say "✗ $label 运行失败"
 	tail -10 "$out.err" | sed 's/^/  /'
 	return 1
 }
+
+# 本地仓库的 locate.sh 打印的提供者，smoke 用它核对各 harness 里 route 的输出。
+local_providers() { bash "$ROOT/plugins/flow/skills/route/locate.sh" | cut -f1; }
 
 smoke_pi() {
 	command -v pi >/dev/null || { say "- 没找到 Pi CLI，跳过 Pi smoke"; return 0; }
@@ -249,16 +277,16 @@ smoke_pi() {
 	fi
 	# 3. route 在 Pi 安装树下运行 locate.sh。
 	out="$dir/route.jsonl"
-	if smoke_run "Pi /skill:route" "$out" pi -p --no-session --no-context-files --mode json "/skill:route 只运行 locate.sh 并列出 7 个入口名字，然后停止。"; then
+	if smoke_run "Pi /skill:route" "$out" pi -p --no-session --no-context-files --mode json "/skill:route 只运行 locate.sh 并列出它打印的全部提供者，然后停止。"; then
 		skills=$(jq -r 'select(.type=="tool_execution_end" and .toolName=="bash") | .result.content[]?.text' "$out" 2>/dev/null || true)
 		bad=0
-		for s in poteto-mode setup-matt-pocock-skills grill-with-docs to-spec to-tickets wayfinder handoff; do
-			if ! grep -q -- "$s" <<<"$skills"; then
+		for s in $(local_providers); do
+			if ! grep -qF -- "$s" <<<"$skills"; then
 				say "✗ Pi route 输出缺少 $s"
 				rc=1 bad=1
 			fi
 		done
-		[ "$bad" -eq 0 ] && say "✓ Pi: route 定位到 7 个入口"
+		[ "$bad" -eq 0 ] && say "✓ Pi: route 定位到阶段表的全部 $(local_providers | wc -l | tr -d ' ') 个提供者"
 	else
 		rc=1
 	fi
@@ -320,24 +348,25 @@ smoke_omp() {
 	fi
 	# 3. route 在 OMP 缓存布局下运行 locate.sh。
 	out="$dir/route.jsonl"
-	if [ -n "$flow_dir" ] && smoke_run "OMP route" "$out" omp -p --no-session --mode json --auto-approve --tools=bash "Run bash $flow_dir/skills/route/locate.sh and list the seven entry names it prints, then stop."; then
+	if [ -n "$flow_dir" ] && smoke_run "OMP route" "$out" omp -p --no-session --mode json --auto-approve --tools=bash "Run bash $flow_dir/skills/route/locate.sh and list every provider name it prints, then stop."; then
 		text=$(jq -r 'select(.type=="tool_execution_end" and .toolName=="bash") | .result.content[]?.text // empty' "$out" 2>/dev/null || true)
 		bad=0
-		for s in poteto-mode setup-matt-pocock-skills grill-with-docs to-spec to-tickets wayfinder handoff; do
-			if ! grep -q -- "$s" <<<"$text"; then
-				say "✗ OMP route 输出缺少 $s"
+		for s in $(local_providers); do
+			if ! grep -qF -- "$s" <<<"$text"; then
+				say "✗ OMP route 输出缺少 $s（OMP 缓存可能落后于仓库，先 omp plugin upgrade flow@jstack）"
 				rc=1 bad=1
 			fi
 		done
-		[ "$bad" -eq 0 ] && say "✓ OMP: route 定位到 7 个入口"
+		[ "$bad" -eq 0 ] && say "✓ OMP: route 定位到阶段表的全部 $(local_providers | wc -l | tr -d ' ') 个提供者"
 	elif [ -z "$flow_dir" ]; then
 		say "✗ OMP: 找不到 flow 插件缓存"
 		rc=1
 	fi
-	# 4. poteto-agent 通过 task 工具派发。
+	# 4. poteto-agent 通过 task 工具派发。OMP 18.11 起 task 默认后台运行，-p 模式不等结果就退出，所以这一步关掉 async。
 	out="$dir/subagent.jsonl"
+	printf 'async:\n  enabled: false\n' >"$dir/sync.yml"
 	prompt="Use the task tool exactly once with agent \"poteto-agent\", name \"SmokeRead\", and task \"Read $ROOT/plugins/pstack/skills/poteto-mode/SKILL.md in full first, then read the first line of $ROOT/README.md and reply with exactly that line. Do not modify any files.\" Then report the result and stop."
-	if smoke_run "OMP poteto-agent" "$out" omp -p --no-session --mode json --auto-approve --tools=task "$prompt"; then
+	if smoke_run "OMP poteto-agent" "$out" omp -p --no-session --mode json --auto-approve --tools=task --config="$dir/sync.yml" "$prompt"; then
 		if jq -r 'select(.type=="tool_execution_start" and .toolName=="task") | .args.tasks[]?.agent // empty' "$out" | grep -qx poteto-agent &&
 			jq -r 'select(.type=="message_end" and .message.role=="assistant") | .message.content[]?.text // empty' "$out" | grep -q '# jstack'; then
 			say "✓ OMP: poteto-agent 通过 task 派发并返回结果"
@@ -388,10 +417,10 @@ JS
 	say "✓ Cursor: $(cat "$out")"
 	out="$WORK/smoke/cursor-route.txt"
 	if bash "$root/flow/skills/route/locate.sh" >"$out" 2>"$out.err"; then
-		if [ "$(wc -l <"$out" | tr -d ' ')" -eq 7 ]; then
-			say "✓ Cursor: route 在 Cursor 布局下定位到 7 个入口"
+		if [ "$(cut -f1 "$out")" = "$(local_providers)" ]; then
+			say "✓ Cursor: route 在 Cursor 布局下定位到阶段表的全部 $(wc -l <"$out" | tr -d ' ') 个提供者"
 		else
-			say "✗ Cursor: route 没有返回 7 个入口"
+			say "✗ Cursor: route 的输出与仓库阶段表的提供者不一致（本地插件可能落后于仓库，先 ./jstack install-cursor）"
 			return 1
 		fi
 	else
@@ -418,6 +447,84 @@ cmd_smoke() {
 	*) die "用法：./jstack smoke [pi|omp|cursor|all]" ;;
 	esac
 	[ "$rc" -eq 0 ] && say "✓ smoke 通过" || say "✗ smoke 未通过"
+	return $rc
+}
+
+# 第二份解析，独立于 locate.sh：stages.md 的 Stages 表第 4 列里的提供者，按首次出现去重。
+stage_providers() {
+	sed -n '/^## Stages[[:space:]]*$/,/^## /p' "$1" | grep '^|' | tail -n +3 | cut -d'|' -f5 |
+		grep -oE '`[a-z][a-z0-9-]*:[A-Za-z0-9._/-]+`' | tr -d '`' | awk '!seen[$0]++'
+}
+
+# 用假 HOME 跑 locate.sh，避免命中用户真实的安装。$1 是假 HOME，其余是 locate.sh 的路径。
+locate_in() {
+	local h=$1
+	shift
+	HOME=$h CLAUDE_PLUGINS_DIR=$h/.claude/plugins OMP_PLUGINS_DIR=$h/.omp/plugins \
+		CURSOR_PLUGINS_DIR=$h/.cursor/plugins PI_AGENT_DIR=$h/.pi/agent bash "$@"
+}
+
+# 阶段表的每个提供者在每种安装布局下都找得到：用 plugins/ 产物复制出各布局，从布局自己的 flow 副本运行 locate.sh。
+check_locate() {
+	local L="$WORK/layouts" want n p v fv lay name flow tree out path bad rc=0 err="$WORK/locate.err"
+	want=$(stage_providers "$ROOT/plugins/flow/skills/route/stages.md")
+	[ -n "$want" ] || { say "✗ plugins/flow/skills/route/stages.md 的 Stages 表里没有提供者"; return 1; }
+	n=$(printf '%s\n' "$want" | wc -l | tr -d ' ')
+	mkdir -p "$L/empty" "$L/omp/.omp/plugins/cache/plugins" "$L/cursor/.cursor/plugins/local" \
+		"$L/pi/.pi/agent/npm/node_modules/jstack/plugins"
+	L=$(cd "$L" && pwd -P)
+	for p in $PLUGINS; do
+		v=$(json_get version "$ROOT/plugins/$p/.claude-plugin/plugin.json")
+		mkdir -p "$L/claude/.claude/plugins/cache/jstack/$p"
+		cp -R "$ROOT/plugins/$p" "$L/claude/.claude/plugins/cache/jstack/$p/$v"
+		cp -R "$ROOT/plugins/$p" "$L/omp/.omp/plugins/cache/plugins/jstack___${p}___$v"
+	done
+	cp -R "$ROOT/plugins/pstack-cursor" "$L/cursor/.cursor/plugins/local/pstack"
+	cp -R "$ROOT/plugins/spec" "$ROOT/plugins/flow" "$L/cursor/.cursor/plugins/local/"
+	cp "$ROOT/package.json" "$L/pi/.pi/agent/npm/node_modules/jstack/"
+	cp -R "$ROOT/plugins/pstack" "$ROOT/plugins/spec" "$ROOT/plugins/flow" "$L/pi/.pi/agent/npm/node_modules/jstack/plugins/"
+	fv=$(json_get version "$ROOT/plugins/flow/.claude-plugin/plugin.json")
+	for lay in \
+		"本地 marketplace|$ROOT/plugins/flow|$ROOT/plugins|$L/empty" \
+		"Claude GitHub 缓存|$L/claude/.claude/plugins/cache/jstack/flow/$fv|$L/claude|$L/claude" \
+		"OMP 缓存|$L/omp/.omp/plugins/cache/plugins/jstack___flow___$fv|$L/omp|$L/omp" \
+		"Cursor 本地插件|$L/cursor/.cursor/plugins/local/flow|$L/cursor|$L/cursor" \
+		"Pi npm 包|$L/pi/.pi/agent/npm/node_modules/jstack/plugins/flow|$L/pi|$L/pi"; do
+		IFS='|' read -r name flow tree home <<<"$lay"
+		bad=
+		if ! out=$(JSTACK_STAGES_FILE= locate_in "$home" "$flow/skills/route/locate.sh" 2>"$err"); then
+			bad="locate.sh 失败"
+		elif [ "$(printf '%s\n' "$out" | cut -f1)" != "$want" ]; then
+			bad="打印的提供者与 stages.md 不一致"
+		else
+			while IFS= read -r path; do
+				case $path in
+				"$tree"/*) [ -f "$path" ] || bad="${bad:+$bad, }$path 不存在" ;;
+				*) bad="${bad:+$bad, }$path 不在该布局的树里" ;;
+				esac
+			done < <(printf '%s\n' "$out" | cut -f2)
+		fi
+		if [ -n "$bad" ]; then
+			say "✗ 阶段表提供者在 ${name} 布局下找不全：${bad}"
+			sed 's/^/  /' "$err" | head -20
+			rc=1
+		else
+			say "✓ 阶段表的 $n 个提供者在 ${name} 布局下都找得到"
+		fi
+	done
+	# 反例：把一个提供者换成不存在的名字，locate.sh 必须失败并点名它。
+	sed "s|\`$(printf '%s\n' "$want" | head -1)\`|\`spec:no-such-skill\`|" \
+		"$ROOT/plugins/flow/skills/route/stages.md" >"$WORK/stages-bad.md"
+	if JSTACK_STAGES_FILE="$WORK/stages-bad.md" locate_in "$L/empty" "$ROOT/plugins/flow/skills/route/locate.sh" >/dev/null 2>"$err"; then
+		say "✗ 阶段表里有不存在的提供者 spec:no-such-skill 时，locate.sh 没有失败"
+		rc=1
+	elif ! grep -qF 'spec:no-such-skill' "$err"; then
+		say "✗ locate.sh 失败了，但 stderr 没有点名 spec:no-such-skill："
+		sed 's/^/  /' "$err" | head -5
+		rc=1
+	else
+		say "✓ 阶段表里有不存在的提供者时 locate.sh 失败并点名：$(grep -F 'spec:no-such-skill' "$err" | head -1)"
+	fi
 	return $rc
 }
 
@@ -540,6 +647,7 @@ cmd_check() {
 	else
 		say "✓ Pi package manifest 暴露了 pstack、spec、flow 三个插件的 skills"
 	fi
+	check_locate || rc=1
 	if command -v claude >/dev/null; then
 		claude plugin validate "$ROOT" >"$WORK/validate" 2>&1 || failed=1
 		for p in $PLUGINS; do

@@ -15,6 +15,7 @@ jstack 不是"打包上游的 marketplace"，而是用户长期维护的整条 A
 
 ## Consequences
 
+- 这张表的现行版本是 `src/flow/skills/route/stages.md`，以它为准；本 ADR 只记录决策时的样子。
 - route 的职责从"把任务交给 poteto-mode"扩大到"驱动任务走完全部阶段"。`locate.sh` 里写死的入口名改为读这张表。
 - 上游改名或换掉某个提供者，只改表和对应的定位逻辑；`jstack check` 要校验表里每个提供者都能被找到。
 - 一个提供者不满足阶段的门禁时，门禁由 jstack 补齐（hook、脚本或 jstack 自己的 skill），不靠给上游打补丁。

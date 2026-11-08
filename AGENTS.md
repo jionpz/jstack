@@ -6,7 +6,7 @@ jstack 是用户长期维护的整条 AI 开发工作流。flow 定义工作流�
 
 - `pstack`：原版 pstack（Lauren Tan）的 Claude Code 版，源码 vendor 自 cursor/plugins 的 `harness/pstack/claude-code`。Cursor 用上游原生的 `pstack/` 树，单独构建为 Cursor-native 产物。
 - `spec`：Matt Pocock skills 里负责需求澄清和任务拆解的几个，vendor 自 mattpocock/skills。产出交给 pstack 的 `poteto-mode` 执行。
-- `flow`：jstack 自己写的衔接层，只有一个 `route` skill，按任务大小把 spec 和 pstack 接起来。没有上游，源码在 `src/flow/`，直接改源码再 `./jstack build`。
+- `flow`：jstack 自己写的衔接层，只有一个 `route` skill，按 `src/flow/skills/route/stages.md` 的阶段表驱动任务走完全部阶段，把每个阶段交给表里的提供者。没有上游，源码在 `src/flow/`，直接改源码再 `./jstack build`。
 
 - `upstream/<插件>/` 是上游原样副本，只能由 `./jstack sync <插件>` 写入。`pstack`（Claude Code 版）和 `pstack-cursor`（Cursor 原生版）都是整棵树；spec 只取 `jstack` 脚本里 `PICK` 列出的文件和目录。
 - `plugins/<插件>/` 是构建产物，只能由 `./jstack build` 写入。`plugins/pstack-cursor/` 是 Cursor 原生产物，不进 Claude marketplace；`./jstack install-cursor` 把 pstack、spec、flow 三个产物复制到 Cursor 的本地插件目录。Cursor 的本地插件加载器拒绝指向 `~/.cursor/plugins/local` 之外的符号链接，所以这里只复制。
@@ -20,5 +20,5 @@ jstack 是用户长期维护的整条 AI 开发工作流。flow 定义工作流�
 - 改 `src/flow`、`patches/`（包括 adapter）、同步上游、改模型配置或 hooks 之前，先跑 `./jstack eval`，把结果和 `evals/results.jsonl` 里最近一次同模型的基线对比；退化要修掉，或者在提交说明里写明理由。判断退化至少用 `--samples 3`。改了 `evals/` 本身就重跑一份基线。`evals/tasks` 的题目由 `./jstack check` 自检（初始状态失败、参考解通过）。细节见 README 的“评测”一节。
 - 根目录 `package.json` 是 Pi package manifest，`pi.skills` 必须覆盖 `plugins/pstack/skills`、`plugins/spec/skills`、`plugins/flow/skills`；`./jstack check` 会核对。
 - 同步上游后，用 `git diff -- upstream/` 看上游改了什么。如果上游已经修好某个补丁对应的问题，就删掉那个补丁。
-- route 依赖 spec 和 pstack 的入口路径（见 `src/flow/skills/route/locate.sh`）。上游改了 skill 名或目录时，同步改 locate.sh。
+- route 的阶段和每个阶段的提供者只写在 `src/flow/skills/route/stages.md`，`locate.sh` 从那张表读提供者，不写死 skill 名。上游改了 skill 名，或要换掉某个阶段的提供者，只改表里那一格；只有安装目录布局变了才改 locate.sh。`./jstack check` 会在五种安装布局下核对表里每个提供者都找得到。
 - 插件名必须保持 `pstack`、`spec`、`flow`：Claude Code 的 skill 以插件名为命令前缀（`/pstack:<name>`、`/spec:<name>`），adapter 还把 agent 映射成 `pstack:poteto-agent`；Pi/OMP 用 `/skill:<name>`，Cursor 用 `/<name>`。改名会让这些引用全部失效。`pstack-cursor` 只是构建目录 / 上游目录的 key，两个 pstack 产物的 manifest 名字都必须是 `pstack`。
