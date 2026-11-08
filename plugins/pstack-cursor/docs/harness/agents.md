@@ -81,6 +81,7 @@ Claude Code has no Cursor Automations, Bugbot, Cursor cloud agents, or built-in 
 | Bugbot | Bugbot comments on a GitHub PR are ordinary review threads, so triage them with the forge command that the step gives. Skip a step that starts, waits for, or configures Bugbot when the PR has no Bugbot check or comment. |
 | Cursor cloud agents | `environment: "cloud"` maps to a worktree, as in Subagent fields. Skip a step that needs the cloud agent itself, such as its dashboard status or its own machine. |
 | A built-in PR tool | Use the forge command that the step gives, such as `gh pr create`. That is not a skip, so write no line. |
+| Cursor built-ins and `cursor-team-kit`: `create-skill`, `/loop`, `/deslop`, `control-ui`, `control-cli` | `create-skill`: no built-in; follow poteto-mode's authoring-a-skill playbook and write `SKILL.md` directly. `/loop`: no built-in; use an installed `loop` skill when the harness has one, otherwise run the loop in the session or the job runner. `/deslop`: not installed; skip with the line and rely on the repo's own lint and format checks. `control-ui` / `control-cli`: not installed; drive the surface with a named driver, such as the browser tool or the repo's own CLI, and skip a step that needs the Cursor built-in itself with the line. |
 
 ## Pi
 

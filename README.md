@@ -325,6 +325,7 @@ pstack：
 | `0002-adapter-transcript-slug` | adapter 原文说 slug 规则是"把 `/` 和 `.` 换成 `-`"，改成"把所有非字母数字字符换成 `-`" | 2026-11-06 在本机 `~/.claude/projects` 实测 32 个目录：新规则 32 个全对；原规则错了 7 个，都是路径里带 `_` 的。规则写错会让 `reflect`、`recall` 这类 skill 找不到会话记录 |
 | `0003-poteto-agent-background-frontmatter` | `poteto-agent` 的 frontmatter 把 Cursor 的 `is_background: true` 改成 Claude Code 的 `background: true` | frontmatter 由 Claude Code 解析，不经过模型。原来的键会被静默忽略，只在会话 debug 日志里留一条 WARN，`claude plugin validate` 不报。poteto-mode 要求每次派 delegate 都放后台。2026-11-06 对照实测：主会话明确要求前台运行时，上游原版在前台跑完才返回，打补丁后强制转后台。代价：Claude Code 不允许 agent teams 的进程内 teammate 派 `background: true` 的 agent，pstack 本身不用 agent teams |
 | `0004-generic-harness-adapter` | 把 `docs/harness/claude-code.md` 的映射表扩成 `docs/harness/agents.md`，分出 Claude Code、Pi、OMP 三节；`claude-code.md` 只留一个指向它的兼容指针，所有 skill 和 README 里的 adapter 链接改到新文件 | adapter 是模型运行时读的文档，上游只有 Claude Code 一版。Pi 和 OMP 用同一套工具名，但入口、agent 发现和模型角色不同；把差异集中在一个文件里，同步上游后仍只需要维护这一处。Cursor 产物在 build 时删掉这句提示，不读这份 adapter |
+| `0005-adapter-cursor-builtins` | 在 adapter 的 Claude Code 一节补上 `cursor-team-kit` 和 `create-skill`、`/loop`、`/deslop`、`control-ui`、`control-cli` 五个 Cursor 内置项的替代做法；Pi 和 OMP 两节原有这一行 | adapter 是运行时文档，模型读到 `cursor-team-kit` 和这几个名字时，Claude Code 一节原来没有任何说明，模型只能自己猜或者干脆跳过。Cursor 产物在 build 时删掉这句提示，不读这份 adapter |
 
 spec：
 
