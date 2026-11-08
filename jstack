@@ -20,6 +20,13 @@
 #                                                  用 claude -p 跑 evals/tasks 的固定任务，衡量工作流本身（需要模型和网络）；
 #                                                  结果追加到 evals/results.jsonl 和 evals/reports/<日期>.md
 #   ./jstack eval list | --selftest [任务名...]    列出任务；不调模型地校验每个任务的 check（check 也会跑）
+#   ./jstack models [show]                         显示模型分层配置和 apply 会写哪些文件
+#   ./jstack models init [--harness <h>] [--premium <id>] [--bulk <a,b>] [--force]
+#                                                  引导配置 ~/.config/jstack/models.json（JSTACK_MODELS_CONFIG 可覆盖路径）
+#   ./jstack models set premium|bulk <值> [--harness <h>]
+#                                                  改一个值并自动 apply（--harness 默认 claude-code）
+#   ./jstack models apply [--dry-run]              写入各 harness 的模型规则；--dry-run 只打印
+#   ./jstack models status                         premium 今日 token 用量与预算
 #
 # upstream/<插件> 是上游原样副本，plugins/<插件> 是构建产物，两者都不要手改。
 # 要改 pstack 或 spec，就在 patches/<插件>/ 下加补丁；flow 没有上游，直接改 src/flow。
@@ -528,6 +535,238 @@ check_locate() {
 	return $rc
 }
 
+# 模型分层命令的验收：全部在临时 HOME 里跑，不碰真实配置，不联网。
+check_models() {
+	local h="$WORK/models-home" cfg settings rule usage out n role a b rc=0 backups before after today yesterday
+	rm -rf "$h"
+	mkdir -p "$h/.claude" "$h/.config/magpie"
+	cfg="$h/.config/jstack/models.json"
+	settings="$h/.claude/settings.json"
+	rule="$h/.claude/rules/pstack-models.md"
+	usage="$h/.config/magpie/usage.jsonl"
+	printf '{"model":"keep-me"}\n' >"$settings"
+
+	if ! out=$(HOME="$h" JSTACK_MODELS_CONFIG="$cfg" "$ROOT/jstack" models init --harness claude-code --premium p/x --bulk a/x,b/x 2>&1); then
+		say "✗ models init 运行失败："
+		printf '%s\n' "$out" | sed 's/^/  /'
+		return 1
+	fi
+	if ! python3 -I - "$cfg" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+	doc = json.load(f)
+assert doc["harnesses"]["claude-code"] == {"premium": "p/x", "bulk": ["a/x", "b/x"]}
+assert doc["budget"] == {"premium_daily_tokens": None, "premium_concurrency": None}
+PY
+	then
+		say "✗ models init 写出的 JSON 或默认预算不对"
+		rc=1
+	fi
+	if [ -e "$rule" ] || [ "$(cat "$settings")" != '{"model":"keep-me"}' ]; then
+		say "✗ models init 不应该自动 apply"
+		rc=1
+	fi
+
+	if ! out=$(HOME="$h" JSTACK_MODELS_CONFIG="$cfg" "$ROOT/jstack" models set premium c/y --harness claude-code 2>&1); then
+		say "✗ models set premium 运行失败："
+		printf '%s\n' "$out" | sed 's/^/  /'
+		return 1
+	fi
+	if [ "$(models_json "$cfg" get claude-code premium)" != c/y ]; then
+		say "✗ models set premium 没有改配置里的值"
+		rc=1
+	fi
+
+	if [ ! -f "$rule" ]; then
+		say "✗ models apply 没有写 ${rule}"
+		rc=1
+	else
+		if [ -e "$h/.cursor/rules/pstack-models.mdc" ] || [ -e "$h/.omp/agent/rules/pstack-models.md" ]; then
+			say "✗ models apply 处理了没有配置的 harness"
+			rc=1
+		fi
+		n=$(grep -cE '^[a-z][a-z ,-]*: (opus|sonnet|haiku)(, (opus|sonnet|haiku))?$' "$rule")
+		if [ "$n" -ne 17 ]; then
+			say "✗ models 规则文件有 ${n} 个角色行，不是 17 个"
+			rc=1
+		fi
+		while IFS= read -r role; do
+			if [ "$(grep -Fc "${role}: " "$rule")" -ne 1 ]; then
+				say "✗ models 规则文件缺少角色 ${role}"
+				rc=1
+			fi
+		done <<'EOF'
+feature, refactoring
+bug-fix
+perf-issue
+hillclimb
+judgment and prose
+hardest tasks
+how explorer
+how explainer
+why investigators
+why synthesizer
+reflect tooling
+reflect judgment, divergent, synthesizer
+arena runners
+arena cross-judge pool
+swarm workers
+architect runners
+interrogate reviewers
+EOF
+		for role in 'arena runners' 'interrogate reviewers'; do
+			a=$(grep -F "${role}: " "$rule" | head -1)
+			b=${a#*: }
+			a=${b%%,*}
+			b=${b#*, }
+			if [ -z "$a" ] || [ -z "$b" ] || [ "$a" = "$b" ]; then
+				say "✗ models 规则里 ${role} 没有两个不同的别名"
+				rc=1
+			fi
+		done
+		grep -qx 'judgment and prose: opus' "$rule" || {
+			say "✗ models 规则里判断类角色没有落到 opus"
+			rc=1
+		}
+	fi
+
+	if ! python3 -I - "$settings" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+	doc = json.load(f)
+env = doc["env"]
+assert env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "c/y"
+assert env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "a/x"
+assert env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "b/x"
+assert env["ANTHROPIC_SMALL_FAST_MODEL"] == "b/x"
+assert doc["model"] == "keep-me"
+PY
+	then
+		say "✗ models apply 没把 settings.json 的模型 env 指向 premium/bulk0/bulk1，或丢了其它键"
+		rc=1
+	fi
+
+	backups=$(find "$h/.claude" -maxdepth 1 -name 'settings.json.bak-models-*' | wc -l | tr -d ' ')
+	if [ "$backups" -ne 1 ]; then
+		say "✗ models apply 的备份数量是 ${backups}，应为 1"
+		rc=1
+	fi
+	before=$(shasum -a 256 "$rule" "$settings" | cut -d' ' -f1 | tr '\n' ' ')
+	if ! out=$(HOME="$h" JSTACK_MODELS_CONFIG="$cfg" "$ROOT/jstack" models apply 2>&1); then
+		say "✗ 第二次 models apply 运行失败："
+		printf '%s\n' "$out" | sed 's/^/  /'
+		rc=1
+	fi
+	after=$(shasum -a 256 "$rule" "$settings" | cut -d' ' -f1 | tr '\n' ' ')
+	if [ "$before" != "$after" ]; then
+		say "✗ 第二次 models apply 改了文件"
+		rc=1
+	fi
+	backups=$(find "$h/.claude" -maxdepth 1 -name 'settings.json.bak-models-*' | wc -l | tr -d ' ')
+	if [ "$backups" -ne 1 ]; then
+		say "✗ 第二次 models apply 又生成了备份（共 ${backups} 个）"
+		rc=1
+	fi
+
+	if ! out=$(HOME="$h" JSTACK_MODELS_CONFIG="$cfg" "$ROOT/jstack" models apply --dry-run 2>&1); then
+		say "✗ models apply --dry-run 运行失败："
+		printf '%s\n' "$out" | sed 's/^/  /'
+		rc=1
+	fi
+	after=$(shasum -a 256 "$rule" "$settings" | cut -d' ' -f1 | tr '\n' ' ')
+	if [ "$before" != "$after" ]; then
+		say "✗ models apply --dry-run 改了文件"
+		rc=1
+	fi
+	printf '%s\n' "$out" | grep -q '^- 模型配置将应用' || {
+		say "✗ models apply --dry-run 的摘要没有 - 前缀"
+		rc=1
+	}
+	printf '%s\n' "$out" | grep -qF 'pstack-models.md' || {
+		say "✗ models apply --dry-run 没有打印将写入的路径"
+		rc=1
+	}
+
+	python3 -I - "$cfg" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+	doc = json.load(f)
+doc["budget"]["premium_daily_tokens"] = 1
+doc["budget"]["premium_concurrency"] = 2
+with open(path, "w", encoding="utf-8") as f:
+	json.dump(doc, f, ensure_ascii=False, indent=2)
+	f.write("\n")
+PY
+	today=$(date +%Y-%m-%d)
+	printf '{"t":"%sT10:00:00+08:00","model":"y","in":5,"out":6}\n' "$today" >"$usage"
+	if ! out=$(HOME="$h" JSTACK_MODELS_CONFIG="$cfg" "$ROOT/jstack" models apply 2>&1); then
+		say "✗ 预算超限时 models apply 运行失败："
+		printf '%s\n' "$out" | sed 's/^/  /'
+		rc=1
+	fi
+	printf '%s\n' "$out" | grep -q '超过上限' || {
+		say "✗ 预算超限时 apply 没有警告"
+		rc=1
+	}
+	printf '%s\n' "$out" | grep -q '降级为 a/x' || {
+		say "✗ 预算超限的警告没有写明降级到 bulk0"
+		rc=1
+	}
+	grep -qx 'judgment and prose: sonnet' "$rule" || {
+		say "✗ 预算超限时 premium 角色没有降级为 sonnet"
+		rc=1
+	}
+	grep -qx 'arena cross-judge pool: sonnet, haiku' "$rule" || {
+		say "✗ 预算超限时列表里的 premium 没有降级为 sonnet"
+		rc=1
+	}
+
+	yesterday=$(python3 -I -c 'import datetime; print(datetime.date.today() - datetime.timedelta(days=1))')
+	printf '{"t":"%sT09:00:00+08:00","model":"y","in":10,"out":5}\n' "$today" >"$usage"
+	printf '{"t":"%sT10:00:00+08:00","model":"y","in":1,"out":2}\n' "$today" >>"$usage"
+	printf '{"t":"%sT10:00:00+08:00","model":"y","in":100,"out":100}\n' "$yesterday" >>"$usage"
+	printf '{"t":"%sT10:00:00+08:00","model":"other","in":1000,"out":1000}\n' "$today" >>"$usage"
+	if ! out=$(HOME="$h" JSTACK_MODELS_CONFIG="$cfg" "$ROOT/jstack" models status 2>&1); then
+		say "✗ models status 运行失败："
+		printf '%s\n' "$out" | sed 's/^/  /'
+		rc=1
+	elif [ "$out" != 'premium 今日 tokens: 18 / 上限 1' ]; then
+		say "✗ models status 的今日统计不对：${out}"
+		rc=1
+	fi
+	python3 -I - "$cfg" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+	doc = json.load(f)
+doc["budget"]["premium_daily_tokens"] = None
+with open(path, "w", encoding="utf-8") as f:
+	json.dump(doc, f, ensure_ascii=False, indent=2)
+	f.write("\n")
+PY
+	if ! out=$(HOME="$h" JSTACK_MODELS_CONFIG="$cfg" "$ROOT/jstack" models status 2>&1); then
+		say "✗ models status（不限预算）运行失败"
+		rc=1
+	elif [ "$out" != 'premium 今日 tokens: 18 / 上限 -（不限）' ]; then
+		say "✗ models status 的不限预算输出不对：${out}"
+		rc=1
+	fi
+	rm -f "$usage"
+	if ! out=$(HOME="$h" JSTACK_MODELS_CONFIG="$cfg" "$ROOT/jstack" models status 2>&1); then
+		say "✗ models status（无日志）运行失败"
+		rc=1
+	elif [ "$out" != 'premium 今日 tokens: - / 上限 -（不限）' ]; then
+		say "✗ models status 在日志不存在时没有打印 -：${out}"
+		rc=1
+	fi
+
+	if [ "$rc" -eq 0 ]; then
+		say "✓ models：init/set/apply/status 在临时 HOME 里通过（17 个角色行、settings 备份幂等、dry-run、预算降级）"
+	fi
+	return $rc
+}
+
 cmd_check() {
 	local rc=0 p hits failed= smoke=
 	while [ $# -gt 0 ]; do
@@ -647,6 +886,7 @@ cmd_check() {
 	else
 		say "✓ Pi package manifest 暴露了 pstack、spec、flow 三个插件的 skills"
 	fi
+	check_models || rc=1
 	check_locate || rc=1
 	# 阶段门禁对构建产物测。macOS 上用 /bin/bash 跑，确认 hook 在系统自带的 bash 3.2 下也能用。
 	if "$([ -x /bin/bash ] && echo /bin/bash || echo bash)" "$ROOT/tests/flow-hooks.sh" >"$WORK/hooks" 2>&1; then
@@ -685,6 +925,693 @@ cmd_check() {
 		cmd_smoke all || rc=1
 	fi
 	return $rc
+}
+
+# 模型分层：~/.config/jstack/models.json 是所有 harness 的唯一来源。
+# 这里只校验模型 id 的形状，不联网、不调用 magpie；写文件才是 apply 的事。
+
+models_config_path() { printf '%s\n' "${JSTACK_MODELS_CONFIG:-$HOME/.config/jstack/models.json}"; }
+
+# 模型 id 可以带上下文标记和推理深度后缀：deepseek:max、deepseek[1m]、deepseek[1m]:max。
+models_valid_id() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*(\[[A-Za-z0-9]+\])?(:[a-z]+)?$ ]]; }
+
+# 读取 models.json。用法：
+#   models_json <cfg> harnesses
+#   models_json <cfg> has <harness>
+#   models_json <cfg> get <harness> premium|bulk0|bulk1
+#   models_json <cfg> budget premium_daily_tokens|premium_concurrency
+# 配置缺失时 harnesses 输出空，has 返回 1，budget 输出 null。
+models_json() {
+	python3 -I - "$@" <<'PY'
+import json, re, sys
+cfg, op, *rest = sys.argv[1:]
+shape = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*(\[[A-Za-z0-9]+\])?(:[a-z]+)?$")
+try:
+	with open(cfg, encoding="utf-8") as f:
+		doc = json.load(f)
+except FileNotFoundError:
+	doc = {}
+except ValueError as error:
+	sys.exit(f"{cfg}: 不是合法 JSON：{error}")
+if not isinstance(doc, dict):
+	sys.exit(f"{cfg}: 顶层必须是对象")
+harnesses = doc.get("harnesses")
+if harnesses is None:
+	harnesses = {}
+if not isinstance(harnesses, dict):
+	sys.exit(f"{cfg}: harnesses 必须是对象")
+
+def harness(name):
+	value = harnesses.get(name)
+	if value is None:
+		return None
+	if not isinstance(value, dict):
+		sys.exit(f"{cfg}: harnesses.{name} 必须是对象")
+	premium = value.get("premium")
+	bulk = value.get("bulk")
+	if not isinstance(premium, str) or not shape.fullmatch(premium):
+		sys.exit(f"{cfg}: harnesses.{name}.premium 不是合法的模型 id：{premium!r}")
+	if not isinstance(bulk, list) or len(bulk) != 2 or not all(isinstance(x, str) and shape.fullmatch(x) for x in bulk):
+		sys.exit(f"{cfg}: harnesses.{name}.bulk 必须正好是两个合法的模型 id")
+	if bulk[0] == bulk[1]:
+		sys.exit(f"{cfg}: harnesses.{name}.bulk 的两个模型必须不同")
+	return premium, bulk
+
+if op == "harnesses":
+	for name in ("claude-code", "cursor", "omp", "pi"):
+		if harness(name) is not None:
+			print(name)
+elif op == "has":
+	sys.exit(0 if harness(rest[0]) is not None else 1)
+elif op == "get":
+	name, field = rest
+	value = harness(name)
+	if value is None:
+		sys.exit(1)
+	premium, bulk = value
+	print({"premium": premium, "bulk0": bulk[0], "bulk1": bulk[1]}[field])
+elif op == "budget":
+	budget = doc.get("budget")
+	if budget is None:
+		budget = {}
+	if not isinstance(budget, dict):
+		sys.exit(f"{cfg}: budget 必须是对象")
+	value = budget.get(rest[0])
+	if value is None:
+		print("null")
+	elif isinstance(value, bool) or not isinstance(value, int) or value < 0:
+		sys.exit(f"{cfg}: budget.{rest[0]} 必须是非负整数或 null")
+	else:
+		print(value)
+else:
+	sys.exit(f"models_json: 未知操作 {op}")
+PY
+}
+
+# 写一个 harness 的配置；先写临时文件再原子替换，保留其它 harness 和 budget。
+models_write_harness() {
+	python3 -I - "$@" <<'PY'
+import json, os, sys
+cfg, name, premium, bulk0, bulk1 = sys.argv[1:6]
+doc = {}
+if os.path.exists(cfg):
+	with open(cfg, encoding="utf-8") as f:
+		doc = json.load(f)
+if not isinstance(doc, dict):
+	sys.exit(f"{cfg}: 顶层必须是对象")
+harnesses = doc.get("harnesses")
+if harnesses is None:
+	harnesses = doc["harnesses"] = {}
+if not isinstance(harnesses, dict):
+	sys.exit(f"{cfg}: harnesses 必须是对象")
+budget = doc.get("budget")
+if budget is None:
+	budget = doc["budget"] = {}
+if not isinstance(budget, dict):
+	sys.exit(f"{cfg}: budget 必须是对象")
+budget.setdefault("premium_daily_tokens", None)
+budget.setdefault("premium_concurrency", None)
+harnesses[name] = {"premium": premium, "bulk": [bulk0, bulk1]}
+os.makedirs(os.path.dirname(cfg) or ".", exist_ok=True)
+tmp = cfg + ".tmp"
+with open(tmp, "w", encoding="utf-8") as f:
+	json.dump(doc, f, ensure_ascii=False, indent=2)
+	f.write("\n")
+os.replace(tmp, cfg)
+PY
+}
+
+# 检测某个 harness 当前的模型，输出三行：premium、bulk0、bulk1（可能为空）。
+models_detect() {
+	case $1 in
+	claude-code)
+		python3 -I - "${HOME}/.claude/settings.json" <<'PY'
+import json, sys
+try:
+	with open(sys.argv[1], encoding="utf-8") as f:
+		doc = json.load(f)
+except (OSError, ValueError):
+	doc = {}
+env = doc.get("env") if isinstance(doc.get("env"), dict) else {}
+for key in ("ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL"):
+	print(env.get(key, ""))
+PY
+		;;
+	pi)
+		python3 -I - "${HOME}/.pi/agent/settings.json" <<'PY'
+import json, sys
+try:
+	with open(sys.argv[1], encoding="utf-8") as f:
+		doc = json.load(f)
+except (OSError, ValueError):
+	doc = {}
+print(doc.get("defaultModel", ""))
+print("")
+print("")
+PY
+		;;
+	omp)
+		# modelRoles 的值可能带 :level 后缀；配置里的模型 id 形状不接受冒号，检测时去掉。
+		python3 -I - "${HOME}/.omp/agent/config.yml" <<'PY'
+import re, sys
+roles = {}
+inside = False
+try:
+	with open(sys.argv[1], encoding="utf-8") as f:
+		lines = f.readlines()
+except OSError:
+	lines = []
+for line in lines:
+	if re.match(r"^modelRoles:\s*$", line):
+		inside = True
+		continue
+	if inside:
+		match = re.match(r"^  ([A-Za-z0-9_-]+):\s*(\S+)\s*$", line)
+		if match:
+			roles[match.group(1)] = match.group(2).split(":", 1)[0]
+		elif line.strip() and not line.startswith("  "):
+			break
+print(roles.get("slow", ""))
+print(roles.get("task") or roles.get("plan") or roles.get("default", ""))
+print(roles.get("smol") or roles.get("default", ""))
+PY
+		;;
+	cursor)
+		printf '\n\n\n'
+		;;
+	esac
+}
+
+models_unlimited() { if [ "$1" = null ]; then printf 'unlimited\n'; else printf '%s\n' "$1"; fi; }
+
+models_budget_line() { # <premium_daily_tokens> <premium_concurrency>
+	if [ "$1" = null ] && [ "$2" = null ]; then
+		printf '# budget: unlimited\n'
+	else
+		printf '# budget: premium_daily_tokens=%s, premium_concurrency=%s\n' "$(models_unlimited "$1")" "$(models_unlimited "$2")"
+	fi
+}
+
+# 角色→层级映射。三个 harness 共用；这里把层级换成别名或真实模型 id。
+models_role_lines() { # <harness> <premium> <bulk0> <bulk1> <degraded>
+	local h=$1 premium=$2 bulk0=$3 bulk1=$4 degraded=$5 role tiers tier value values
+	while IFS='|' read -r role tiers; do
+		[ -n "$role" ] || continue
+		values=
+		for tier in ${tiers//,/ }; do
+			case ${h}:${tier} in
+			claude-code:premium) value=opus ;;
+			claude-code:bulk0) value=sonnet ;;
+			claude-code:bulk1) value=haiku ;;
+			*:premium) value=$premium ;;
+			*:bulk0) value=$bulk0 ;;
+			*:bulk1) value=$bulk1 ;;
+			esac
+			if [ "$degraded" -eq 1 ] && [ "$tier" = premium ]; then
+				case $h in
+				claude-code) value=sonnet ;;
+				*) value=$bulk0 ;;
+				esac
+			fi
+			values="${values:+$values, }$value"
+		done
+		printf '%s: %s\n' "$role" "$values"
+	done <<'EOF'
+feature, refactoring|bulk0
+bug-fix|bulk0
+perf-issue|bulk0
+hillclimb|bulk0
+judgment and prose|premium
+hardest tasks|premium
+how explorer|bulk0
+how explainer|premium
+why investigators|bulk0
+why synthesizer|premium
+reflect tooling|bulk0
+reflect judgment, divergent, synthesizer|premium
+arena runners|bulk0,bulk1
+arena cross-judge pool|premium,bulk1
+swarm workers|bulk0
+architect runners|premium,bulk1
+interrogate reviewers|bulk0,bulk1
+EOF
+}
+
+models_rule_content() { # <harness> <premium> <bulk0> <bulk1> <degraded> <cap> <concurrency>
+	local h=$1 premium=$2 bulk0=$3 bulk1=$4 degraded=$5 cap=$6 concurrency=$7
+	case $h in
+	cursor)
+		printf -- '---\ndescription: pstack per-role model choices (overrides skill defaults)\nalwaysApply: true\n---\n'
+		;;
+	omp)
+		printf -- '---\nalwaysApply: true\n---\n'
+		;;
+	esac
+	printf '%s\n' '# pstack model configuration, generated by jstack from ~/.config/jstack/models.json. Do not edit; run ./jstack models set instead.'
+	case $h in
+	claude-code) printf '# opus = premium (%s), sonnet = bulk (%s), haiku = bulk (%s)\n' "$premium" "$bulk0" "$bulk1" ;;
+	*) printf '# premium = %s, bulk = %s, %s\n' "$premium" "$bulk0" "$bulk1" ;;
+	esac
+	[ "$degraded" -eq 0 ] || printf '# premium degraded to %s: daily token cap reached\n' "$bulk0"
+	models_budget_line "$cap" "$concurrency"
+	if [ "$h" = claude-code ] && [ "$concurrency" != null ]; then
+		printf '# premium_concurrency=%s is recorded only; Claude Code has no per-tier concurrency control.\n' "$concurrency"
+	fi
+	models_role_lines "$@"
+}
+
+# 统计某 premium 模型今天的 in + out；magpie 日志不存在时以 3 退出。
+models_usage() {
+	python3 -I - "$1" "${HOME}/.config/magpie/usage.jsonl" <<'PY'
+import datetime, json, os, re, sys
+premium, log = sys.argv[1], sys.argv[2]
+if not os.path.exists(log):
+	sys.exit(3)
+name = premium.rsplit("/", 1)[-1]
+name = re.sub(r"\[[^]]*\]$", "", name)
+name = re.sub(r":[a-z]+$", "", name)
+if name.startswith("magpie/"):
+	name = name[len("magpie/"):]
+today = datetime.date.today().isoformat()
+total = 0
+with open(log, encoding="utf-8") as f:
+	for line in f:
+		line = line.strip()
+		if not line:
+			continue
+		try:
+			entry = json.loads(line)
+		except ValueError:
+			continue
+		stamp = entry.get("t")
+		if not isinstance(stamp, str) or not stamp.startswith(today):
+			continue
+		if entry.get("model") != name:
+			continue
+		for key in ("in", "out"):
+			value = entry.get(key, 0)
+			if isinstance(value, (int, float)) and not isinstance(value, bool):
+				total += int(value)
+print(total)
+PY
+}
+
+# 预算统计用哪个 harness 的 premium：优先 claude-code，否则第一个已配置的。
+models_stats_harness() {
+	local cfg=$1 h
+	if models_json "$cfg" has claude-code 2>/dev/null; then
+		printf 'claude-code\n'
+		return 0
+	fi
+	for h in $(models_json "$cfg" harnesses); do
+		printf '%s\n' "$h"
+		return 0
+	done
+	return 1
+}
+
+# 内容没变就不重写；dry-run 只打印路径和内容。
+models_emit_file() { # <path> <content> <dry>
+	local path=$1 content=$2 dry=$3 tmp
+	if [ "$dry" -eq 1 ]; then
+		say "- 将写入 ${path}："
+		printf '%s\n' "$content" | sed 's/^/  /'
+		return 0
+	fi
+	tmp="${path}.tmp.$$"
+	mkdir -p "$(dirname "$path")"
+	printf '%s\n' "$content" >"$tmp"
+	if [ -f "$path" ] && cmp -s "$tmp" "$path"; then
+		rm -f "$tmp"
+		say "= ${path}（未变化）"
+		return 0
+	fi
+	mv "$tmp" "$path"
+	say "✓ 已写入 ${path}"
+}
+
+# 同步 Claude Code settings.json 的四个 env；值没变就不写、也不备份。
+models_sync_settings() { # <path> <premium> <bulk0> <bulk1> <dry>
+	python3 -I - "$@" <<'PY'
+import datetime, json, os, shutil, sys
+path, opus, sonnet, haiku, dry = sys.argv[1:6]
+env = {
+	"ANTHROPIC_DEFAULT_OPUS_MODEL": opus,
+	"ANTHROPIC_DEFAULT_SONNET_MODEL": sonnet,
+	"ANTHROPIC_DEFAULT_HAIKU_MODEL": haiku,
+	"ANTHROPIC_SMALL_FAST_MODEL": haiku,
+}
+doc = {}
+exists = os.path.exists(path)
+if exists:
+	try:
+		with open(path, encoding="utf-8") as f:
+			doc = json.load(f)
+	except ValueError as error:
+		sys.exit(f"{path}: 不是合法 JSON：{error}")
+	if not isinstance(doc, dict):
+		sys.exit(f"{path}: 顶层必须是对象")
+current = doc.get("env", {})
+if not isinstance(current, dict):
+	sys.exit(f"{path}: env 必须是对象")
+if all(current.get(key) == value for key, value in env.items()):
+	print(f"= {path}（env 未变化）")
+	sys.exit(0)
+if dry == "1":
+	print(f"- 将更新 {path} 的 env：")
+	for key, value in env.items():
+		print(f"  {key}={value}")
+	sys.exit(0)
+backup = None
+if exists:
+	stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+	backup = f"{path}.bak-models-{stamp}"
+	shutil.copy2(path, backup)
+	print(f"✓ 已备份 {backup}")
+doc["env"] = {**current, **env}
+os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as f:
+	json.dump(doc, f, ensure_ascii=False, indent=2)
+	f.write("\n")
+if exists:
+	shutil.copymode(path, tmp)
+os.replace(tmp, path)
+print(f"✓ 已更新 {path} 的 4 个模型 env")
+PY
+}
+
+models_usage_text() {
+	cat <<'EOF'
+用法：
+  ./jstack models [show]                 显示配置路径、各 harness 的模型、预算和 apply 会写的文件
+  ./jstack models init [--harness <h>] [--premium <id>] [--bulk <a,b>] [--force]
+                                         引导配置 ~/.config/jstack/models.json；JSTACK_MODELS_CONFIG 可覆盖路径。
+                                         非交互模式要同时给 --premium 和 --bulk；不给 --harness 时写入全部四个 harness
+  ./jstack models set premium <id> [--harness <h>]
+  ./jstack models set bulk <a,b> [--harness <h>]
+                                         改一个值并自动 apply；--harness 默认 claude-code
+  ./jstack models apply [--dry-run]      把配置写成各 harness 的规则文件
+  ./jstack models status                 统计 premium 今日 token 用量
+EOF
+}
+
+cmd_models_show() {
+	local cfg harnesses h premium bulk0 bulk1 cap conc
+	cfg=$(models_config_path)
+	command -v python3 >/dev/null || die "models 需要 python3"
+	printf '配置：%s\n' "$cfg"
+	if [ ! -f "$cfg" ]; then
+		say "尚未配置。运行 ./jstack models init 开始。"
+		return 0
+	fi
+	harnesses=$(models_json "$cfg" harnesses)
+	if [ -z "$harnesses" ]; then
+		say "配置里还没有任何 harness。运行 ./jstack models init。"
+		return 0
+	fi
+	for h in $harnesses; do
+		premium=$(models_json "$cfg" get "$h" premium)
+		bulk0=$(models_json "$cfg" get "$h" bulk0)
+		bulk1=$(models_json "$cfg" get "$h" bulk1)
+		printf '%-12s premium=%s  bulk=%s, %s\n' "$h" "$premium" "$bulk0" "$bulk1"
+	done
+	cap=$(models_json "$cfg" budget premium_daily_tokens)
+	conc=$(models_json "$cfg" budget premium_concurrency)
+	printf '预算：premium_daily_tokens=%s  premium_concurrency=%s\n' "$(models_unlimited "$cap")" "$(models_unlimited "$conc")"
+	say "apply 会写："
+	for h in $harnesses; do
+		case $h in
+		claude-code) say "  claude-code  ${HOME}/.claude/rules/pstack-models.md（无 frontmatter）；${HOME}/.claude/settings.json 的 4 个 env，改前备份 settings.json.bak-models-<时间>" ;;
+		cursor) say "  cursor       ${HOME}/.cursor/rules/pstack-models.mdc（frontmatter: alwaysApply）" ;;
+		omp) say "  omp          ${HOME}/.omp/agent/rules/pstack-models.md（frontmatter: alwaysApply）" ;;
+		pi) say "  pi           不写文件，只打印角色表（~/.pi/agent/AGENTS.md 是符号链接，不能改）" ;;
+		esac
+	done
+}
+
+cmd_models_init() {
+	local harness= premium= bulk= force=0 interactive=1 cfg cand targets h det
+	local p_default b0_default b1_default p b0 b1 input answer skipped=0
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--harness) harness=${2:?--harness 后面要跟 harness 名}; shift 2 ;;
+		--premium) premium=${2:?--premium 后面要跟模型 id}; shift 2 ;;
+		--bulk) bulk=${2:?--bulk 后面要跟 a,b}; shift 2 ;;
+		--force) force=1; shift ;;
+		*) die "未知参数：$1（用法：./jstack models init [--harness <h>] [--premium <id>] [--bulk <a,b>] [--force]）" ;;
+		esac
+	done
+	if [ -n "$harness" ]; then
+		case $harness in
+		claude-code|cursor|omp|pi) ;;
+		*) die "未知 harness：${harness}（可用 claude-code、cursor、omp、pi）" ;;
+		esac
+	fi
+	if [ -n "$premium" ] || [ -n "$bulk" ]; then
+		interactive=0
+		[ -n "$premium" ] && [ -n "$bulk" ] || die "非交互模式要同时给 --premium 和 --bulk"
+		models_valid_id "$premium" || die "premium 不是合法的模型 id：${premium}"
+		case $bulk in
+		*,*,*) die "bulk 必须是正好两个模型 id，用逗号分隔" ;;
+		esac
+		b0=${bulk%%,*}
+		b1=${bulk#*,}
+		[ -n "$b0" ] && [ -n "$b1" ] || die "bulk 必须是正好两个模型 id，用逗号分隔"
+		[ "$b0" != "$b1" ] || die "bulk 的两个模型必须不同"
+		models_valid_id "$b0" || die "bulk 里的模型 id 不合法：${b0}"
+		models_valid_id "$b1" || die "bulk 里的模型 id 不合法：${b1}"
+	fi
+	command -v python3 >/dev/null || die "models 需要 python3"
+	cfg=$(models_config_path)
+	cand="$WORK/models-candidate.json"
+	rm -f "$cand"
+	if [ -f "$cfg" ]; then cp "$cfg" "$cand"; fi
+	if [ -n "$harness" ]; then targets=$harness; else targets="claude-code cursor omp pi"; fi
+	if [ "$interactive" -eq 1 ]; then
+		for h in $targets; do
+			det=$(models_detect "$h")
+			p_default=$(printf '%s\n' "$det" | sed -n '1p')
+			b0_default=$(printf '%s\n' "$det" | sed -n '2p')
+			b1_default=$(printf '%s\n' "$det" | sed -n '3p')
+			if [ "$force" -eq 0 ] && [ -f "$cand" ] && models_json "$cand" has "$h" 2>/dev/null; then
+				p_default=$(models_json "$cand" get "$h" premium)
+				b0_default=$(models_json "$cand" get "$h" bulk0)
+				b1_default=$(models_json "$cand" get "$h" bulk1)
+			fi
+			say "配置 ${h}（回车接受默认值，输入 q 跳过这个 harness）"
+			skipped=0
+			while :; do
+				printf '  premium [%s]: ' "${p_default:-未检测到}"
+				read -r input || { say "  读取结束，跳过 ${h}"; skipped=1; break; }
+				if [ "$input" = q ] || [ "$input" = Q ]; then skipped=1; break; fi
+				if [ -n "$input" ]; then p=$input; else p=$p_default; fi
+				printf '  bulk0 [%s]: ' "${b0_default:-未检测到}"
+				read -r input || { say "  读取结束，跳过 ${h}"; skipped=1; break; }
+				if [ "$input" = q ] || [ "$input" = Q ]; then skipped=1; break; fi
+				if [ -n "$input" ]; then b0=$input; else b0=$b0_default; fi
+				printf '  bulk1 [%s]: ' "${b1_default:-未检测到}"
+				read -r input || { say "  读取结束，跳过 ${h}"; skipped=1; break; }
+				if [ "$input" = q ] || [ "$input" = Q ]; then skipped=1; break; fi
+				if [ -n "$input" ]; then b1=$input; else b1=$b1_default; fi
+				if ! models_valid_id "$p"; then say "  premium 不是合法的模型 id：${p}"; continue; fi
+				if ! models_valid_id "$b0"; then say "  bulk0 不是合法的模型 id：${b0}"; continue; fi
+				if ! models_valid_id "$b1"; then say "  bulk1 不是合法的模型 id：${b1}"; continue; fi
+				if [ "$b0" = "$b1" ]; then say "  两个 bulk 必须不同，重新输入"; continue; fi
+				models_write_harness "$cand" "$h" "$p" "$b0" "$b1"
+				say "  ✓ ${h}: premium=${p} bulk=${b0}, ${b1}"
+				break
+			done
+			if [ "$skipped" -eq 1 ]; then say "  已跳过 ${h}"; fi
+		done
+	else
+		for h in $targets; do
+			models_write_harness "$cand" "$h" "$premium" "$b0" "$b1"
+			say "✓ ${h}: premium=${premium} bulk=${b0}, ${b1}"
+		done
+	fi
+	if [ ! -f "$cand" ]; then
+		say "没有配置任何 harness，未写入。"
+		return 0
+	fi
+	if [ "$interactive" -eq 1 ]; then
+		say "将写入 ${cfg}："
+		sed 's/^/  /' "$cand"
+		printf '确认写入？[y/N] '
+		read -r answer || answer=
+		case $answer in
+		y|Y) ;;
+		*)
+			say "已取消，未写入。"
+			return 0
+			;;
+		esac
+	fi
+	mkdir -p "$(dirname "$cfg")"
+	cp "$cand" "${cfg}.tmp.$$"
+	mv "${cfg}.tmp.$$" "$cfg"
+	say "✓ 已写入 ${cfg}"
+	say "下一步：./jstack models apply"
+}
+
+cmd_models_set() {
+	local field= value= harness=claude-code cfg old_premium old_b0 old_b1 premium b0 b1
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--harness) harness=${2:?--harness 后面要跟 harness 名}; shift 2 ;;
+		*)
+			if [ -z "$field" ]; then
+				field=$1
+			elif [ -z "$value" ]; then
+				value=$1
+			else
+				die "用法：./jstack models set premium|bulk <值> [--harness <h>]"
+			fi
+			shift
+			;;
+		esac
+	done
+	[ -n "$field" ] && [ -n "$value" ] || die "用法：./jstack models set premium|bulk <值> [--harness <h>]"
+	case $harness in
+	claude-code|cursor|omp|pi) ;;
+	*) die "未知 harness：${harness}（可用 claude-code、cursor、omp、pi）" ;;
+	esac
+	cfg=$(models_config_path)
+	[ -f "$cfg" ] || die "没有模型配置 ${cfg}，先运行 ./jstack models init"
+	command -v python3 >/dev/null || die "models 需要 python3"
+	if ! models_json "$cfg" has "$harness"; then
+		die "配置里没有 ${harness}，先运行 ./jstack models init --harness ${harness}"
+	fi
+	old_premium=$(models_json "$cfg" get "$harness" premium)
+	old_b0=$(models_json "$cfg" get "$harness" bulk0)
+	old_b1=$(models_json "$cfg" get "$harness" bulk1)
+	case $field in
+	premium)
+		models_valid_id "$value" || die "premium 不是合法的模型 id：${value}"
+		premium=$value b0=$old_b0 b1=$old_b1
+		;;
+	bulk)
+		case $value in
+		*,*,*) die "bulk 必须是正好两个模型 id，用逗号分隔" ;;
+		*,*) ;;
+		*) die "bulk 必须是正好两个模型 id，用逗号分隔" ;;
+		esac
+		b0=${value%%,*}
+		b1=${value#*,}
+		[ -n "$b0" ] && [ -n "$b1" ] || die "bulk 必须是正好两个模型 id，用逗号分隔"
+		[ "$b0" != "$b1" ] || die "bulk 的两个模型必须不同"
+		models_valid_id "$b0" || die "bulk 里的模型 id 不合法：${b0}"
+		models_valid_id "$b1" || die "bulk 里的模型 id 不合法：${b1}"
+		premium=$old_premium
+		;;
+	*) die "未知字段：${field}（可用 premium、bulk）" ;;
+	esac
+	models_write_harness "$cfg" "$harness" "$premium" "$b0" "$b1"
+	say "✓ 已更新 ${harness}：premium=${premium} bulk=${b0}, ${b1}"
+	cmd_models_apply
+}
+
+cmd_models_apply() {
+	local dry=0 cfg harnesses h premium bulk0 bulk1 cap conc degraded=0 tokens= stats_h stats_bulk0 summary= content
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--dry-run) dry=1; shift ;;
+		*) die "未知参数：$1（用法：./jstack models apply [--dry-run]）" ;;
+		esac
+	done
+	cfg=$(models_config_path)
+	[ -f "$cfg" ] || die "没有模型配置 ${cfg}，先运行 ./jstack models init"
+	command -v python3 >/dev/null || die "models 需要 python3"
+	harnesses=$(models_json "$cfg" harnesses)
+	[ -n "$harnesses" ] || die "配置里没有可用的 harness，先运行 ./jstack models init"
+	cap=$(models_json "$cfg" budget premium_daily_tokens)
+	conc=$(models_json "$cfg" budget premium_concurrency)
+	if [ "$cap" != null ]; then
+		stats_h=$(models_stats_harness "$cfg") || true
+		if [ -n "$stats_h" ]; then
+			premium=$(models_json "$cfg" get "$stats_h" premium)
+			stats_bulk0=$(models_json "$cfg" get "$stats_h" bulk0)
+			if tokens=$(models_usage "$premium"); then
+				if [ "$tokens" -ge "$cap" ]; then
+					degraded=1
+					say "⚠ premium 今日已用 ${tokens} tokens，超过上限 ${cap}，判断类角色降级为 ${stats_bulk0}"
+				fi
+			fi
+		fi
+	fi
+	if [ "$conc" != null ]; then
+		say "! premium_concurrency=${conc} 只记录、不强制：Claude Code 没有按层并发控制。"
+	fi
+	for h in $harnesses; do
+		premium=$(models_json "$cfg" get "$h" premium)
+		bulk0=$(models_json "$cfg" get "$h" bulk0)
+		bulk1=$(models_json "$cfg" get "$h" bulk1)
+		case $h in
+		claude-code)
+			content=$(models_rule_content claude-code "$premium" "$bulk0" "$bulk1" "$degraded" "$cap" "$conc")
+			models_emit_file "${HOME}/.claude/rules/pstack-models.md" "$content" "$dry"
+			models_sync_settings "${HOME}/.claude/settings.json" "$premium" "$bulk0" "$bulk1" "$dry"
+			summary="${summary} claude-code(opus=${premium}, sonnet=${bulk0}, haiku=${bulk1})"
+			;;
+		cursor)
+			content=$(models_rule_content cursor "$premium" "$bulk0" "$bulk1" "$degraded" "$cap" "$conc")
+			models_emit_file "${HOME}/.cursor/rules/pstack-models.mdc" "$content" "$dry"
+			summary="${summary} cursor(premium=${premium}, bulk0=${bulk0}, bulk1=${bulk1})"
+			;;
+		omp)
+			content=$(models_rule_content omp "$premium" "$bulk0" "$bulk1" "$degraded" "$cap" "$conc")
+			models_emit_file "${HOME}/.omp/agent/rules/pstack-models.md" "$content" "$dry"
+			summary="${summary} omp(premium=${premium}, bulk0=${bulk0}, bulk1=${bulk1})"
+			;;
+		esac
+	done
+	if printf '%s\n' "$harnesses" | grep -qx pi; then
+		premium=$(models_json "$cfg" get pi premium)
+		bulk0=$(models_json "$cfg" get pi bulk0)
+		bulk1=$(models_json "$cfg" get pi bulk1)
+		say "Pi 不写规则文件：~/.pi/agent/AGENTS.md 是指向全局治理文档的符号链接，不能改。"
+		say "Pi 没有分角色的规则机制，角色模型要按配置手动传给子 agent（Agent 的 model 与 thinking）："
+		printf '# premium = %s, bulk = %s, %s\n' "$premium" "$bulk0" "$bulk1"
+		[ "$degraded" -eq 0 ] || printf '# premium degraded to %s: daily token cap reached\n' "$bulk0"
+		models_budget_line "$cap" "$conc"
+		models_role_lines pi "$premium" "$bulk0" "$bulk1" "$degraded"
+	fi
+	[ -n "$summary" ] || summary=" pi(不写文件)"
+	if [ "$dry" -eq 1 ]; then
+		say "- 模型配置将应用：${summary# }"
+	else
+		say "✓ 模型配置已应用：${summary# }"
+	fi
+}
+
+cmd_models_status() {
+	local cfg h premium tokens cap
+	cfg=$(models_config_path)
+	[ -f "$cfg" ] || die "没有模型配置 ${cfg}，先运行 ./jstack models init"
+	command -v python3 >/dev/null || die "models 需要 python3"
+	h=$(models_stats_harness "$cfg") || die "配置里没有可用的 harness"
+	premium=$(models_json "$cfg" get "$h" premium)
+	cap=$(models_json "$cfg" budget premium_daily_tokens)
+	if tokens=$(models_usage "$premium"); then :; else tokens=-; fi
+	if [ "$cap" = null ]; then
+		printf 'premium 今日 tokens: %s / 上限 -（不限）\n' "$tokens"
+	else
+		printf 'premium 今日 tokens: %s / 上限 %s\n' "$tokens" "$cap"
+	fi
+}
+
+cmd_models() {
+	local sub=${1:-show}
+	if [ $# -gt 0 ]; then shift; fi
+	case $sub in
+	show) cmd_models_show "$@" ;;
+	init) cmd_models_init "$@" ;;
+	set) cmd_models_set "$@" ;;
+	apply) cmd_models_apply "$@" ;;
+	status) cmd_models_status "$@" ;;
+	-h|--help|help) models_usage_text ;;
+	*) die "未知 models 子命令：${sub}（可用 show、init、set、apply、status）" ;;
+	esac
 }
 
 cmd_install() {
@@ -736,7 +1663,8 @@ cmd_install() {
 
 接下来在 Claude Code 里：
   1. 运行 /reload-plugins，或新开一个会话
-  2. 运行 /pstack:setup-pstack，写入模型角色表 ~/.claude/rules/pstack-models.md（只需一次）
+  2. 运行 ./jstack models init 配置各 harness 的模型，再运行 ./jstack models apply：
+     写入 ~/.claude/rules/pstack-models.md 和 ~/.claude/settings.json 的模型 env（只需一次）
   3. 在要用 spec 的仓库里运行一次 /spec:setup-matt-pocock-skills，选定 issue tracker 和领域文档的位置
   4. 运行 /pstack:poteto-mode <任务描述> 开始工作。需求不清或任务较大时，先用 /spec:grill-with-docs、
      /spec:to-spec、/spec:to-tickets 澄清和拆解，再把 spec 或 ticket 交给 poteto-mode
@@ -833,6 +1761,7 @@ sync) shift; cmd_sync "$@" ;;
 build) cmd_build ;;
 check) shift; cmd_check "$@" ;;
 smoke) shift; cmd_smoke "$@" ;;
+models) shift; cmd_models "$@" ;;
 eval) shift; "$ROOT/evals/run.sh" "$@" ;;
 "" | -h | --help | help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
 *) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//' >&2; exit 2 ;;

@@ -46,7 +46,7 @@ claude plugin marketplace add jionpz/jstack && claude plugin install pstack@jsta
 装好之后在 Claude Code 里：
 
 1. `/reload-plugins`，或者新开一个会话。
-2. `/pstack:setup-pstack`：写入模型角色表 `~/.claude/rules/pstack-models.md`，只需要做一次。
+2. `./jstack models init` 按提示配置 `~/.config/jstack/models.json`，再 `./jstack models apply`：写入模型角色表 `~/.claude/rules/pstack-models.md` 和 `~/.claude/settings.json` 里的模型 env。见下面“模型分层”一节。
 3. 在要用 spec 的仓库里运行一次 `/spec:setup-matt-pocock-skills`：选定 issue tracker 和领域文档的位置，写 `docs/agents/*.md` 和 `CLAUDE.md` 里的 `## Agent skills` 段。
 4. 直接描述任务即可。`flow:route` 会自动分级并选择流程；也可以显式运行 `/flow:route <任务描述>`。想跳过路由时，直接用 `/pstack:*` 或 `/spec:*` 命令，route 不会介入。
 
@@ -89,6 +89,48 @@ Cursor 的本地插件加载器只接受 `~/.cursor/plugins/local` 内的符号�
 不要同时装 `pstack@cursor-plugins` 以及其他 pstack 移植版：它们的命令都以 `/pstack:` 开头，会互相冲突。也不要装 `mattpocock-skills`（Matt 的完整版）：skill 和 `spec` 重复，还带 `implement` 编排。`./jstack install` 检测到这些会拒绝安装并给出卸载命令。
 
 运行时依赖：`bun`（poteto-mode 的 watch-pr 和 statechart 脚本）、`gh`（PR 和 CI 流程）、`rg`、`jq`。缺哪个，`install` 会提示。
+
+## 模型分层
+
+两层模型（ADR-0003）：premium 做判断，通常是能力最强的高级模型；bulk 是 token 几乎不限的模型家族，负责执行和验证。每个角色属于哪一层写在 `jstack` 里，绑定哪个模型只由 `~/.config/jstack/models.json` 决定（`JSTACK_MODELS_CONFIG` 可覆盖路径，测试用）。文件按 harness 分开：
+
+```json
+{
+  "harnesses": {
+    "claude-code": { "premium": "opencode-go/...", "bulk": ["...", "..."] },
+    "cursor": { "premium": "...", "bulk": ["...", "..."] },
+    "omp": { "premium": "magpie/...", "bulk": ["magpie/...", "magpie/..."] },
+    "pi": { "premium": "provider/model", "bulk": ["provider/model", "provider/model"] }
+  },
+  "budget": { "premium_daily_tokens": null, "premium_concurrency": null }
+}
+```
+
+模型 id 只校验形状（`^[A-Za-z0-9][A-Za-z0-9._/-]*(\[[A-Za-z0-9]+\])?(:[a-z]+)?$`），不联网、不调用 magpie；可以带上下文标记和推理深度后缀，如 `deepseek-v4.1-flash[1m]`、`deepseek-v4.1-flash:max`。各家对深度后缀的支持不同：magpie 实测 DeepSeek 只认 `low` / `high` / `max`，`xhigh` 会落到 `max`，所以想用两个不同的 bulk 档位要先验证该模型支持的档位。某个 harness 没配置时，`apply` 跳过它。
+
+| 命令 | 作用 |
+|---|---|
+| `./jstack models` / `show` | 显示配置路径、各 harness 的 premium/bulk、预算和 `apply` 会写的文件 |
+| `./jstack models init` | 逐 harness 引导配置。默认值来自当前安装（Claude Code 的 settings.json、Pi 的 defaultModel、OMP 的 modelRoles）；已有配置作为默认值，`--force` 重新问；输入 `q` 跳过该 harness。非交互写法：`--harness claude-code --premium <id> --bulk <a,b>`。写完不自动 apply |
+| `./jstack models set premium <id>` | 改一个值，原子写配置，然后自动 apply。`--harness` 默认 `claude-code` |
+| `./jstack models set bulk <a,b>` | 同上；两个 bulk 必须不同 |
+| `./jstack models apply [--dry-run]` | 按配置写各 harness 的规则文件；`--dry-run` 只打印路径和内容 |
+| `./jstack models status` | 统计 magpie 日志里 premium 今日的 `in + out`，和日预算比较 |
+
+`apply` 写到哪里：
+
+| harness | 文件 | 模型写法 |
+|---|---|---|
+| Claude Code | `~/.claude/rules/pstack-models.md`（无 frontmatter）和 `~/.claude/settings.json` 的 `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL`、`ANTHROPIC_SMALL_FAST_MODEL` | 规则里写 `opus` / `sonnet` / `haiku` 别名；settings 的三个 env 指向 premium、bulk[0]、bulk[1]，`SMALL_FAST` 跟 bulk[1]。改 settings 前备份成 `settings.json.bak-models-<时间>`，值没变就不备份 |
+| Cursor | `~/.cursor/rules/pstack-models.mdc`（`alwaysApply: true`） | 真实 slug |
+| OMP | `~/.omp/agent/rules/pstack-models.md`（`alwaysApply: true`） | 配置里的 magpie slug；不改 `config.yml` |
+| Pi | 不写文件 | `~/.pi/agent/AGENTS.md` 是指向全局治理文档的符号链接，`apply` 只打印角色表；Pi 没有分角色规则机制，角色模型要手动传给子 agent |
+
+17 个角色行由 `jstack` 生成，三个 harness 共用同一份角色到层级映射：执行、探索、审查工具走 bulk，判断、综合、最终结论走 premium，审查面板同时用两个 bulk 家族。重复运行 `apply` 是幂等的，内容没变就不重写。
+
+预算：`premium_daily_tokens` 为 null 表示不限。设置上限后，`apply` 先统计今天 premium 的 token；达到或超过上限时把所有 premium 角色降级到对应 harness 的 bulk[0]，在规则文件头写明降级原因，并在 stdout 打出警告。`premium_concurrency` 只记录、打印，不强制，因为 Claude Code 没有按层并发控制。
+
+`/pstack:setup-pstack` 仍然可用，但它直接写规则文件、不读 `models.json`。配置模型统一用 `./jstack models`，避免两套来源互相覆盖。
 
 ## 分工
 
@@ -195,7 +237,7 @@ evals/tasks/<任务>/              评测任务：prompt.md、check.sh、solutio
 evals/results.jsonl              评测记录，每个样本一行，只追加
 evals/reports/<日期>.md          评测报告，每次运行追加一节
 tests/flow-hooks.sh              flow 阶段门禁和 hooks 的测试（check 会跑）
-jstack                           维护脚本：install / install-pi / install-cursor / sync / build / check / smoke / eval
+jstack                           维护脚本：install / install-pi / install-cursor / sync / build / check / smoke / eval / models
 ```
 
 ## 当前补丁
@@ -253,6 +295,7 @@ git diff -- upstream/     # 看上游改了什么
 10. `claude plugin validate` 是否通过（marketplace 和全部插件）
 11. 评测任务自检（`./jstack eval --selftest`）：每个任务的 check 在初始状态下失败、在参考解下通过
 12. flow 的 `stage.sh` 和三个 hook（`tests/flow-hooks.sh`）：对 `plugins/flow` 产物喂 JSON、断言输出和状态文件，有 jq 和没有 jq 两种路径都测；macOS 上用 `/bin/bash`（3.2）运行
+13. 模型分层命令（`./jstack models`）：在临时 HOME 里跑 init、set、apply、status，核对 17 个角色行、settings.json 的模型 env 和原有键、备份幂等、`--dry-run` 不落盘、预算降级，以及今日 token 统计
 
 第 3、4、5 项专门查 adapter 管不到的地方：脚本和 frontmatter 都不经过模型，上游新引入的 Cursor 依赖在同步时就能发现；第 5 项查的是 spec 这种"只收一部分 skill"的插件有没有漏掉依赖。`claude plugin validate` 不查 frontmatter 键，也不查插件内部 skill 之间的调用关系。全部通过才提交。
 
