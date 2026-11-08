@@ -27,6 +27,7 @@
 #                                                  改一个值并自动 apply（--harness 默认 claude-code）
 #   ./jstack models apply [--dry-run] [--yes]      写入四个 harness 的模型规则；--dry-run 只打印
 #   ./jstack models status                         premium 今日 token 用量与预算
+#   ./jstack doctor [--json] [--no-fail] [--repo <dir>]  只读列出各 harness × 作用域的安装、版本、来源与 lock 状态
 #
 # upstream/<插件> 是上游原样副本，plugins/<插件> 是构建产物，两者都不要手改。
 # 要改 pstack 或 spec，就在 patches/<插件>/ 下加补丁；flow 没有上游，直接改 src/flow。
@@ -1148,6 +1149,92 @@ PY
 	return $rc
 }
 
+# doctor 的验收：临时 HOME 构造 Claude / Pi / OMP / Cursor / vendor / lock，核对输出与漂移。
+check_doctor() {
+	local h="$WORK/doctor-home" r="$WORK/doctor-repo" bin="$WORK/doctor-bin" out rc=0
+	rm -rf "$h" "$r" "$bin"
+	mkdir -p "$h/.omp/plugins/cache/plugins/jstack___flow___1.2.3+jstack.abc" \
+		"$h/.cursor/plugins/local/spec/.claude-plugin" \
+		"$h/.pi/agent/npm/node_modules/jstack/plugins/pstack/.claude-plugin" \
+		"$r/.git" "$r/.jstack/vendor/plugins/pstack/.claude-plugin" \
+		"$r/.jstack/vendor/plugins/flow/.claude-plugin" "$bin"
+	printf '{"name":"jstack","version":"0.1.0"}\n' >"$h/.pi/agent/npm/node_modules/jstack/package.json"
+	printf '{"version":"4.4.4"}\n' >"$h/.pi/agent/npm/node_modules/jstack/plugins/pstack/.claude-plugin/plugin.json"
+	printf '{"version":"3.3.3"}\n' >"$h/.cursor/plugins/local/spec/.claude-plugin/plugin.json"
+	printf '{"version":"9.9.9"}\n' >"$r/.jstack/vendor/plugins/pstack/.claude-plugin/plugin.json"
+	printf '{"version":"1.0.0"}\n' >"$r/.jstack/vendor/plugins/flow/.claude-plugin/plugin.json"
+	printf '{"version":1,"plugins":{"pstack":{"version":"9.9.9"},"flow":{"version":"1.0.0"}}}\n' >"$r/.jstack/lock.json"
+	cat >"$bin/claude" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' '[{"id":"pstack@jstack","version":"9.9.9","scope":"user","installPath":"/fake/user/pstack","readFromFolder":"/fake/src/pstack","folderVersion":"9.9.9"},{"id":"flow@jstack","version":"1.0.0","scope":"project","installPath":"/fake/proj/flow","readFromFolder":"/fake/src/flow","folderVersion":"1.0.0","projectPath":"$r"}]'
+EOF
+	chmod +x "$bin/claude"
+
+	if ! out=$(PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" doctor --repo "$r" --json 2>/dev/null); then
+		say "✗ doctor 在构造好的布局上报了失败："
+		printf '%s\n' "$out" | head -20 | sed 's/^/  /'
+		return 1
+	fi
+	if ! python3 -I - "$out" "$r" <<'PY'
+import json, sys
+rows = json.loads(sys.argv[1])
+repo = sys.argv[2]
+def find(h, scope, plugin):
+	hits = [r for r in rows if r["harness"] == h and r["scope"] == scope and r["plugin"] == plugin]
+	assert hits, f"缺少 {h}/{scope}/{plugin} 行：{rows}"
+	return hits[0]
+r = find("claude-code", "user", "pstack")
+assert r["version"] == "9.9.9" and r["path"] == "/fake/user/pstack" and r["source"] == "/fake/src/pstack"
+assert r["lock"] == "-", r
+r = find("claude-code", "project", "flow")
+assert r["version"] == "1.0.0" and r["lock"] == "ok", r
+assert repo in r["source"], r
+assert find("pi", "package", "pstack")["version"] == "4.4.4"
+assert find("omp", "cache", "flow")["version"] == "1.2.3+jstack.abc"
+assert find("cursor", "local", "spec")["version"] == "3.3.3"
+assert find("vendor", "project", "pstack")["lock"] == "ok"
+assert find("vendor", "project", "flow")["lock"] == "ok"
+assert len(rows) >= 7, len(rows)
+PY
+	then
+		say "✗ doctor --json 的行与构造值不一致"
+		rc=1
+	fi
+
+	# 篡改 lock：版本漂移要失败；--no-fail 只警告。
+	printf '{"version":1,"plugins":{"pstack":{"version":"9.9.9"},"flow":{"version":"0.0.0"}}}\n' >"$r/.jstack/lock.json"
+	if PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" doctor --repo "$r" >/dev/null 2>&1; then
+		say "✗ lock 版本被篡改后 doctor 没有失败"
+		rc=1
+	fi
+	if ! PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" doctor --repo "$r" --no-fail >/dev/null 2>&1; then
+		say "✗ doctor --no-fail 仍然失败"
+		rc=1
+	fi
+	out=$(PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" doctor --repo "$r" --json 2>/dev/null || true)
+	printf '%s\n' "$out" | grep -q 'drift' || {
+		say "✗ doctor --json 没有报 drift"
+		rc=1
+	}
+
+	# 源目录版本漂移（本地 marketplace 的记录落后）也要失败。
+	printf '{"version":1,"plugins":{"pstack":{"version":"9.9.9"},"flow":{"version":"1.0.0"}}}\n' >"$r/.jstack/lock.json"
+	cat >"$bin/claude" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' '[{"id":"pstack@jstack","version":"9.9.9","scope":"user","installPath":"/fake/user/pstack","readFromFolder":"/fake/src/pstack","folderVersion":"9.9.10"},{"id":"flow@jstack","version":"1.0.0","scope":"project","installPath":"/fake/proj/flow","readFromFolder":"/fake/src/flow","folderVersion":"1.0.0","projectPath":"$r"}]'
+EOF
+	chmod +x "$bin/claude"
+	if PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" doctor --repo "$r" >/dev/null 2>&1; then
+		say "✗ 源目录版本漂移时 doctor 没有失败"
+		rc=1
+	fi
+
+	if [ "$rc" -eq 0 ]; then
+		say "✓ doctor：六种来源的安装矩阵、--json、lock 漂移、--no-fail 都通过"
+	fi
+	return $rc
+}
+
 cmd_check() {
 	local rc=0 p hits failed= smoke=
 	while [ $# -gt 0 ]; do
@@ -1276,6 +1363,7 @@ cmd_check() {
 	check_models || rc=1
 	check_locate || rc=1
 	check_repo_config || rc=1
+	check_doctor || rc=1
 	# 阶段门禁对构建产物测。macOS 上用 /bin/bash 跑，确认 hook 在系统自带的 bash 3.2 下也能用。
 	if "$([ -x /bin/bash ] && echo /bin/bash || echo bash)" "$ROOT/tests/flow-hooks.sh" >"$WORK/hooks" 2>&1; then
 		say "✓ flow 的 stage.sh 和 hooks 测试通过（$(grep -c '^✓' "$WORK/hooks") 项）"
@@ -2241,6 +2329,221 @@ cmd_models() {
 	esac
 }
 
+# doctor：只读列出每个 harness × 作用域装了什么，核对版本漂移与 <repo>/.jstack/lock.json。
+doctor_repo_root() {
+	local d=${JSTACK_REPO:-$PWD}
+	[ -n "$d" ] || return 1
+	while :; do
+		[ -f "$d/.jstack/config.json" ] && { printf '%s\n' "$d"; return 0; }
+		[ -d "$d/.git" ] && { printf '%s\n' "$d"; return 0; }
+		[ "$d" = / ] && return 1
+		d=$(dirname "$d")
+	done
+}
+
+doctor_manifest_version() { # <插件目录>
+	local f v
+	for f in "$1/.claude-plugin/plugin.json" "$1/.cursor-plugin/plugin.json" "$1/.omp-plugin/plugin.json"; do
+		[ -f "$f" ] || continue
+		v=$(jq -r '.version // empty' "$f" 2>/dev/null) || v=
+		if [ -n "$v" ]; then
+			printf '%s\n' "$v"
+			return 0
+		fi
+	done
+	return 1
+}
+
+doctor_add() { # <文件> <harness> <scope> <plugin> <version> <path> <source> <in_repo> <stale>
+	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" >>"$1"
+}
+
+doctor_pi_tree() { # <文件> <已见文件> <包目录>
+	local file=$1 seen=$2 pkg=${3%/} plugin v
+	[ -d "$pkg" ] || return 0
+	pkg=$(cd "$pkg" && pwd -P) || return 0
+	[ -f "$pkg/package.json" ] || return 0
+	[ "$(jq -r '.name // empty' "$pkg/package.json" 2>/dev/null)" = jstack ] || return 0
+	if grep -Fxq "$pkg" "$seen" 2>/dev/null; then
+		return 0
+	fi
+	printf '%s\n' "$pkg" >>"$seen"
+	for plugin in pstack spec flow; do
+		[ -d "$pkg/plugins/$plugin" ] || continue
+		v=$(doctor_manifest_version "$pkg/plugins/$plugin") || v=
+		[ -n "$v" ] || v=$(jq -r '.version // empty' "$pkg/package.json" 2>/dev/null) || v=
+		[ -n "$v" ] || v=-
+		doctor_add "$file" pi package "$plugin" "$v" "$pkg/plugins/$plugin" "path:$pkg" 0 0
+	done
+}
+
+cmd_doctor() {
+	local json=0 nofail=0 repo= out file="$WORK/doctor-rows" seen="$WORK/doctor-seen" rc=0
+	local h scope plugin version path source inrepo stale lock lockver lock_cell n drift=0 stale_n=0 tab
+	local pi_agent omp_plugins cursor_plugins id fold proj
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--json) json=1; shift ;;
+		--no-fail) nofail=1; shift ;;
+		--repo)
+			repo=${2:?--repo 后面要跟仓库路径}
+			[ -d "$repo" ] || die "--repo 指向的目录不存在：${repo}"
+			shift 2
+			;;
+		*) die "未知参数：$1（用法：./jstack doctor [--json] [--no-fail] [--repo <dir>]）" ;;
+		esac
+	done
+	command -v jq >/dev/null || die "doctor 需要 jq"
+	[ -n "$repo" ] || repo=$(doctor_repo_root) || repo=
+	: >"$file"
+	: >"$seen"
+
+	# Claude Code：plugin list 跨 scope 返回同一插件的多条记录，全部保留。
+	if command -v claude >/dev/null; then
+		out=$(claude plugin list --json 2>/dev/null || true)
+		if [ -n "$out" ]; then
+			printf '%s\n' "$out" |
+				jq -r '.[] | select((.id // "") | endswith("@jstack")) |
+					[.id, (.scope // ""), (.version // ""), (.installPath // ""),
+					 (.readFromFolder // ""), (.folderVersion // ""), (.projectPath // "")]
+					| join("\u0001")' 2>/dev/null | tr '\001' '\t' |
+				while IFS=$'\t' read -r id scope version path source fold proj; do
+					[ -n "$id" ] || continue
+					plugin=${id%@*}
+					stale=0
+					[ -z "$fold" ] || [ "$fold" = "$version" ] || stale=1
+					inrepo=0
+					if [ -n "$repo" ] && [ "$scope" = project ] && [ "$proj" = "$repo" ]; then
+						inrepo=1
+					fi
+					[ -n "$source" ] || source=marketplace:jstack
+					[ -z "$proj" ] || source="$source project:$proj"
+					doctor_add "$file" claude-code "$scope" "$plugin" "$version" "$path" "$source" "$inrepo" "$stale"
+				done
+		fi
+	fi
+
+	# Pi package：settings 里的本地路径包，以及 npm node_modules 下的 jstack。
+	pi_agent=${PI_AGENT_DIR:-$HOME/.pi/agent}
+	doctor_pi_tree "$file" "$seen" "$pi_agent/npm/node_modules/jstack"
+	if [ -f "$pi_agent/settings.json" ]; then
+		out=$(jq -r '(.packages // [])[] | select(type == "string" and (startswith("npm:") | not))' \
+			"$pi_agent/settings.json" 2>/dev/null || true)
+		while IFS= read -r path; do
+			[ -n "$path" ] || continue
+			case $path in
+			/*) ;;
+			*) path="$pi_agent/$path" ;;
+			esac
+			doctor_pi_tree "$file" "$seen" "$path"
+		done <<<"$out"
+	fi
+
+	# OMP：marketplace 缓存目录名里带版本。
+	omp_plugins=${OMP_PLUGINS_DIR:-$HOME/.omp/plugins}
+	for path in "$omp_plugins"/cache/plugins/jstack___*; do
+		[ -d "$path" ] || continue
+		h=${path##*/}
+		plugin=${h#jstack___}
+		plugin=${plugin%%___*}
+		version=${h##*___}
+		[ -n "$plugin" ] && [ "$version" != "$h" ] && [ -n "$version" ] || continue
+		doctor_add "$file" omp cache "$plugin" "$version" "$path" omp-cache 0 0
+	done
+
+	# Cursor：本地插件目录。
+	cursor_plugins=${CURSOR_PLUGINS_DIR:-$HOME/.cursor/plugins}
+	for path in "$cursor_plugins"/local/*; do
+		[ -d "$path" ] || continue
+		plugin=${path##*/}
+		version=$(doctor_manifest_version "$path") || continue
+		doctor_add "$file" cursor local "$plugin" "$version" "$path" cursor-local 0 0
+	done
+
+	# 仓库 vendor 树。
+	if [ -n "$repo" ] && [ -d "$repo/.jstack/vendor/plugins" ]; then
+		for path in "$repo/.jstack/vendor/plugins"/*; do
+			[ -d "$path" ] || continue
+			plugin=${path##*/}
+			version=$(doctor_manifest_version "$path") || continue
+			doctor_add "$file" vendor project "$plugin" "$version" "$path" vendor 1 0
+		done
+	fi
+
+	# 核对 lock 与漂移，生成七列。
+	lock=
+	[ -z "$repo" ] || [ ! -f "$repo/.jstack/lock.json" ] || lock="$repo/.jstack/lock.json"
+	: >"$WORK/doctor-final"
+	sort -t "$(printf '\t')" -k1,1 -k2,2 -k3,3 "$file" |
+		while IFS=$'\t' read -r h scope plugin version path source inrepo stale; do
+			[ -n "$h" ] || continue
+			if [ "$stale" = 1 ]; then
+				lock_cell=stale
+			elif [ "$inrepo" != 1 ]; then
+				lock_cell=-
+			elif [ -z "$lock" ]; then
+				lock_cell=no-lock
+			else
+				lockver=$(jq -r --arg p "$plugin" '.plugins[$p].version // empty' "$lock" 2>/dev/null || true)
+				if [ -z "$lockver" ]; then
+					lock_cell=missing
+				elif [ "$lockver" != "$version" ]; then
+					lock_cell="drift $version!=$lockver"
+				else
+					lock_cell=ok
+				fi
+			fi
+			printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$h" "$scope" "$plugin" "$version" "$path" "$source" "$lock_cell" \
+				>>"$WORK/doctor-final"
+		done
+
+	n=$(wc -l <"$WORK/doctor-final" | tr -d ' ')
+	drift=$(awk -F'\t' '$7 ~ /^(drift|missing|stale)( |$)/ { n++ } END { print n + 0 }' "$WORK/doctor-final")
+	stale_n=$(awk -F'\t' '$7 == "stale" { n++ } END { print n + 0 }' "$WORK/doctor-final")
+	[ "$drift" -eq 0 ] || rc=1
+
+	if [ "$json" -eq 1 ]; then
+		python3 -I - "$WORK/doctor-final" <<'PY'
+import json, sys
+rows = []
+with open(sys.argv[1], encoding="utf-8") as f:
+	for line in f:
+		line = line.rstrip("\n")
+		if not line:
+			continue
+		parts = line.split("\t")
+		if len(parts) < 7:
+			continue
+		rows.append(dict(zip(("harness", "scope", "plugin", "version", "path", "source", "lock"), parts)))
+print(json.dumps(rows, ensure_ascii=False, indent=2))
+PY
+		[ "$stale_n" -eq 0 ] || say "! ${stale_n} 条安装的记录版本落后于源目录（本地 marketplace 直接从源目录加载）" >&2
+		[ "$drift" -eq 0 ] || say "! ${drift} 条安装有版本漂移或与 lock 不一致" >&2
+	else
+		if [ "$n" -eq 0 ]; then
+			say "没有发现 jstack 安装。"
+		else
+			tab=$(printf '\t')
+			if command -v column >/dev/null; then
+				{
+					printf 'HARNESS\tSCOPE\tPLUGIN\tVERSION\tPATH\tSOURCE\tLOCK\n'
+					cat "$WORK/doctor-final"
+				} | column -t -s "$tab"
+			else
+				printf 'HARNESS\tSCOPE\tPLUGIN\tVERSION\tPATH\tSOURCE\tLOCK\n'
+				cat "$WORK/doctor-final"
+			fi
+			say ""
+			say "共 ${n} 条安装：${drift} 条与源目录或 lock 不一致（其中 ${stale_n} 条记录版本落后于源目录）。"
+		fi
+	fi
+	if [ "$rc" -ne 0 ] && [ "$nofail" -eq 1 ]; then
+		say "! 有版本漂移或 lock 不一致；--no-fail 下不返回失败。" >&2
+		rc=0
+	fi
+	return $rc
+}
+
 cmd_install() {
 	local scope=user p conflicts tool installed markets
 	while [ $# -gt 0 ]; do
@@ -2389,6 +2692,7 @@ build) cmd_build ;;
 check) shift; cmd_check "$@" ;;
 smoke) shift; cmd_smoke "$@" ;;
 models) shift; cmd_models "$@" ;;
+doctor) shift; cmd_doctor "$@" ;;
 eval) shift; "$ROOT/evals/run.sh" "$@" ;;
 "" | -h | --help | help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
 *) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//' >&2; exit 2 ;;

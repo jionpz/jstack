@@ -142,6 +142,21 @@ Cursor 的本地插件加载器只接受 `~/.cursor/plugins/local` 内的符号�
 
 `/pstack:setup-pstack` 仍然可用，但它直接写规则文件、不读用户级配置。配置模型统一用 `./jstack models`，避免两套来源互相覆盖。
 
+## 安装矩阵（doctor）
+
+`./jstack doctor` 只读地回答"每个 harness 装的是哪个版本、在哪个作用域、来源是什么、是否与 lock 一致"：
+
+```bash
+./jstack doctor                  # 表格
+./jstack doctor --json           # 机器可读
+./jstack doctor --no-fail        # 有漂移也只警告，不返回失败
+./jstack doctor --repo <dir>     # 指定仓库，核对它的 .jstack/vendor 与 lock
+```
+
+探测来源：Claude Code 的 `claude plugin list --json`（user / project / local 全部保留）、Pi package（`settings.json` 里的本地路径包和 `npm/node_modules/jstack`）、OMP 的 marketplace 缓存、Cursor 的本地插件目录、`<repo>/.jstack/vendor/plugins`。每行有 harness、scope、plugin、version、path、source、lock 七列。
+
+`lock` 列的取值：`ok`（与 `<repo>/.jstack/lock.json` 一致）、`drift`（版本不同）、`missing`（lock 里没有这个插件）、`no-lock`（仓库还没有 lock）、`stale`（本地 marketplace 的记录版本落后于源目录）、`-`（用户级安装，不归仓库 lock 管）。`stale`、`drift`、`missing` 会让命令返回非 0；`--no-fail` 降级为警告。
+
 ## 分工
 
 工作流由 [`src/flow/skills/route/stages.md`](src/flow/skills/route/stages.md) 定义成固定阶段：size、clarify、plan、execute、verify、review、land、archive。每个阶段写明产出、门禁和当前提供者（ADR-0002）。`flow:route` 先分级，再按大小选出要走的阶段，逐个交给提供者，不需要你选命令：
@@ -309,8 +324,9 @@ git diff -- upstream/     # 看上游改了什么
 10. `claude plugin validate` 是否通过（marketplace 和全部插件）
 11. 评测任务自检（`./jstack eval --selftest`）：每个任务的 check 在初始状态下失败、在参考解下通过
 12. flow 的 `stage.sh` 和三个 hook（`tests/flow-hooks.sh`）：对 `plugins/flow` 产物喂 JSON、断言输出和状态文件，有 jq 和没有 jq 两种路径都测；macOS 上用 `/bin/bash`（3.2）运行
-13. 模型分层命令（`./jstack models`）：在临时 HOME 里跑 init、set、apply、status，核对 17 个角色行、settings.json 的模型 env 和原有键、备份幂等、`--dry-run` 不落盘、预算降级，以及今日 token 统计
+13. 模型分层命令（`./jstack models`）：在临时 HOME 里跑 init、set、apply、status，核对四个 harness 的规则文件、Pi/OMP 标记块合并与首次确认、旧配置迁移备份、roles 覆盖、settings.json 的模型 env 和原有键、备份幂等、`--dry-run` 不落盘、预算降级，以及今日 token 统计
 14. 仓库级配置（`<repo>/.jstack/config.json`，ADR-0006）：当前仓库有配置时校验字段与 `stages_file`；在临时仓库里验证 `stage.sh` 按 `stages_file` 收/拒阶段、`guard.sh` 合并 `must_stop` 并在 reason 里标明“仓库追加”、`prompt.sh` 注入配置，坏 JSON、禁用键、缺 `execute` 都要报出来
+15. `./jstack doctor`：临时 HOME 构造 Claude user/project、Pi package、OMP 缓存、Cursor 本地插件、vendor 和 lock 六种来源，核对表格与 `--json` 的值；篡改 lock 版本或源目录版本后必须报漂移并返回非 0，`--no-fail` 只警告
 
 第 3、4、5 项专门查 adapter 管不到的地方：脚本和 frontmatter 都不经过模型，上游新引入的 Cursor 依赖在同步时就能发现；第 5 项查的是 spec 这种"只收一部分 skill"的插件有没有漏掉依赖。`claude plugin validate` 不查 frontmatter 键，也不查插件内部 skill 之间的调用关系，更不查 YAML 合法性，所以 `: ` 这种写法只能由第 4 项拦。全部通过才提交。
 

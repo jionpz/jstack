@@ -16,7 +16,7 @@
 - 仓库根：从当前目录向上找第一个含 `.jstack/config.json` 的目录；找不到再找 `.git`，以它为仓库根。`JSTACK_REPO` 环境变量优先（测试与 CI 用）。
 - 用户级路径：`$JSTACK_USER_CONFIG`，默认 `~/.jstack/config.json`。旧路径 `~/.config/jstack/models.json` 在新文件不存在时自动迁移（`harnesses` 段改名为 `models`，`budget` 原样保留），旧文件备份为 `models.json.bak-migrate-<时间>` 后保留；新文件存在后不再读旧文件。
 - 合并：仓库级覆盖用户级；数组字段整体覆盖，不做拼接。缺省值见各表。
-- 读取失败（JSON 非法、类型错误）：`./jstack check` 报错（`./jstack doctor` 在 #25 补上同样的检查）；flow hooks 在每轮提示里打一行醒目警告，guard 继续只按内置清单拦截。降级是显式的——用户每轮都能看到"仓库级 must-stop 追加项未生效"，修好后自动恢复。
+- 读取失败（JSON 非法、类型错误）：`./jstack check` 报错；flow hooks 在每轮提示里打一行醒目警告，guard 继续只按内置清单拦截。降级是显式的——用户每轮都能看到"仓库级 must-stop 追加项未生效"，修好后自动恢复。`./jstack doctor` 只核对安装矩阵与 lock，不读仓库级配置。
 
 ## 用户级 `~/.jstack/config.json`
 
@@ -56,9 +56,9 @@
 
 | 文件 | 关系 |
 |---|---|
-| `docs/agents/issue-tracker.md` | 面向 spec 上游的 prose，保留。jstack 脚本读仓库级 `tracker`；`doctor`（#25）发现两者矛盾时报警（例如文档写 local、配置写 github） |
+| `docs/agents/issue-tracker.md` | 面向 spec 上游的 prose，保留。jstack 脚本读仓库级 `tracker`；两者矛盾时以配置为准（doctor 不检查这层） |
 | `docs/agents/domain.md` | 保留；`domain_docs.*` 路径与它描述的位置应一致 |
-| `CLAUDE.md` 的 `## Agent skills` 段 | 保留为入口说明；内容应与 `tracker` / `docs` 一致，`doctor`（#25）检查 |
+| `CLAUDE.md` 的 `## Agent skills` 段 | 保留为入口说明；内容应与 `tracker` / `docs` 一致（doctor 只核对安装矩阵，不读这段） |
 | `~/.claude/rules/pstack-models.md`、`~/.cursor/rules/pstack-models.mdc`、`~/.omp/agent/rules/pstack-models.md`、`~/.omp/agent/config.yml` 的 `modelRoles` 块、`~/.pi/agent/AGENTS.md` 的角色表块 | 全部由用户级 `models` 生成，禁止手改；`./jstack models apply` 是唯一写入方。Pi/OMP 的共享文件只改 `jstack:models` 标记块，块外不碰；首次写入前确认（`--yes` 跳过），写前备份 |
 | `src/flow/skills/route/stages.md`、`must-stop.md` | 插件内置的默认值；仓库级 `stages_file` 整表替换阶段表，`must_stop` 在读取时追加，都不改插件文件 |
 | 业务仓库自己的 `AGENTS.md` | jstack 不读不写。项目级接入只动 `.jstack/`、生成的 harness 配置和入口链接，不往 `AGENTS.md` 里塞内容 |
@@ -103,4 +103,4 @@
 2. 仓库级不含禁用键。
 3. `stages_file` 存在、能解析出至少一个阶段、含 `execute`；表里每个 provider 都能被 `locate.sh` 找到。
 4. `must_stop[]` 每条有非空 `action`；带 `regex` 的条目是合法 ERE（`grep -E` 能编译）。
-5. 安装了项目级 vendor 时，`lock.json` 与 vendor 树、插件版本一致。
+5. 安装了项目级 vendor 时，`./jstack doctor` 核对 `lock.json` 与 vendor 树、插件版本一致（`check` 不读 vendor）。
