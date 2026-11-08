@@ -1,6 +1,6 @@
 # jstack 维护规则
 
-jstack 是用户长期维护的整条 AI 开发工作流。flow 定义工作流的阶段和门禁，上游 skill 只是当前绑定在某个阶段上的提供者，可以被改写或替换（ADR-0002）。模型分两层（ADR-0003），人工介入按风险自判（ADR-0004），任务只记在 tracker（ADR-0005）。改动工作流前先读这几份 ADR。Claude Code 是主力 harness，同时支持 Pi、OMP、Codex、Cursor。
+jstack 是用户长期维护的整条 AI 开发工作流。flow 定义工作流的阶段和门禁，上游 skill 只是当前绑定在某个阶段上的提供者，可以被改写或替换（ADR-0002）。模型分两层（ADR-0003），人工介入按风险自判（ADR-0004），任务只记在 tracker（ADR-0005），安装以项目级为一等公民、配置分用户级和仓库级（ADR-0006）。改动工作流前先读这几份 ADR。Claude Code 是主力 harness，同时支持 Pi、OMP、Codex、Cursor。
 
 当前以插件 marketplace 的形式发布三个插件：
 

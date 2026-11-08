@@ -226,6 +226,8 @@ plugins/spec/                    spec 构建产物，带 Claude 和 Cursor 两�
 src/flow/                        flow 的源码，jstack 自己维护，可以直接改
 plugins/flow/                    flow 构建产物，带 Claude 和 Cursor 两个 manifest，等于 src/flow 再加版本戳，不要手改
 docs/harness/agents.md           Pi/OMP/Claude Code 共用的 adapter，把 pstack 里的 Cursor 名称映射到各 harness
+docs/adr/                        决策记录；ADR-0006 定义项目级接入与用户级 / 仓库级两层配置
+docs/agents/jstack-config.md     两级配置的字段表：归属、默认值、读取方（ADR-0006）
 package.json                     Pi package manifest，pi.skills 指向三个插件的 skills
 upstream/pstack.lock.json        锁定的 pstack（Claude Code 树）上游：仓库、路径、提交、版本、副本内容哈希
 upstream/pstack-cursor.lock.json 锁定的 pstack（Cursor 原生树）上游，字段同上

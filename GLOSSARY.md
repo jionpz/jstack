@@ -52,6 +52,18 @@ _Avoid_: command, prompt
 A user-invoked skill marked `disable-model-invocation: true`; route and the spec entry points are entry skills.
 _Avoid_: command, slash command
 
+**project scope**:
+An installation that lives inside the repository (vendor tree, project settings, project skill links) and works without a user-level install.
+_Avoid_: local install, per-repo mode
+
+**vendor tree**:
+`<repo>/.jstack/vendor/`: the complete plugin trees plus marketplace manifest a project-scope install runs from.
+_Avoid_: copy, mirror
+
+**lock file**:
+`<repo>/.jstack/lock.json`: the recorded upstream commits, plugin versions, vendor tree hash, and per-harness install records that `./jstack doctor` checks against.
+_Avoid_: manifest
+
 **adapter**:
 The generic `agents.md` document that maps pstack's Cursor-native names to the running harness.
 _Avoid_: shim, translator
