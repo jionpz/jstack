@@ -29,7 +29,7 @@ emit() {
 }
 
 main() {
-	local input evt proto=claude file path stage row next arrow n st cfg warn stages text
+	local input evt proto=claude file path stage row next arrow n d st cfg warn stages text
 	input=$(cat)
 	evt=$(jstack_json_str hook_event_name "$input")
 	if [ "$evt" = beforeSubmitPrompt ]; then
@@ -54,6 +54,7 @@ main() {
 	arrow=$(printf '%s\n' "$path" | tr ',' '\n' |
 		awk -v s="$stage" '{ printf "%s%s", (NR > 1 ? " → " : ""), ($0 == s ? "[" $0 "]" : $0) }')
 	n=$(grep -c '^evidence ' "$file")
+	d=$(grep -c '^default ' "$file")
 	st="\"$route/stage.sh\""
 	text=$(
 		printf '%s\n' "jstack 阶段门禁：当前阶段 ${stage}" \
@@ -62,6 +63,7 @@ main() {
 			"本阶段门禁：$(printf '%s' "$row" | cut -f3)" \
 			"已记录验证证据：${n} 条" \
 			"下一阶段：${next:-无，这是路径上的最后一个阶段}"
+		[ "$d" -eq 0 ] || echo "已采用的默认决定：${d} 条（收尾摘要里逐条列出，让用户能改）"
 		[ -z "$next" ] || echo "门禁满足后运行 $st enter ${next}"
 		printf '%s\n' "每条验证证据运行 $st evidence \"<命令> -> <结果>\"" \
 			"停下来问用户之前运行 $st ask，并在回复里写出要问的问题（只标 ask 不提问，Stop 门禁仍会拦）" \

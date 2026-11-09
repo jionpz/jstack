@@ -1,6 +1,7 @@
 # 阶段门禁的共用部分，由同目录的 stage.sh 和插件的 hooks/*.sh source，不单独运行。
 # 状态文件是 <状态目录>/<会话 id>，纯文本，每行一条：
-#   path <逗号分隔的阶段>    stage <当前阶段>    evidence <文本>（可多行）    ask（存在即等人）
+#   path <逗号分隔的阶段>    stage <当前阶段>    evidence <文本>（可多行）
+#   default <文本>（替用户采用的默认决定）    ask（存在即等人）
 # JSTACK_NO_JQ 非空时当作没有 jq，只用于测试 sed 退路。
 
 jstack_state_dir() {

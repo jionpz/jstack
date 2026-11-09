@@ -216,13 +216,14 @@ execute 交给 poteto-mode。它的 playbook 已经包含验证、审查和开 P
 
 仓库可以用 `<repo>/.jstack/config.json` 调整这套流程：`stages_file` 整表替换阶段表，`must_stop` 追加必须停项（`guard.sh` 会拦），`tracker` / `domain_docs` / `verify` 声明任务账本、文档位置和验证命令。字段表和读取规则见 [`docs/agents/jstack-config.md`](docs/agents/jstack-config.md)（ADR-0006）；没有这个文件时行为与以前完全一致。
 
-route 只在三处停下来问你，其余全部自动推进：
+route 只在证据定不了、而且做错代价高的决策上停下来问你（ADR-0004），其余全部自动推进：
 
-1. **澄清轮**：grill 把所有当前能问的问题一次列出，每个都带推荐答案，回答"是"就采纳。仓库还没跑过 setup 时，setup 的问题也并进这一轮。
-2. **拆解签字**（只有 L、XL）：spec 的测试接缝和 ticket 拆分放在同一条消息里让你确认，确认之后才发布。
-3. **必须由人决定的事项**：证据定不了的业务规则、破坏性的 API 或 schema 变更、不可逆的数据操作、生产环境/权限/安全、没有 ADR 的重大架构变化、成本/法务/隐私。这些攒在一轮里问。
+1. **必须停清单**：所有大小、任何自主授权下都适用，就是 `src/flow/skills/route/must-stop.md`（全局红线、poteto-mode 的 Always-pause、route 原有的业务/API/数据/架构/合规条目三者的并集，只维护这一份）。能识别的 shell 命令由 guard hook 拦，其余靠 agent 自己识别；这一轮里问完。
+2. **证据定不了的决策**：能跑一下观察出结果的，就做实验或原型、记下结果，不问人。只有证据确实定不了、且（不可逆代价高 / 有两种改变做法的读法 / 影响到用户、生产或其他系统）时才问；否则采用推荐的默认值，用 `stage.sh default "<决定> -> <理由>"` 记下来，收尾摘要里逐条列出，你直接说改哪条即可。
+3. **拆解**（L、XL）：拆解本身没有高风险分歧时不再要签字，直接发布；只有顺序或范围以后难改、测试接缝证据定不了、或命中必须停清单时，才把测试接缝和 ticket 拆分放在同一条消息里请你确认。
+4. **一轮问完**：等待回答的 ticket 在 tracker 上打 `needs-human` 标签后挂起，不依赖它的 ticket 继续推进；攒着的问题合并成一轮，逐个编号、带推荐答案。答完去掉标签。通知渠道是可替换的提供者：在 Paseo 里就推给手机，否则靠标签，下次会话看得到。
 
-签字之后由 poteto-mode 按 ticket 依赖顺序执行，不再停下来确认，poteto-mode 自己的 Always-pause 清单仍然有效。业务仓库的 `CLAUDE.md` 或 `.claude/rules/` 里定义了不同的分级、spec 位置或门禁时，以仓库为准。
+收尾摘要固定五段：目标、改了什么、验证证据、采用的默认决定、需要你处理的事（外加门禁未生效时的说明），控制在一手机屏内。业务仓库的 `CLAUDE.md` 或 `.claude/rules/` 里定义了不同的分级、spec 位置或门禁时，以仓库为准。
 
 `disable-model-invocation: true` 的 skill（pstack 57 个、spec 6 个：5 个入口加 setup）不能被模型用 Skill 工具调用，Claude Code 会直接拒绝，提示 "reserved for explicit user invocation"。route 用随附的 `locate.sh` 找到这些提供者文件的路径，然后直接读取并照着做，这也是 pstack 内部 skill 之间互相路由的方式。`locate.sh` 不写死 skill 名，而是读同目录 `stages.md` 的 Providers 列：换掉某个阶段的提供者只改表里那一格。它支持本地 marketplace、Claude Code 的 GitHub 缓存、OMP 缓存、Cursor 本地插件、Pi package、Codex marketplace 缓存和入口软链七种安装布局，入口 skill 以软链暴露时按物理路径解析；任一提供者找不到就点名并以非 0 退出。
 
@@ -236,9 +237,10 @@ route 只在三处停下来问你，其余全部自动推进：
 
   ```bash
   gh label create ready-for-agent
+  gh label create needs-human --description "Waiting on a human decision; other tickets continue"
   ```
 
-  （没收录 `triage` skill，所以不会自动写 `docs/agents/triage-labels.md`。）
+  `needs-human` 是等待人回答的 ticket 的队列标记（ADR-0004）；没收录 `triage` skill，所以不会自动写 `docs/agents/triage-labels.md`。
 - **handoff 写到 `$TMPDIR`**，不是仓库。它本来就是为了把当前会话交接给下一个 agent，不是长期文档。
 
 ### 结构门禁（hooks）
@@ -249,7 +251,7 @@ flow 插件自带三个门禁（Claude Code 的 `src/flow/hooks/hooks.json`，Cu
 - **验证门禁（Stop，`stop.sh`）**：路径含 verify、已经进入 execute 或之后的阶段、却一条验证证据都没记录时，拦下这次结束，让 agent 先验证并用 `stage.sh evidence` 记录。agent 运行过 `stage.sh ask` 且这一轮的回复里确实向你提了问题、或者这一轮本身就是被 Stop hook 拦回来的，都放行。每次进入 execute 会清掉之前的证据，L 路径的下一张 ticket 要重新验证。
 - **红线守卫（Claude Code 的 PreToolUse / Cursor 的 beforeShellExecution / Pi、OMP 的 bash `tool_call`，只看 shell 命令，`guard.sh`）**：命令在 `;`、`&&`、`||`、`|`、换行处切段，任一段命中 `must-stop.md` 的 patterns 就让 harness 先问你，原因写明命中的是哪条必须停事项。它不看阶段状态，对所有会话生效，包括没走 route 的会话。
 
-route 用同目录的 `stage.sh` 记录阶段（`start`、`enter`、`evidence`、`ask`、`end`、`show`）。状态按会话存成纯文本 `${JSTACK_STATE_DIR:-${XDG_STATE_HOME:-~/.local/state}/jstack/sessions}/<会话 id>`，`start` 时顺带删掉 7 天没动过的旧记录。会话 id 依次取 `JSTACK_SESSION_ID`（OMP 扩展写入）、`PI_SESSION_ID`（Pi）、`CLAUDE_CODE_SESSION_ID`、`CURSOR_CONVERSATION_ID`、`CODEX_SESSION_ID`；都没有的 harness 里 `stage.sh` 只打印一行说明，不做任何事。
+route 用同目录的 `stage.sh` 记录阶段（`start`、`enter`、`evidence`、`default`、`ask`、`end`、`show`）。状态按会话存成纯文本 `${JSTACK_STATE_DIR:-${XDG_STATE_HOME:-~/.local/state}/jstack/sessions}/<会话 id>`，`start` 时顺带删掉 7 天没动过的旧记录。会话 id 依次取 `JSTACK_SESSION_ID`（OMP 扩展写入）、`PI_SESSION_ID`（Pi）、`CLAUDE_CODE_SESSION_ID`、`CURSOR_CONVERSATION_ID`、`CODEX_SESSION_ID`；都没有的 harness 里 `stage.sh` 只打印一行说明，不做任何事。
 
 Cursor 的 hook 是它自己的事件和协议，不复用 Claude 的 `hooks.json`：`beforeShellExecution` 对应 guard（`permission: ask` 会弹出确认），`beforeSubmitPrompt` 对应阶段提示（输出 `additional_context`），`stop` 对应验证门禁（输出 `followup_message`）。Cursor 的 `stop` 输入没有最后一条回复，所以标了 `ask` 时只能直接放行，无法像 Claude 那样核对回复里是否真的提了问题；`stop` 的 `loop_limit` 设为 3，避免反复拦住同一轮。`./jstack install-cursor` 现在会复制完整插件树，Cursor 加载器按 `.cursor-plugin/plugin.json` 的 `hooks` 字段只加载 `hooks.cursor.json`。项目级安装同样会写 `.cursor/hooks.json`，命令指向 `.jstack/vendor`。
 

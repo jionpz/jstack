@@ -112,6 +112,7 @@ prompt_shows() {
 		[ "$(printf '%s' "$out" | LC_ALL=en_US.UTF-8 wc -m | tr -d ' ')" -lt 1500 ]
 }
 prompt_gate() { hook prompt "$(prompt_in)" | grep -qF '本阶段门禁：No evidence means not done'; }
+prompt_defaults() { hook prompt "$(prompt_in)" | grep -qF '已采用的默认决定：1 条'; }
 
 for f in "$ST" "$H/prompt.sh" "$H/stop.sh" "$H/guard.sh"; do
 	t "${f#"$CLAUDE_PLUGIN_ROOT"/} 可执行" test -x "$f"
@@ -207,6 +208,17 @@ t "stage.sh show 没有状态时打印 none" prints none stage show
 t "stop.sh 没有状态时放行" silent hook stop "$(stop_in)"
 t "prompt.sh 没有状态时不输出" silent hook prompt "$(prompt_in)"
 t "stage.sh start 顺带删掉 7 天前的状态文件" old_file_cleaned
+stage end >/dev/null
+
+# 默认决定：记录替用户做的选择，收尾摘要里逐条列出；进入下一张 ticket 时保留。
+stage start execute,verify >/dev/null
+stage default '按标题排序' '->' '任务只要求排序' >/dev/null
+t "stage.sh default 把参数拼成一行追加" state_is 'path execute,verify' 'stage execute' 'default 按标题排序 -> 任务只要求排序'
+t "stage.sh default 空文本时失败" not stage default '  '
+stage enter verify >/dev/null
+stage enter execute >/dev/null
+t "stage.sh 再次进入 execute 时保留默认决定" state_is 'path execute,verify' 'stage execute' 'default 按标题排序 -> 任务只要求排序'
+t "prompt.sh 注入已采用的默认决定" prompt_defaults
 stage end >/dev/null
 
 for mode in jq nojq; do

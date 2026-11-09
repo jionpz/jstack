@@ -16,6 +16,7 @@ usage() {
 用法：stage.sh start <阶段>,<阶段>,...   记录阶段路径并进入第一个阶段
       stage.sh enter <阶段>              进入路径上的某个阶段
       stage.sh evidence <文本>           记录一条验证证据，写成 "<命令> -> <结果>"
+      stage.sh default <文本>            记录一个替用户采用的默认决定，写成 "<决定> -> <理由>"
       stage.sh ask                       停下来问用户之前运行
       stage.sh end                       任务结束，删掉记录
       stage.sh show                      打印当前记录
@@ -59,7 +60,7 @@ start)
 	echo "jstack: 阶段路径 $(printf '%s' "$1" | sed 's/,/ → /g')，当前阶段 ${1%%,*}"
 	# Workloop 没有 Stop hook：状态照记，但不能让人以为门禁在执行。
 	if [ "$sid" = "${WORKLOOP_SESSION_ID:-}" ]; then
-		echo "jstack: Workloop 没有 Stop hook，门禁未强制。结束前自己运行 stage.sh show 核对证据，并在收尾报告写明“本会话阶段门禁未强制（Workloop）”"
+		echo "jstack: Workloop 没有 Stop hook，门禁未强制。结束前自己运行 stage.sh show 核对证据，并在收尾摘要的门禁一行写明“本会话阶段门禁未强制（Workloop）”"
 	fi
 	;;
 enter)
@@ -80,6 +81,13 @@ evidence)
 	need_state
 	{ cat "$file"; printf 'evidence %s\n' "$text"; } | jstack_replace "$file"
 	echo "jstack: 已记录证据：${text}"
+	;;
+default)
+	text=$(printf '%s' "$*" | tr '\r\n' '  ' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+	[ -n "$text" ] || die "默认决定不能为空，写成 \"<决定> -> <理由>\""
+	need_state
+	{ cat "$file"; printf 'default %s\n' "$text"; } | jstack_replace "$file"
+	echo "jstack: 已记录默认决定：${text}"
 	;;
 ask)
 	[ $# -eq 0 ] || usage

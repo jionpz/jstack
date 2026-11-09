@@ -50,6 +50,7 @@ Pi and OMP carry the gates through the flow extension; if it is not installed, `
 | Right after sizing | `stage.sh start <stage>,<stage>,...` with the path in order |
 | Entering each stage | `stage.sh enter <stage>` |
 | Each piece of verification evidence | `stage.sh evidence "<command> -> <what it showed>"` |
+| A decision you settled with a default instead of asking | `stage.sh default "<decision> -> <why>"` |
 | Right before you stop to ask the user anything | `stage.sh ask` |
 | After the finish report | `stage.sh end` |
 
@@ -72,17 +73,33 @@ Hand poteto-mode what the earlier stages produced: the task in the user's words,
 
 ## 4. Human checkpoints
 
-Ask the user only at these points. Everything else proceeds.
+Human attention is the most expensive resource here. Interrupt the user only for a decision that is theirs to make; everything else takes the default you would recommend, recorded so they can correct it later (ADR-0004).
 
-1. **Clarification round.** grill-with-docs asks in rounds. Each round lists every open question at once, numbered, with your recommended answer, worded so "yes" accepts it. Look facts up yourself; only decisions reach the user.
-2. **Breakdown sign-off (L and XL only).** Present the spec's testing seams and the ticket breakdown together in one message, before you publish either. This single approval covers both to-spec's seam check and to-tickets' quiz.
-3. **Must-stop actions**, at any size and under any autonomy grant: everything in [must-stop.md](must-stop.md), next to this file, plus every entry in the repo config's `must_stop`. The plugin list is the only built-in list. The flow guard hook makes the harness ask before the shell commands it can detect; the rest you must recognize yourself. Collect these and ask them in one round, each with options and a recommendation.
+1. **Must-stop actions**, at any size and under any autonomy grant: everything in [must-stop.md](must-stop.md), next to this file, plus every entry in the repo config's `must_stop`. The plugin list is the only built-in list. The flow guard hook makes the harness ask before the shell commands it can detect; the rest you must recognize yourself. Collect these and ask them in one round, each with options and a recommendation.
 
-Once the user approves the breakdown, execute without further check-ins. poteto-mode's own Autonomy section still applies, including its Always-pause list.
+2. **Decisions the evidence cannot settle.** Look facts up yourself. When a fork is a fact you can observe by running something (behavior, timing, layout, output, a prototype), settle it that way and record the result instead of asking. Ask only when the evidence cannot settle a product or preference call and at least one of these holds: undoing the choice would be expensive, the request has two readings that change what gets built, or the choice reaches users, production, or another system. Otherwise take the default you would recommend, record it with `stage.sh default "<decision> -> <why>"`, and report it under 采用的默认决定 in the finish summary. The user reads it and tells you what to change; no reply word needed.
+
+3. **Breakdowns.** Publish an L or XL breakdown without a sign-off unless the breakdown itself carries a high-risk disagreement: an order or scope that would be costly to change later, a testing seam the evidence cannot settle, or a must-stop action. Only then present the spec's testing seams and the ticket breakdown together in one message, before you publish either.
+
+4. **One round.** Collect every open question, but never hold back work that does not depend on the answer. When a ticket is waiting on the user, mark it `needs-human` in the tracker (GitHub: `gh issue edit <n> --add-label needs-human`, creating the label once with `gh label create needs-human` if the repo lacks it; local markdown: set `**Status:** needs-human`), keep working the tickets that do not depend on it, and ask the queued questions together in one round, numbered, each with your recommended answer, worded so "yes" accepts it. Remove the label once answered. The notification channel is a replaceable provider: Paseo when the session runs under it, the tracker label alone otherwise.
+
+Clarification rounds follow the same rule: only decisions reach the user, and a question you can answer by observing something never does. poteto-mode's own Autonomy section still applies, including its Always-pause list, which [must-stop.md](must-stop.md) already contains.
+
 
 ## 5. Finish
 
-End with one line per stage on the path: its output, or why it was skipped. A stage whose gate was never met is reported as not done, with what is missing. If `stage.sh` reported that this harness has no session id, add one line: the stage gates were not active in this session. If it reported that the gates are not enforced in Workloop, add that line too.
+End with one summary the user can read on a phone, in this order, then run `stage.sh end`:
+
+```
+目标：<one line>
+改了什么：<tickets closed, commits, files; a stage whose gate was never met is named here as not done, with what is missing>
+验证：<the commands you ran and what they showed>
+采用的默认决定：<every stage.sh default, with its reason; 无 when none>
+需要你处理：<every queued question and needs-human ticket; 无 when none>
+门禁：<only when stage.sh reported no session id or Workloop: the stage gates were not active / not enforced in this session>
+```
+
+Every adopted default and every queued question must appear; they are how the user corrects you later. Do not restate the code or the ticket.
 
 ## Never
 
