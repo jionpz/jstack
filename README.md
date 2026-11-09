@@ -394,7 +394,7 @@ pstack 只同步 Claude Code 树；Cursor 版由 `build` 转换，不再单独�
 ./jstack smoke all      # 四个都跑（= ./jstack check --smoke）
 ```
 
-Pi、OMP 和 Codex 的 smoke 会实际启动模型、消耗 token，需要网络；它们是验收测试，不是每次提交的默认门禁。Codex 的 smoke 用临时的 `CODEX_HOME`（只软链真实的 `auth.json` / `config.toml`），不读用户级插件，测的是项目级安装本身；hooks 用 `--dangerously-bypass-hook-trust` 跳过信任检查（来源已审查）；模型默认 `opencode-go/deepseek-v4.1-flash`，可用 `JSTACK_SMOKE_CODEX_MODEL` 覆盖。Cursor 没有可脚本化的 headless agent CLI，smoke 验证加载器解析结果、三个 hook 的 Cursor 协议输出和 `locate.sh`，交互部分按 `docs/testing/cursor.md` 手动做。
+Pi、OMP 和 Codex 的 smoke 会实际启动模型、消耗 token，需要网络；它们是验收测试，不是每次提交的默认门禁。Codex 的 smoke 用临时的 `CODEX_HOME`（只软链真实的 `auth.json` / `config.toml`），不读用户级插件，测的是项目级安装本身；hooks 用 `--dangerously-bypass-hook-trust` 跳过信任检查（来源已审查）；模型默认 `opencode-go/deepseek-v4.1-flash`，可用 `JSTACK_SMOKE_CODEX_MODEL` 覆盖；hooks 信任提示和交互式 deny 行为按 `docs/testing/codex.md` 手动做。Cursor 没有可脚本化的 headless agent CLI，smoke 验证加载器解析结果、三个 hook 的 Cursor 协议输出和 `locate.sh`，交互部分按 `docs/testing/cursor.md` 手动做。
 
 每条 headless 命令限时 `JSTACK_SMOKE_TIMEOUT` 秒，默认 600。超时会先 TERM、10 秒后仍在就 KILL，该项按运行失败处理。
 

@@ -67,4 +67,4 @@ route 的收尾报告（`src/flow/skills/route/SKILL.md` 第 5 节）要写明�
 
 - `bash tests/flow-hooks.sh`：三个 hook 的协议、会话 id 回退、仓库配置；不依赖 harness。
 - `./jstack smoke pi` / `./jstack smoke omp` / `./jstack smoke codex`：在真机上跑非交互会话，断言 `rm -rf` 被拦（`GUARD-SEEN`）、`stage.sh start execute,verify` 后停止被 Stop 门禁拦回（`GATE-SEEN`）。没装对应 harness 自动跳过。
-- 手工：交互式会话里跑一次命中 must-stop 的命令，确认弹确认框；`stage.sh show` 看状态落在 `~/.local/state/jstack/sessions/<id>`。
+- 手工：交互式会话里跑一次命中 must-stop 的命令，确认弹确认框；Codex 的 hooks 信任与 deny 行为按 `docs/testing/codex.md` 核对。`stage.sh show` 看状态落在 `~/.local/state/jstack/sessions/<id>`。
