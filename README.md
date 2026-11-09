@@ -212,7 +212,7 @@ Cursor 的本地插件加载器只接受 `~/.cursor/plugins/local` 内的符号�
 | XL（跨会话、跨阶段） | 先用 wayfinder 规划，再对每块按 L 走；需要换会话时 handoff |
 | 提问、调查 | 只走 execute，产出就是带出处的回答 |
 
-execute 交给 poteto-mode。它的 playbook 已经包含验证、审查和开 PR，route 只补其后仍未满足的门禁。仓库没有 remote 时，分支上的提交就满足 land。archive 交给 `flow:archive`：关票并附证据、补 GLOSSARY/ADR、写回 gbrain、按 pstack 的 worktree-cleanup 清理已合并的 worktree，并把教训分流到项目约定库或 jionpz/jstack 的 issue。
+execute 默认交给 `flow:execute`：jstack 自己的精简执行入口，在主会话里直接改、验证、自审 diff、提交，不派子代理。多张独立 ticket 或多天工程交给 `pstack:poteto-mode`（Orchestrate / Multi-phase playbook），它的 playbook 同时包含验证、审查和开 PR。route 只补执行提供者之后仍未满足的门禁。仓库没有 remote 时，分支上的提交就满足 land。archive 交给 `flow:archive`：关票并附证据、补 GLOSSARY/ADR、写回 gbrain、按 pstack 的 worktree-cleanup 清理已合并的 worktree，并把教训分流到项目约定库或 jionpz/jstack 的 issue。
 
 仓库可以用 `<repo>/.jstack/config.json` 调整这套流程：`stages_file` 整表替换阶段表，`must_stop` 追加必须停项（`guard.sh` 会拦），`tracker` / `domain_docs` / `verify` 声明任务账本、文档位置和验证命令。字段表和读取规则见 [`docs/agents/jstack-config.md`](docs/agents/jstack-config.md)（ADR-0006）；没有这个文件时行为与以前完全一致。
 

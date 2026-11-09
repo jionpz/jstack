@@ -6,7 +6,7 @@ argument-hint: "<task description>"
 
 # Route
 
-You drive a task through the jstack stages so the user does not have to pick commands. [stages.md](stages.md), next to this file, is the single source of truth: each stage, the output it must produce, the gate it must pass, and the provider that does the work. Read it now. pstack's poteto-mode is the only executor. spec output is input to it, never a second plan to run in parallel.
+You drive a task through the jstack stages so the user does not have to pick commands. [stages.md](stages.md), next to this file, is the single source of truth: each stage, the output it must produce, the gate it must pass, and the provider that does the work. Read it now. The execute stage's provider is the only executor: `flow:execute` for one task or ticket, `pstack:poteto-mode` when the path has many independent tickets or the work is multi-day. spec output is input to it, never a second plan to run in parallel.
 
 ## 1. Locate the providers
 
@@ -62,14 +62,14 @@ Take the stages in path order. For each one, read its providers from the locate 
 
 - **clarify, plan.** Follow the spec providers, but not every plan provider runs every time. L runs to-spec then to-tickets. XL runs wayfinder first. setup-matt-pocock-skills runs only when `docs/agents/issue-tracker.md` is missing: follow it first and put its questions into the first clarification round, each with its recommended answer (local markdown when the repo has no GitHub or GitLab remote, otherwise that host). handoff runs only when the session must end before the work does.
 - **review.** interrogate checks the change. swarm runs only when the review gate calls for an adversarial review of a contested design.
-- **execute.** Follow poteto-mode and let it pick its playbook. Its playbook already runs verification, review, and Opening a PR, so do not run verify, review, or land a second time. When poteto-mode finishes, check the gate of each later stage on the path against what now exists. Run a stage's provider only for a gate that is still unmet, then check again.
+- **execute.** Follow the execute provider the table names. `flow:execute` covers verify and a self-review; `pstack:poteto-mode` also runs verification, review, and Opening a PR through its playbook, so do not run those a second time when it did. When the executor finishes, check the gate of each later stage on the path against what now exists. Run a stage's provider only for a gate that is still unmet, then check again.
 - **land.** In a repo with no remote, commits on a branch meet the gate. Never push or open a PR for a repo the user did not point you at.
 - **archive.** Follow the archive providers. The archive skill closes tickets with evidence, updates GLOSSARY.md and ADRs, writes back to gbrain, and routes lessons; the worktree playbook cleans merged worktrees. The gate is in stages.md.
 - **A stage whose provider is `-`**: write one line, `Skipped: <stage> has no provider yet.`, and go on.
 
-For L, work the ticket frontier: a ticket starts only when every ticket that blocks it is done. Run execute through land once per ticket, and mark the ticket done in the tracker when its verify gate passes. Many independent tickets, or a multi-day effort, go to poteto-mode's Orchestrate or Multi-phase plan playbook instead of one ticket at a time.
+For L, work the ticket frontier: a ticket starts only when every ticket that blocks it is done. Run execute through land once per ticket, and mark the ticket done in the tracker when its verify gate passes. Many independent tickets, or a multi-day effort, use the `pstack:poteto-mode` provider's Orchestrate or Multi-phase plan playbook instead of one ticket at a time.
 
-Hand poteto-mode what the earlier stages produced: the task in the user's words, the spec path or issue URL, the tickets in dependency order, the decisions settled in clarify, and any ADR or GLOSSARY.md entries written.
+Hand the execute provider what the earlier stages produced: the task in the user's words, the spec path or issue URL, the tickets in dependency order, the decisions settled in clarify, and any ADR or GLOSSARY.md entries written.
 
 ## 4. Human checkpoints
 
@@ -83,7 +83,7 @@ Human attention is the most expensive resource here. Interrupt the user only for
 
 4. **One round.** Collect every open question, but never hold back work that does not depend on the answer. When a ticket is waiting on the user, mark it `needs-human` in the tracker (GitHub: `gh issue edit <n> --add-label needs-human`, creating the label once with `gh label create needs-human` if the repo lacks it; local markdown: set `**Status:** needs-human`), keep working the tickets that do not depend on it, and ask the queued questions together in one round, numbered, each with your recommended answer, worded so "yes" accepts it. Remove the label once answered. The notification channel is a replaceable provider: Paseo when the session runs under it, the tracker label alone otherwise.
 
-Clarification rounds follow the same rule: only decisions reach the user, and a question you can answer by observing something never does. poteto-mode's own Autonomy section still applies, including its Always-pause list, which [must-stop.md](must-stop.md) already contains.
+Clarification rounds follow the same rule: only decisions reach the user, and a question you can answer by observing something never does. The execute provider's own autonomy rules still apply, including the Always-pause list in [must-stop.md](must-stop.md).
 
 
 ## 5. Finish
@@ -103,7 +103,7 @@ Every adopted default and every queued question must appear; they are how the us
 
 ## Never
 
-- Never use Matt Pocock's implement, implement-spec, or ask-matt skills, even if they are installed. Execution belongs to poteto-mode.
+- Never use Matt Pocock's implement, implement-spec, or ask-matt skills, even if they are installed. Execution belongs to the execute stage's provider.
 - Never run clarify or plan for XS, S, or clear M work just to have a spec.
 - Never ask the user which command or workflow to run.
 - Never guess a provider's path. Every provider comes from stages.md through locate.sh.
