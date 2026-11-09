@@ -332,6 +332,7 @@ pstack：
 | `0005-adapter-cursor-builtins` | 在 adapter 的 Claude Code 一节补上 `cursor-team-kit` 和 `create-skill`、`/loop`、`/deslop`、`control-ui`、`control-cli` 五个 Cursor 内置项的替代做法；Pi 和 OMP 两节原有这一行 | adapter 是运行时文档，模型读到 `cursor-team-kit` 和这几个名字时，Claude Code 一节原来没有任何说明，模型只能自己猜或者干脆跳过。Cursor 产物在 build 时删掉这句提示，不读这份 adapter |
 | `0006-adapter-codex` | 在 adapter 加 Codex 一节和检测行：工具名（`shell`、`apply_patch`、`update_plan`）、`spawn_agent` 派自定义 agent、模型与 effort、`$<插件>:<skill>` 调用、会话记录路径和 Cursor-only 降级 | adapter 是运行时文档。Codex 0.166 能直接读 Claude 格式的插件清单和 skill，但工具名、子 agent 机制、skill 调用方式都和 Cursor 不同；映射集中在这一节，`locate.sh`、安装和 smoke 都按它来。Cursor 产物在 build 时删掉这句提示，不读这份 adapter |
 | `0007-adapter-workloop` | 在 adapter 加 Workloop 一节和检测行：`agent` 的 `model` / `variant`、`run_workflow` 并行、没有 `Skill` 和 `TodoWrite` 时的做法 | adapter 是运行时文档。Workloop 是第三方云端平台，工具名和子 agent 参数都和 Cursor 不同；映射来自 #33 的沙箱观察，本地 smoke 跑不到，需要在沙箱里手动验收 |
+| `0008-subagent-brief-must-stop` | 在 `poteto-mode` 的 Subagents 一节加一段：子代理 brief 不得授权 must-stop 动作；`opening-a-pr` 的 Size and stacks 改为子分支 merge 父分支后普通 push，不再 rebase 加 force push | 上游没有 jstack 的 must-stop 概念，adapter 只映射工具名，管不到 brief 文本授权了什么；guard 只看得到编排者自己的 shell 命令，子代理也可能没有门禁。叠加分支更新改用 merge 是 #34 的推荐做法，force push 仍按 must-stop 先问人 |
 
 spec：
 
