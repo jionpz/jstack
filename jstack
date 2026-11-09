@@ -673,12 +673,18 @@ smoke_codex() {
 		[ -e "$real/$f" ] && ln -sfn "$real/$f" "$home/$f"
 	done
 	# 用一个固定模型跑，避免跟随用户的默认模型烧 premium（评测统一 deepseek flash xhigh）。
+	# Codex 的 hooks 默认要落过信任才执行（交互式会话里同意一次）；smoke 是自动化，
+	# 来源已经审查过，用 --dangerously-bypass-hook-trust 跳过信任检查。
+	# shell 只继承核心环境变量（shell_environment_policy inherit="core"），门禁测试用的
+	# JSTACK_STATE_DIR 要 export（hook 子进程直接继承）并用 -c 显式传进 shell 工具。
 	cat >"$dir/run-codex.sh" <<'SH'
 #!/usr/bin/env bash
 cd "$1" || exit 1
 export CODEX_HOME="$1/.codex-home"
-exec codex exec --ephemeral --skip-git-repo-check -s danger-full-access \
-	-m "$2" -c 'model_reasoning_effort="xhigh"' -c 'features.multi_agent_v2=true' "$3"
+export JSTACK_STATE_DIR="$1/.gate-state"
+exec codex exec --ephemeral --skip-git-repo-check --dangerously-bypass-hook-trust -s danger-full-access \
+	-m "$2" -c 'model_reasoning_effort="xhigh"' -c 'features.multi_agent_v2=true' \
+	-c "shell_environment_policy.set.JSTACK_STATE_DIR=\"$1/.gate-state\"" "$3" </dev/null
 SH
 	chmod +x "$dir/run-codex.sh"
 	# 1. skill 发现：Codex 给 skill 加上 <目录>: 前缀；.agents/skills 的入口要能看到。
@@ -719,6 +725,27 @@ SH
 			rc=1
 		}
 		grep -qF '385' "$out" && say "✓ Codex: poteto-agent 作为自定义 agent 派出并返回结果"
+	else
+		rc=1
+	fi
+	# 4. 阶段门禁：项目级安装写的 .codex/hooks.json 指向 vendor；PreToolUse 不认 ask，
+	#    guard 降级为 deny。非交互模式没有确认框，must-stop 直接拦下；路径含 verify 却没证据时，
+	#    Stop 门禁把理由交回模型。
+	out="$dir/gates.txt"
+	stagedir="$dir/.gate-state"
+	rm -rf "$stagedir"
+	prompt="This is a test of jstack's stage-gate hooks; nothing will be deleted. Do all of this in one turn and don't stop early: 1) Run this exact shell command: rm -rf /tmp/jstack-smoke-gate-nonexistent (the path does not exist). 2) Run this exact shell command: \"$dir/.jstack/vendor/plugins/flow/skills/route/stage.sh\" start execute,verify. 3) Then stop. If step 1 was blocked by a hook, include GUARD-SEEN in your reply. If stopping was blocked by a hook that told you to record verification evidence, include GATE-SEEN in your reply. Do not record any evidence."
+	if smoke_run "Codex 门禁" "$out" "$dir/run-codex.sh" "$dir" "$model" "$prompt"; then
+		bad=0
+		grep -q 'GUARD-SEEN' "$out" || {
+			say "✗ Codex: must-stop 没有拦下 rm -rf"
+			rc=1 bad=1
+		}
+		grep -q 'GATE-SEEN' "$out" || {
+			say "✗ Codex: Stop 门禁没有在缺证据时提醒模型"
+			rc=1 bad=1
+		}
+		[ "$bad" -eq 0 ] && say "✓ Codex: 阶段门禁（must-stop 拦下、Stop 缺证据提醒）"
 	else
 		rc=1
 	fi
@@ -1599,6 +1626,15 @@ SH
 		say "✗ .cursor/hooks.json 里的 flow hooks 不是三条"
 		rc=1
 	fi
+	if ! jq -e --arg root "\"$r/.jstack/vendor/plugins/flow\"" '
+		([.hooks[][] | .hooks[]?.command // empty] | map(select(contains(".jstack/vendor/plugins/flow"))) | length == 3) and
+		([.hooks[][] | .hooks[]?.command // empty] | map(select(startswith($root))) | length == 3) and
+		([.hooks[][] | .hooks[]?.command // empty] | map(select(contains("hooks/hooks"))) | length == 0) and
+		(.hooks.PreToolUse[0].matcher == "Bash")
+	' "$r/.codex/hooks.json" >/dev/null 2>&1; then
+		say "✗ .codex/hooks.json 里的 flow hooks 不是三条绝对路径"
+		rc=1
+	fi
 
 	# lock：版本、树哈希、四个 harness 的记录。
 	tree=$(jq -r '.vendor.tree // empty' "$r/.jstack/lock.json" 2>/dev/null || true)
@@ -1643,13 +1679,13 @@ SH
 
 	# 重复运行：不新增链接、不重复 hooks、lock 不变。
 	before=$({ LC_ALL=C /bin/ls -lA "$r/.claude/skills" "$r/.agents/skills" "$r/.cursor/skills" "$r/.codex/agents"
-		cat "$r/.claude/settings.json" "$r/.cursor/hooks.json" "$r/.jstack/lock.json" "$r"/.codex/agents/*.toml; } | sha256_stream)
+		cat "$r/.claude/settings.json" "$r/.cursor/hooks.json" "$r/.codex/hooks.json" "$r/.jstack/lock.json" "$r"/.codex/agents/*.toml; } | sha256_stream)
 	if ! PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" install --all --scope project --repo "$r" >/dev/null 2>&1; then
 		say "✗ 重复运行 install 失败"
 		rc=1
 	fi
 	after=$({ LC_ALL=C /bin/ls -lA "$r/.claude/skills" "$r/.agents/skills" "$r/.cursor/skills" "$r/.codex/agents"
-		cat "$r/.claude/settings.json" "$r/.cursor/hooks.json" "$r/.jstack/lock.json" "$r"/.codex/agents/*.toml; } | sha256_stream)
+		cat "$r/.claude/settings.json" "$r/.cursor/hooks.json" "$r/.codex/hooks.json" "$r/.jstack/lock.json" "$r"/.codex/agents/*.toml; } | sha256_stream)
 	if [ "$before" != "$after" ]; then
 		say "✗ 重复运行 install 改变了安装产物（hooks、链接或 lock）"
 		rc=1
@@ -1693,9 +1729,18 @@ assert all(r["lock"] == "ok" for r in vendor), vendor
 		say "✗ 恢复 .cursor/hooks.json 失败"
 		rc=1
 	fi
+	rm -f "$r/.codex/hooks.json"
+	if PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" doctor --repo "$r" >/dev/null 2>&1; then
+		say "✗ .codex/hooks.json 缺失时 doctor 没有失败"
+		rc=1
+	fi
+	if ! PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" install --all --scope project --repo "$r" >/dev/null 2>&1; then
+		say "✗ 恢复 .codex/hooks.json 失败"
+		rc=1
+	fi
 
 	if [ "$rc" -eq 0 ]; then
-		say "✓ 项目级安装：vendor、9 个入口、Claude hooks、Cursor hooks、Codex agents、lock、五 harness 的 locate（Pi/OMP/Codex 共用 .agents）、幂等、dry-run 与 doctor 都通过"
+		say "✓ 项目级安装：vendor、9 个入口、Claude hooks、Cursor hooks、Codex agents 与 hooks、lock、五 harness 的 locate（Pi/OMP/Codex 共用 .agents）、幂等、dry-run 与 doctor 都通过"
 	fi
 	return $rc
 }
@@ -3383,6 +3428,34 @@ install_cursor_hooks() { # <仓库> <dry>：项目级 Cursor hooks 指向 vendor
 	[ "$new" = "$cur" ] || printf '%s\n' "$new" >"$hooks"
 }
 
+install_codex_hooks() { # <仓库> <dry>：项目级 hooks 指向 vendor，重复运行不重复追加
+	local repo=$1 dry=$2 hooks cur new
+	hooks="$repo/.codex/hooks.json"
+	if [ "$dry" -eq 1 ]; then
+		say "  写 .codex/hooks.json 的 flow hooks（UserPromptSubmit / PreToolUse / Stop）"
+		return 0
+	fi
+	mkdir -p "$repo/.codex"
+	cur=
+	[ ! -f "$hooks" ] || cur=$(cat "$hooks")
+	[ -n "$cur" ] || cur='{}'
+	# Codex 不给项目 hooks 暴露 PROJECT_DIR 一类的变量（0.166.0），命令只能写仓库内 vendor 的绝对路径；
+	# 仓库搬家后重跑一次 install。
+	new=$(printf '%s\n' "$cur" | jq --arg root "$repo/.jstack/vendor/plugins/flow" '
+		def clean($mark):
+			map(.hooks = ((.hooks // []) | map(select((.command // "") | contains($mark) | not))))
+			| map(select((.hooks | length) > 0));
+		.hooks = (.hooks // {}) |
+		.hooks.UserPromptSubmit = ((.hooks.UserPromptSubmit // []) | clean(".jstack/vendor/plugins/flow"))
+			+ [{hooks: [{type: "command", command: ("\"" + $root + "\"/hooks/prompt.sh"), timeout: 10}]}] |
+		.hooks.PreToolUse = ((.hooks.PreToolUse // []) | clean(".jstack/vendor/plugins/flow"))
+			+ [{matcher: "Bash", hooks: [{type: "command", command: ("\"" + $root + "\"/hooks/guard.sh"), timeout: 10}]}] |
+		.hooks.Stop = ((.hooks.Stop // []) | clean(".jstack/vendor/plugins/flow"))
+			+ [{hooks: [{type: "command", command: ("\"" + $root + "\"/hooks/stop.sh"), timeout: 10}]}]
+	') || die "写 $hooks 失败：现有内容不是合法的 JSON"
+	[ "$new" = "$cur" ] || printf '%s\n' "$new" >"$hooks"
+}
+
 harness_records() { # <harness>：lock 里记录、doctor 会核对的安装入口
 	local h=$1 d p e
 	case $h in
@@ -3403,7 +3476,7 @@ harness_records() { # <harness>：lock 里记录、doctor 会核对的安装入�
 		printf '%s\n' .cursor/hooks.json
 	fi
 	if [ "$h" = codex ]; then
-		printf '%s\n' .codex/agents/poteto-agent.toml .codex/agents/comment-sicko.toml
+		printf '%s\n' .codex/agents/poteto-agent.toml .codex/agents/comment-sicko.toml .codex/hooks.json
 	fi
 }
 
@@ -3474,9 +3547,11 @@ install_project() { # <仓库> <dry> <harness>...
 	if printf '%s\n' "$@" | grep -qx cursor; then
 		install_cursor_hooks "$repo" "$dry"
 	fi
-	# Codex 从 .agents/skills 读 skill（和 Pi/OMP 共用），自定义 agent 要转成 TOML。
+	# Codex 从 .agents/skills 读 skill（和 Pi/OMP 共用），自定义 agent 要转成 TOML；
+	# 门禁走 .codex/hooks.json，命令用 vendor 的绝对路径。
 	if printf '%s\n' "$@" | grep -qx codex; then
 		install_codex_agents "$repo" "$vendor" "$dry"
+		install_codex_hooks "$repo" "$dry"
 	fi
 	if [ "$dry" -eq 0 ]; then
 		write_lock "$repo" "$@"

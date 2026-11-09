@@ -82,6 +82,10 @@ jstack_hook_sid() {
 	printf '%s\n' "${sid:-${JSTACK_SESSION_ID:-${PI_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-${CURSOR_CONVERSATION_ID:-${CODEX_SESSION_ID:-}}}}}}"
 }
 
+# Codex 的 hook 输入带 turn_id（Claude Code / Cursor 都没有），用来区分输出协议：
+# Codex 的 PreToolUse 不认 ask，必须改成 deny；UserPromptSubmit 要输出 hookSpecificOutput。
+jstack_is_codex() { [ -n "$(jstack_json_str turn_id "$1")" ]; }
+
 jstack_json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 
 # 仓库根：JSTACK_REPO 优先；否则从当前目录向上，遇到 .jstack/config.json 或 .git 停。

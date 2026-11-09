@@ -75,6 +75,27 @@ cursor_prompts() {
 	valid_json "$out" && printf '%s' "$out" | grep -qF '"additional_context"' &&
 		printf '%s' "$out" | grep -qF '当前阶段 execute'
 }
+# Codex 的 hook 输入是 Claude 的形状，但多一个 turn_id；输出协议只有 PreToolUse 不同（不支持 ask）。
+codex_input() {
+	local cmd
+	cmd=$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')
+	printf '{"session_id":"%s","turn_id":"turn-1","hook_event_name":"PreToolUse","model":"deepseek","permission_mode":"default","tool_name":"Bash","tool_input":{"command":"%s"},"tool_use_id":"call-1","transcript_path":null}' "$SID" "$cmd"
+}
+codex_stop_in() { printf '{"session_id":"%s","turn_id":"turn-1","hook_event_name":"Stop","stop_hook_active":%s,"last_assistant_message":"%s"}' "${2:-$SID}" "${1:-false}" "${3:-完成了。}"; }
+codex_prompt_in() { printf '{"session_id":"%s","turn_id":"turn-1","hook_event_name":"UserPromptSubmit","model":"deepseek","permission_mode":"default","prompt":"hi","transcript_path":null}' "$SID"; }
+codex_denies() {
+	local out
+	out=$(hook guard "$(codex_input "$1")")
+	valid_json "$out" && printf '%s' "$out" | grep -qF '"permissionDecision":"deny"' &&
+		printf '%s' "$out" | grep -qF "jstack must-stop: $2. Confirm before it runs."
+}
+codex_prompts() {
+	local out
+	out=$(hook prompt "$(codex_prompt_in)")
+	valid_json "$out" && printf '%s' "$out" | grep -qF '"hookSpecificOutput"' &&
+		printf '%s' "$out" | grep -qF '"additionalContext"' &&
+		printf '%s' "$out" | grep -qF '当前阶段 execute'
+}
 old_file_cleaned() {
 	mkdir -p "$JSTACK_STATE_DIR"
 	touch -t 202001010000 "$JSTACK_STATE_DIR/stale-session"
@@ -145,16 +166,20 @@ for mode in jq nojq; do
 		[ -z "$out" ]' _ "$SID" "$BASH" "$H/stop.sh"
 	t "[$mode] guard.sh 对 Cursor 的 beforeShellExecution 返回 permission=ask" cursor_asks 'rm -rf build' 'Recursive forced delete (`rm -rf` and its variants)'
 	t "[$mode] guard.sh 对 Cursor 的 preToolUse 降级为 deny" cursor_denies 'rm -rf build' 'Recursive forced delete (`rm -rf` and its variants)'
+	t "[$mode] guard.sh 对 Codex 的 PreToolUse 降级为 deny" codex_denies 'rm -rf build' 'Recursive forced delete (`rm -rf` and its variants)'
 	t "[$mode] stop.sh 对 Cursor 的 completed 返回 followup_message" cursor_blocks
 	t "[$mode] stop.sh 对 Cursor 的 aborted 放行" silent hook stop "$(cursor_stop_in aborted)"
 	t "[$mode] stop.sh 在 Cursor 达到 loop_limit 后放行" silent hook stop "$(cursor_stop_in completed "$SID" 3)"
 	t "[$mode] stop.sh 对别的 Cursor 会话放行" silent hook stop "$(cursor_stop_in completed other-session)"
+	t "[$mode] stop.sh 对 Codex 输入同样拦下" blocks "$(codex_stop_in)"
+	t "[$mode] stop.sh 对 Codex 的 stop_hook_active=true 放行" silent hook stop "$(codex_stop_in true)"
 	stage ask >/dev/null
 	t "[$mode] stop.sh 标了 ask 但回复没有提问时仍拦下" blocks "$(stop_in)"
 	t "[$mode] stop.sh 标了 ask 且回复向用户提问时放行" silent hook stop "$(stop_in false "$SID" "排序按 due 还是按标题？")"
 	t "[$mode] stop.sh 在 Cursor 标了 ask 时放行（无法核对回复）" silent hook stop "$(cursor_stop_in)"
 	t "[$mode] prompt.sh 有状态时注入当前阶段、产出、门禁和下一步" prompt_shows
 	t "[$mode] prompt.sh 对 Cursor 的 beforeSubmitPrompt 注入 additional_context" cursor_prompts
+	t "[$mode] prompt.sh 对 Codex 的 UserPromptSubmit 注入 hookSpecificOutput" codex_prompts
 	t "[$mode] prompt.sh 清掉 ask" state_is 'path clarify,execute,verify,land' 'stage execute'
 	stage enter verify >/dev/null
 	t "[$mode] prompt.sh 注入 verify 阶段的门禁" prompt_gate

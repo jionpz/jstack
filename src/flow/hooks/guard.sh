@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# PreToolUse hook（Claude Code 的 Bash / Cursor 的 beforeShellExecution）：
-# 命令命中 must-stop.md 的模式时，让 harness 先问用户。不看阶段状态，对所有会话生效。
+# PreToolUse hook（Claude Code 的 Bash / Codex 的 Bash / Cursor 的 beforeShellExecution）：
+# 命令命中 must-stop.md 的模式时，让 harness 先问用户（Codex 不支持 ask，降级为 deny）。
+# 不看阶段状态，对所有会话生效。
 # 命令在 ;、&&、||、|、换行处切段，每段对每条模式做 grep -E，报命令里最靠前的那一段命中的第一条。
 # 没有 jq 时用整段输入做匹配，宁可多问。内部出错一律无输出地放行。
 exec 2>/dev/null
@@ -82,8 +83,15 @@ main() {
 			"$(jstack_json_escape "$reason")" "$(jstack_json_escape "$reason")"
 		;;
 	*)
-		printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"%s"}}\n' \
-			"$(jstack_json_escape "$reason")"
+		if jstack_is_codex "$input"; then
+			# Codex 的 PreToolUse 只认 deny：ask 会被忽略、命令照跑（实测 0.166.0），
+			# 和 Cursor 的 preToolUse 一样降级，宁可拦下。
+			printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' \
+				"$(jstack_json_escape "$reason")"
+		else
+			printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"%s"}}\n' \
+				"$(jstack_json_escape "$reason")"
+		fi
 		;;
 	esac
 }

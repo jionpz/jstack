@@ -51,7 +51,8 @@ pstack 和 spec 都锁定在上游某个提交，另外叠加了 jstack 自己�
 - 发现目录：Claude Code 用 `.claude/skills`，Pi、OMP 和 Codex 共用 `.agents/skills`，Cursor 用 `.cursor/skills`。链接是相对路径，仓库搬走也有效。
 - Claude Code 另外复制 `poteto-agent`、`comment-sicko` 到 `.claude/agents`，并把 flow 的三个 hook 写进 `.claude/settings.json`，命令用 `${CLAUDE_PROJECT_DIR}` 指向 vendor；不注册 marketplace。
 - Codex 另外把两个 agent 的 Markdown 正文转成 TOML，写到 `.codex/agents/{poteto-agent,comment-sicko}.toml`（`name`、`description`、`developer_instructions`），`spawn_agent` 按名字派出去。
-- 重复运行幂等；`--dry-run` 只打印；不写任何用户级文件。安装完成后提交 `.jstack/`、三个入口目录、`.claude/` 和 `.codex/agents/` 的产物。
+- Codex 的门禁写进 `.codex/hooks.json`，三个事件和 Claude Code 同形，命令用 vendor 的绝对路径（Codex 不给项目 hooks 暴露 PROJECT_DIR 一类的变量，仓库搬家后重跑一次 install）。hooks 默认要落过信任才执行：交互式会话里同意一次，headless（`codex exec`）加 `--dangerously-bypass-hook-trust`。
+- 重复运行幂等；`--dry-run` 只打印；不写任何用户级文件。安装完成后提交 `.jstack/`、三个入口目录、`.claude/` 和 `.codex/` 的产物。
 
 同一个 harness 不要同时做用户级和项目级安装：插件或入口会加载两次，flow 的 hooks 也会跑两遍。换仓库时用项目级；只想全局装一次时用用户级。
 
@@ -254,7 +255,7 @@ Cursor 的 hook 是它自己的事件和协议，不复用 Claude 的 `hooks.jso
 
 Pi 和 OMP 用扩展承载同一套门禁，不复制判定逻辑：根 `package.json` 的 `pi.extensions` 指向 `plugins/flow/extensions/pi.ts`（`./jstack install-pi` 装好即生效）；OMP 的插件清单不收 Claude 格式 hooks，`./jstack install` 在 `~/.omp/agent/extensions/jstack-flow-gates.ts` 写一个入口文件，转出 `plugins/flow/extensions/omp.ts`。扩展把 `before_agent_start` 对应到阶段提示、`agent_before_settle` / `session_stop` 对应到验证门禁、`tool_call` 只对 bash 对应到红线守卫。Pi 没有 harness 维护的 `stop_hook_active`，扩展自己限制每条用户消息最多拦 3 次；OMP 在 `session_start` 把会话 id 写进 `JSTACK_SESSION_ID`，子 shell 继承，`stage.sh` 才能和 Claude / Cursor 用同一套状态文件。非交互运行时没有人能回答确认框，must-stop 命中会直接拒绝执行。
 
-Codex 自带 hooks（`UserPromptSubmit`、`PreToolUse`、`Stop` 等），也给 shell 导出 `CODEX_SESSION_ID`，但 flow 还没写 Codex 的 hooks 配置和协议适配：`stage.sh` 在 Codex 里照常记阶段，三个门禁不触发，route 的收尾报告要写明门禁未生效。接入细节见 [`docs/harness/gates.md`](docs/harness/gates.md)。
+Codex 用自带的 hooks 承载同一套门禁：项目级安装把三个事件写进仓库的 `.codex/hooks.json`，输入是 Claude Code 的形状（shell 工具在 hook 里也叫 `Bash`），`lib.sh` 靠输入里的 `turn_id` 认出 Codex。它的 `PreToolUse` 只认 deny，返回 ask 会被忽略、命令照跑（0.166.0 实测），所以红线守卫在 Codex 里直接拒绝；`Stop` 的 `stop_hook_active` 由 Codex 维护，验证门禁和 Claude Code 走同一条分支。hooks 默认要信任后才执行：交互式会话里同意一次；headless 运行要加 `--dangerously-bypass-hook-trust`，只对已审查的 hooks 来源用。另外 Codex 的 shell 只继承核心环境变量（`shell_environment_policy inherit="core"`），`JSTACK_STATE_DIR` 这类变量要显式写进配置才能传给 shell 工具。接入细节见 [`docs/harness/gates.md`](docs/harness/gates.md)。
 
 实测过两种模式：交互式会话里（包括 `bypassPermissions`）guard 的"先问"会弹出确认框，标题是命令和命中的必须停事项；`claude -p`、`pi -p`、`omp -p` 这类非交互运行没有人能回答，"先问"变成拒绝执行，命令不会运行。Stop 门禁同样在 `-p` 下生效；Pi 和 OMP 的实测已收进 `./jstack smoke pi` / `./jstack smoke omp`。
 
@@ -376,7 +377,7 @@ pstack 只同步 Claude Code 树；Cursor 版由 `build` 转换，不再单独�
 13. 模型分层命令（`./jstack models`）：在临时 HOME 里跑 init、set、apply、status，核对四个 harness 的规则文件、Pi/OMP 标记块合并与首次确认、旧配置迁移备份、roles 覆盖、settings.json 的模型 env 和原有键、备份幂等、`--dry-run` 不落盘、预算降级，以及今日 token 统计
 14. 仓库级配置（`<repo>/.jstack/config.json`，ADR-0006）：当前仓库有配置时校验字段与 `stages_file`；在临时仓库里验证 `stage.sh` 按 `stages_file` 收/拒阶段、`guard.sh` 合并 `must_stop` 并在 reason 里标明“仓库追加”、`prompt.sh` 注入配置，坏 JSON、禁用键、缺 `execute` 都要报出来
 15. `./jstack doctor`：临时 HOME 构造 Claude user/project、Pi package、OMP 缓存、Cursor 本地插件、Codex 缓存、vendor 和 lock 七种来源，核对表格与 `--json` 的值；篡改 lock 版本或源目录版本后必须报漂移并返回非 0，`--no-fail` 只警告
-16. 项目级安装（`./jstack install --all --scope project`）：在临时仓库和假 HOME 里核对 vendor、9 个入口链接、Claude agents 与 hooks、Cursor hooks、Codex 的 `.codex/agents/*.toml`、lock 的版本与树哈希；三路 `locate.sh` 都要找全阶段表提供者，重复运行不改产物，`--dry-run` 不落盘，改 vendor 文件、删入口、删 `.cursor/hooks.json` 或删 `.codex/agents` 后 `doctor` 必须失败
+16. 项目级安装（`./jstack install --all --scope project`）：在临时仓库和假 HOME 里核对 vendor、9 个入口链接、Claude agents 与 hooks、Cursor hooks、Codex 的 `.codex/agents/*.toml` 与 `.codex/hooks.json`（三条绝对路径、PreToolUse 匹配 Bash）、lock 的版本与树哈希；三路 `locate.sh` 都要找全阶段表提供者，重复运行不改产物，`--dry-run` 不落盘，改 vendor 文件、删入口、删 `.cursor/hooks.json`、`.codex/hooks.json` 或 `.codex/agents` 后 `doctor` 必须失败
 
 第 3、4、5 项专门查 adapter 管不到的地方：脚本和 frontmatter 都不经过模型，上游新引入的 Cursor 依赖在同步时就能发现；第 5 项查的是 spec 这种"只收一部分 skill"的插件有没有漏掉依赖。`claude plugin validate` 不查 frontmatter 键，也不查插件内部 skill 之间的调用关系，更不查 YAML 合法性，所以 `: ` 这种写法只能由第 4 项拦。全部通过才提交。
 
@@ -388,11 +389,11 @@ pstack 只同步 Claude Code 树；Cursor 版由 `build` 转换，不再单独�
 ./jstack smoke pi       # skill 目录、/skill:poteto-mode、route locate.sh、poteto-agent、阶段门禁
 ./jstack smoke omp      # skill:// URI、隐藏入口按路径读、route、task 派发 poteto-agent、阶段门禁
 ./jstack smoke cursor   # 调用 Cursor 自带 plugins-loader 检查三个插件、hooks 和 route
-./jstack smoke codex    # skill 目录（flow:route、pstack:poteto-mode）、route locate.sh、spawn_agent 派 poteto-agent
+./jstack smoke codex    # skill 目录（flow:route、pstack:poteto-mode）、route locate.sh、spawn_agent 派 poteto-agent、阶段门禁
 ./jstack smoke all      # 四个都跑（= ./jstack check --smoke）
 ```
 
-Pi、OMP 和 Codex 的 smoke 会实际启动模型、消耗 token，需要网络；它们是验收测试，不是每次提交的默认门禁。Codex 的 smoke 用临时的 `CODEX_HOME`（只软链真实的 `auth.json` / `config.toml`），不读用户级插件，测的是项目级安装本身；模型默认 `opencode-go/deepseek-v4.1-flash`，可用 `JSTACK_SMOKE_CODEX_MODEL` 覆盖。Cursor 没有可脚本化的 headless agent CLI，smoke 验证加载器解析结果、三个 hook 的 Cursor 协议输出和 `locate.sh`，交互部分按 `docs/testing/cursor.md` 手动做。
+Pi、OMP 和 Codex 的 smoke 会实际启动模型、消耗 token，需要网络；它们是验收测试，不是每次提交的默认门禁。Codex 的 smoke 用临时的 `CODEX_HOME`（只软链真实的 `auth.json` / `config.toml`），不读用户级插件，测的是项目级安装本身；hooks 用 `--dangerously-bypass-hook-trust` 跳过信任检查（来源已审查）；模型默认 `opencode-go/deepseek-v4.1-flash`，可用 `JSTACK_SMOKE_CODEX_MODEL` 覆盖。Cursor 没有可脚本化的 headless agent CLI，smoke 验证加载器解析结果、三个 hook 的 Cursor 协议输出和 `locate.sh`，交互部分按 `docs/testing/cursor.md` 手动做。
 
 每条 headless 命令限时 `JSTACK_SMOKE_TIMEOUT` 秒，默认 600。超时会先 TERM、10 秒后仍在就 KILL，该项按运行失败处理。
 

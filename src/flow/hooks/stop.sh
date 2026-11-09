@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Stop hook（Claude Code 的 Stop / Cursor 的 stop）：路径含 verify、已进入 execute 或之后的阶段、
+# Stop hook（Claude Code 的 Stop / Codex 的 Stop / Cursor 的 stop）：路径含 verify、已进入 execute 或之后的阶段、
 # 却没有一条验证证据时，拦下这次结束。因 stop hook 而继续的一轮、标了 ask 且这次回复确实向用户提问、
 # 没有状态文件时都放行。Cursor 的 stop 输入没有最后一条回复，ask 无法核对，只能放行。
+# Codex 的输入与 Claude Code 同形（stop_hook_active、last_assistant_message 都有），走同一条分支。
 # 内部出错一律无输出地放行。
 exec 2>/dev/null
 route=${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd -P)}/skills/route

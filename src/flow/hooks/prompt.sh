@@ -1,17 +1,26 @@
 #!/usr/bin/env bash
-# UserPromptSubmit hook（Claude Code）/ beforeSubmitPrompt（Cursor）：用户回话时，
+# UserPromptSubmit hook（Claude Code / Codex）/ beforeSubmitPrompt（Cursor）：用户回话时，
 # 把当前阶段、它的产出和门禁、stage.sh 的用法注入上下文，并清掉 ask。
 # 没有状态文件就不输出。内部出错一律无输出地放行，hook 不能卡住用户。
 exec 2>/dev/null
 route=${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd -P)}/skills/route
 . "$route/lib.sh" || exit 0
 
-emit() { # <文本> <是否 Cursor>：Claude Code 直接输出文本，Cursor 放进 additional_context
-	if [ "$2" -eq 1 ]; then
+# <文本> <协议>：Claude Code 直接输出文本，Cursor 放进 additional_context，
+# Codex 放进 hookSpecificOutput.additionalContext。
+emit() {
+	if [ "$2" = cursor ]; then
 		if jstack_has_jq; then
 			printf '%s' "$1" | jq -Rs '{continue: true, additional_context: .}'
 		else
 			printf '{"continue":true,"additional_context":"%s"}\n' \
+				"$(jstack_json_escape "$(printf '%s' "$1" | tr '\n' ' ')")"
+		fi
+	elif [ "$2" = codex ]; then
+		if jstack_has_jq; then
+			printf '%s' "$1" | jq -Rs '{hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: .}}'
+		else
+			printf '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"%s"}}\n' \
 				"$(jstack_json_escape "$(printf '%s' "$1" | tr '\n' ' ')")"
 		fi
 	else
@@ -20,13 +29,17 @@ emit() { # <文本> <是否 Cursor>：Claude Code 直接输出文本，Cursor �
 }
 
 main() {
-	local input evt cursor=0 file path stage row next arrow n st cfg warn stages text
+	local input evt proto=claude file path stage row next arrow n st cfg warn stages text
 	input=$(cat)
 	evt=$(jstack_json_str hook_event_name "$input")
-	if [ "$evt" = beforeSubmitPrompt ]; then cursor=1; fi
+	if [ "$evt" = beforeSubmitPrompt ]; then
+		proto=cursor
+	elif jstack_is_codex "$input"; then
+		proto=codex
+	fi
 	warn=$(jstack_config_warning)
 	file=$(jstack_state_file "$(jstack_hook_sid "$input")") && [ -f "$file" ] || {
-		[ -z "$warn" ] || emit "$warn" "$cursor"
+		[ -z "$warn" ] || emit "$warn" "$proto"
 		return 0
 	}
 	if grep -qx ask "$file"; then
@@ -57,7 +70,7 @@ main() {
 		[ -z "$cfg" ] || printf '%s\n' "仓库配置：$(printf '%s' "$cfg" | tr '\n' ' ' | sed 's/ $//')"
 		[ -z "$warn" ] || printf '%s\n' "$warn"
 	)
-	emit "$text" "$cursor"
+	emit "$text" "$proto"
 }
 
 main
