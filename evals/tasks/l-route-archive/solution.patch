@@ -1,0 +1,126 @@
+diff --git a/src/cli.js b/src/cli.js
+index 3a370b6..c929ddc 100644
+--- a/src/cli.js
++++ b/src/cli.js
+@@ -1,11 +1,13 @@
++const path = require('node:path');
+ const store = require('./store');
+-const { addTask, completeTask, removeTask } = require('./tasks');
++const { addTask, archiveDone, completeTask, removeTask } = require('./tasks');
+ 
+ const USAGE = `Usage:
+   tasknotes add <title> [--due YYYY-MM-DD]
+-  tasknotes list
++  tasknotes list [--archived]
+   tasknotes done <id>
+-  tasknotes rm <id>`;
++  tasknotes rm <id>
++  tasknotes archive`;
+ 
+ function formatTask(task) {
+   const box = task.done ? '[x]' : '[ ]';
+@@ -39,16 +41,26 @@ function parseId(arg) {
+ 
+ function run(command, args) {
+   const file = store.defaultFile();
++  const archivePath = path.join(path.dirname(file), 'archive.json');
+   const tasks = store.load(file);
+ 
+   switch (command) {
+     case 'add': {
+-      const next = addTask(tasks, parseAdd(args));
++      const next = addTask(tasks, parseAdd(args), store.load(archivePath));
+       store.save(file, next);
+       console.log(`Added ${formatTask(next[next.length - 1])}`);
+       return;
+     }
+     case 'list': {
++      if (args.includes('--archived')) {
++        const archived = store.load(archivePath);
++        if (archived.length === 0) {
++          console.log('Nothing archived.');
++          return;
++        }
++        for (const task of archived) console.log(formatTask(task));
++        return;
++      }
+       if (tasks.length === 0) {
+         console.log('Nothing to do.');
+         return;
+@@ -68,6 +80,14 @@ function run(command, args) {
+       console.log(`Removed ${id}`);
+       return;
+     }
++    case 'archive': {
++      const archived = store.load(archivePath);
++      const result = archiveDone(tasks);
++      store.save(file, result.remaining);
++      store.save(archivePath, [...archived, ...result.moved]);
++      console.log(`Archived ${result.moved.length} ${result.moved.length === 1 ? 'task' : 'tasks'}`);
++      return;
++    }
+     default:
+       throw new Error(USAGE);
+   }
+diff --git a/src/tasks.js b/src/tasks.js
+index 951fb98..eb18ce1 100644
+--- a/src/tasks.js
++++ b/src/tasks.js
+@@ -1,5 +1,9 @@
+-function addTask(tasks, { title, due = null }) {
+-  const id = tasks.reduce((max, t) => Math.max(max, t.id), 0) + 1;
++function nextId(tasks, archived = []) {
++  return [...tasks, ...archived].reduce((max, t) => Math.max(max, t.id), 0) + 1;
++}
++
++function addTask(tasks, { title, due = null }, archived = []) {
++  const id = nextId(tasks, archived);
+   return [...tasks, { id, title, done: false, due }];
+ }
+ 
+@@ -19,4 +23,11 @@ function removeTask(tasks, id) {
+   return tasks.filter((_, i) => i !== index);
+ }
+ 
+-module.exports = { addTask, completeTask, removeTask };
++function archiveDone(tasks) {
++  return {
++    remaining: tasks.filter((t) => !t.done),
++    moved: tasks.filter((t) => t.done),
++  };
++}
++
++module.exports = { addTask, archiveDone, completeTask, removeTask };
+diff --git a/test/tasks.test.js b/test/tasks.test.js
+index 07fc146..587714e 100644
+--- a/test/tasks.test.js
++++ b/test/tasks.test.js
+@@ -1,6 +1,6 @@
+ const test = require('node:test');
+ const assert = require('node:assert');
+-const { addTask, completeTask, removeTask } = require('../src/tasks');
++const { addTask, archiveDone, completeTask, removeTask } = require('../src/tasks');
+ 
+ test('addTask numbers tasks from 1', () => {
+   const tasks = addTask(addTask([], { title: 'Buy milk' }), { title: 'Call mom', due: '2026-11-10' });
+@@ -29,3 +29,20 @@ test('unknown ids are rejected', () => {
+   assert.throws(() => completeTask([], 3), /No task with id 3/);
+   assert.throws(() => removeTask([], 3), /No task with id 3/);
+ });
++
++test('addTask skips ids that are already archived', () => {
++  const archived = [{ id: 9, title: 'Old', done: true, due: null }];
++  const tasks = addTask([{ id: 1, title: 'A', done: false, due: null }], { title: 'B' }, archived);
++  assert.deepStrictEqual(tasks.map((t) => t.id), [1, 10]);
++});
++
++test('archiveDone splits completed tasks and keeps the remaining ids', () => {
++  const tasks = [
++    { id: 1, title: 'A', done: false, due: null },
++    { id: 2, title: 'B', done: true, due: null },
++    { id: 3, title: 'C', done: false, due: null },
++  ];
++  const result = archiveDone(tasks);
++  assert.deepStrictEqual(result.remaining.map((t) => t.id), [1, 3]);
++  assert.deepStrictEqual(result.moved.map((t) => t.id), [2]);
++});

@@ -1,0 +1,68 @@
+diff --git a/src/cli.js b/src/cli.js
+index 3a370b6..5093d8d 100644
+--- a/src/cli.js
++++ b/src/cli.js
+@@ -1,5 +1,5 @@
+ const store = require('./store');
+-const { addTask, completeTask, removeTask } = require('./tasks');
++const { addTask, completeTask, removeTask, sortTasks } = require('./tasks');
+ 
+ const USAGE = `Usage:
+   tasknotes add <title> [--due YYYY-MM-DD]
+@@ -53,7 +53,7 @@ function run(command, args) {
+         console.log('Nothing to do.');
+         return;
+       }
+-      for (const task of tasks) console.log(formatTask(task));
++      for (const task of sortTasks(tasks)) console.log(formatTask(task));
+       return;
+     }
+     case 'done': {
+diff --git a/src/tasks.js b/src/tasks.js
+index 951fb98..101290c 100644
+--- a/src/tasks.js
++++ b/src/tasks.js
+@@ -19,4 +19,14 @@ function removeTask(tasks, id) {
+   return tasks.filter((_, i) => i !== index);
+ }
+ 
+-module.exports = { addTask, completeTask, removeTask };
++function sortTasks(tasks) {
++  return [...tasks].sort((a, b) => {
++    if (a.done !== b.done) return a.done ? 1 : -1;
++    if (a.due === b.due) return 0;
++    if (a.due == null) return 1;
++    if (b.due == null) return -1;
++    return a.due < b.due ? -1 : 1;
++  });
++}
++
++module.exports = { addTask, completeTask, removeTask, sortTasks };
+diff --git a/test/tasks.test.js b/test/tasks.test.js
+index 07fc146..515e941 100644
+--- a/test/tasks.test.js
++++ b/test/tasks.test.js
+@@ -1,6 +1,6 @@
+ const test = require('node:test');
+ const assert = require('node:assert');
+-const { addTask, completeTask, removeTask } = require('../src/tasks');
++const { addTask, completeTask, removeTask, sortTasks } = require('../src/tasks');
+ 
+ test('addTask numbers tasks from 1', () => {
+   const tasks = addTask(addTask([], { title: 'Buy milk' }), { title: 'Call mom', due: '2026-11-10' });
+@@ -29,3 +29,15 @@ test('unknown ids are rejected', () => {
+   assert.throws(() => completeTask([], 3), /No task with id 3/);
+   assert.throws(() => removeTask([], 3), /No task with id 3/);
+ });
++
++test('sortTasks orders open tasks first, by due date, undated last', () => {
++  const tasks = [
++    { id: 1, title: 'Done early', done: true, due: '2026-01-01' },
++    { id: 2, title: 'Open march', done: false, due: '2026-03-01' },
++    { id: 3, title: 'Open someday', done: false, due: null },
++    { id: 4, title: 'Open feb first', done: false, due: '2026-02-01' },
++    { id: 5, title: 'Done someday', done: true, due: null },
++    { id: 6, title: 'Open feb second', done: false, due: '2026-02-01' },
++  ];
++  assert.deepStrictEqual(sortTasks(tasks).map((t) => t.id), [4, 6, 2, 3, 1, 5]);
++});

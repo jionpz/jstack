@@ -422,7 +422,7 @@ git diff --no-index --src-prefix= --dst-prefix= a/<路径> b/<路径> > patches/
 
 `./jstack eval` 衡量工作流本身。它把一批固定任务交给 headless 的 Claude Code，后者加载仓库里的 pstack、spec、flow，再看三件事：做成了没有、要人插手几次、花了多少。smoke 只证明调用链跑得通。改了工作流以后是变好还是变差，要靠评测回答。
 
-每个任务在 `evals/tasks/<名字>/` 下，包括 `prompt.md`（原样作为第一条用户消息）、`check.sh`（判定是否完成）、`solution.patch` 或 `answer.md`（参考解），以及可选的 `seed/`。每个样本都有自己的工作目录 `<临时目录>/<随机>/tasknotes`：先复制 `evals/fixture/`，再叠加 `seed/`，然后 `git init` 并提交一次。路径里不出现 eval、test 这类词，被测 agent 不知道自己在被评测。
+每个任务在 `evals/tasks/<名字>/` 下，包括 `prompt.md`（原样作为第一条用户消息）、`check.sh`（判定是否完成）、`solution.patch` 或 `answer.md`（参考解），以及可选的 `seed/`。每个样本都有自己的工作目录 `<临时目录>/<随机>/tasknotes`：先复制 `evals/fixture/`，再叠加 `seed/`，然后 `git init` 并提交一次。路径里不出现 eval、test 这类词，被测 agent 不知道自己在被评测。`seed/CLAUDE.md` 可以让样本仓库按 jstack 的方式从 `flow:route` 开始；check 仍只看功能，route / poteto 是否触发由记录里的对应列给出。
 
 ```bash
 ./jstack eval list                           # 列出任务

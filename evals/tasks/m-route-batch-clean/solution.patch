@@ -1,0 +1,121 @@
+diff --git a/src/cli.js b/src/cli.js
+index 3a370b6..cc94ff9 100644
+--- a/src/cli.js
++++ b/src/cli.js
+@@ -1,10 +1,11 @@
+ const store = require('./store');
+-const { addTask, completeTask, removeTask } = require('./tasks');
++const { addTask, completeTask, completeTasks, removeTask, removeCompleted } = require('./tasks');
+ 
+ const USAGE = `Usage:
+   tasknotes add <title> [--due YYYY-MM-DD]
+-  tasknotes list
+-  tasknotes done <id>
++  tasknotes list [--open|--done]
++  tasknotes done <id> [<id> ...]
++  tasknotes clean
+   tasknotes rm <id>`;
+ 
+ function formatTask(task) {
+@@ -37,6 +38,11 @@ function parseId(arg) {
+   return id;
+ }
+ 
++function parseIds(args) {
++  if (args.length === 0) throw new Error('done needs at least one task id');
++  return args.map(parseId);
++}
++
+ function run(command, args) {
+   const file = store.defaultFile();
+   const tasks = store.load(file);
+@@ -49,17 +55,31 @@ function run(command, args) {
+       return;
+     }
+     case 'list': {
+-      if (tasks.length === 0) {
++      const onlyOpen = args.includes('--open');
++      const onlyDone = args.includes('--done');
++      if (onlyOpen && onlyDone) throw new Error('list takes --open or --done, not both');
++      const shown = onlyOpen
++        ? tasks.filter((t) => !t.done)
++        : onlyDone
++          ? tasks.filter((t) => t.done)
++          : tasks;
++      if (shown.length === 0) {
+         console.log('Nothing to do.');
+         return;
+       }
+-      for (const task of tasks) console.log(formatTask(task));
++      for (const task of shown) console.log(formatTask(task));
+       return;
+     }
+     case 'done': {
+-      const id = parseId(args[0]);
+-      store.save(file, completeTask(tasks, id));
+-      console.log(`Completed ${id}`);
++      const ids = parseIds(args);
++      store.save(file, completeTasks(tasks, ids));
++      console.log(`Completed ${ids.join(', ')}`);
++      return;
++    }
++    case 'clean': {
++      const result = removeCompleted(tasks);
++      store.save(file, result.tasks);
++      console.log(`Removed ${result.removed} completed ${result.removed === 1 ? 'task' : 'tasks'}`);
+       return;
+     }
+     case 'rm': {
+diff --git a/src/tasks.js b/src/tasks.js
+index 951fb98..dca340c 100644
+--- a/src/tasks.js
++++ b/src/tasks.js
+@@ -19,4 +19,15 @@ function removeTask(tasks, id) {
+   return tasks.filter((_, i) => i !== index);
+ }
+ 
+-module.exports = { addTask, completeTask, removeTask };
++function completeTasks(tasks, ids) {
++  return ids.reduce((acc, id) => completeTask(acc, id), tasks);
++}
++
++function removeCompleted(tasks) {
++  return {
++    tasks: tasks.filter((task) => !task.done),
++    removed: tasks.filter((task) => task.done).length,
++  };
++}
++
++module.exports = { addTask, completeTask, completeTasks, removeTask, removeCompleted };
+diff --git a/test/tasks.test.js b/test/tasks.test.js
+index 07fc146..d129053 100644
+--- a/test/tasks.test.js
++++ b/test/tasks.test.js
+@@ -1,6 +1,6 @@
+ const test = require('node:test');
+ const assert = require('node:assert');
+-const { addTask, completeTask, removeTask } = require('../src/tasks');
++const { addTask, completeTask, completeTasks, removeTask, removeCompleted } = require('../src/tasks');
+ 
+ test('addTask numbers tasks from 1', () => {
+   const tasks = addTask(addTask([], { title: 'Buy milk' }), { title: 'Call mom', due: '2026-11-10' });
+@@ -29,3 +29,19 @@ test('unknown ids are rejected', () => {
+   assert.throws(() => completeTask([], 3), /No task with id 3/);
+   assert.throws(() => removeTask([], 3), /No task with id 3/);
+ });
++
++test('completeTasks completes every id in one pass', () => {
++  let tasks = [];
++  for (const title of ['A', 'B', 'C']) tasks = addTask(tasks, { title });
++  tasks = completeTasks(tasks, [1, 3]);
++  assert.deepStrictEqual(tasks.map((t) => t.done), [true, false, true]);
++});
++
++test('removeCompleted drops done tasks and keeps the remaining ids', () => {
++  let tasks = [];
++  for (const title of ['A', 'B', 'C']) tasks = addTask(tasks, { title });
++  tasks = completeTask(tasks, 2);
++  const result = removeCompleted(tasks);
++  assert.strictEqual(result.removed, 1);
++  assert.deepStrictEqual(result.tasks.map((t) => t.id), [1, 3]);
++});

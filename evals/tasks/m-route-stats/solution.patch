@@ -1,0 +1,84 @@
+diff --git a/src/cli.js b/src/cli.js
+index 3a370b6..d031c73 100644
+--- a/src/cli.js
++++ b/src/cli.js
+@@ -1,11 +1,12 @@
+ const store = require('./store');
+-const { addTask, completeTask, removeTask } = require('./tasks');
++const { addTask, completeTask, removeTask, statsOf } = require('./tasks');
+ 
+ const USAGE = `Usage:
+   tasknotes add <title> [--due YYYY-MM-DD]
+   tasknotes list
+   tasknotes done <id>
+-  tasknotes rm <id>`;
++  tasknotes rm <id>
++  tasknotes stats [--json]`;
+ 
+ function formatTask(task) {
+   const box = task.done ? '[x]' : '[ ]';
+@@ -68,6 +69,15 @@ function run(command, args) {
+       console.log(`Removed ${id}`);
+       return;
+     }
++    case 'stats': {
++      const stats = statsOf(tasks);
++      if (args.includes('--json')) {
++        console.log(JSON.stringify(stats));
++      } else {
++        console.log(`Open: ${stats.open}  Done: ${stats.done}  Overdue: ${stats.overdue}`);
++      }
++      return;
++    }
+     default:
+       throw new Error(USAGE);
+   }
+diff --git a/src/tasks.js b/src/tasks.js
+index 951fb98..b041407 100644
+--- a/src/tasks.js
++++ b/src/tasks.js
+@@ -19,4 +19,17 @@ function removeTask(tasks, id) {
+   return tasks.filter((_, i) => i !== index);
+ }
+ 
+-module.exports = { addTask, completeTask, removeTask };
++function todayString() {
++  const d = new Date();
++  const pad = (n) => String(n).padStart(2, '0');
++  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
++}
++
++function statsOf(tasks, today = todayString()) {
++  const open = tasks.filter((t) => !t.done).length;
++  const done = tasks.length - open;
++  const overdue = tasks.filter((t) => !t.done && t.due && t.due < today).length;
++  return { open, done, overdue };
++}
++
++module.exports = { addTask, completeTask, removeTask, statsOf };
+diff --git a/test/tasks.test.js b/test/tasks.test.js
+index 07fc146..865890e 100644
+--- a/test/tasks.test.js
++++ b/test/tasks.test.js
+@@ -1,6 +1,6 @@
+ const test = require('node:test');
+ const assert = require('node:assert');
+-const { addTask, completeTask, removeTask } = require('../src/tasks');
++const { addTask, completeTask, removeTask, statsOf } = require('../src/tasks');
+ 
+ test('addTask numbers tasks from 1', () => {
+   const tasks = addTask(addTask([], { title: 'Buy milk' }), { title: 'Call mom', due: '2026-11-10' });
+@@ -29,3 +29,13 @@ test('unknown ids are rejected', () => {
+   assert.throws(() => completeTask([], 3), /No task with id 3/);
+   assert.throws(() => removeTask([], 3), /No task with id 3/);
+ });
++
++test('statsOf counts overdue open tasks but not tasks due today', () => {
++  const tasks = [
++    { id: 1, title: 'Overdue', done: false, due: '2026-11-08' },
++    { id: 2, title: 'Today', done: false, due: '2026-11-09' },
++    { id: 3, title: 'Done overdue', done: true, due: '2026-11-07' },
++    { id: 4, title: 'No due', done: false, due: null },
++  ];
++  assert.deepStrictEqual(statsOf(tasks, '2026-11-09'), { open: 3, done: 1, overdue: 1 });
++});

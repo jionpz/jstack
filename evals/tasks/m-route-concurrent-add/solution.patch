@@ -1,0 +1,129 @@
+diff --git a/src/cli.js b/src/cli.js
+index 3a370b6..1d8f217 100644
+--- a/src/cli.js
++++ b/src/cli.js
+@@ -39,16 +39,20 @@ function parseId(arg) {
+ 
+ function run(command, args) {
+   const file = store.defaultFile();
+-  const tasks = store.load(file);
+ 
+   switch (command) {
+     case 'add': {
+-      const next = addTask(tasks, parseAdd(args));
+-      store.save(file, next);
++      const next = store.withLock(file, () => {
++        const tasks = store.load(file);
++        const updated = addTask(tasks, parseAdd(args));
++        store.save(file, updated);
++        return updated;
++      });
+       console.log(`Added ${formatTask(next[next.length - 1])}`);
+       return;
+     }
+     case 'list': {
++      const tasks = store.load(file);
+       if (tasks.length === 0) {
+         console.log('Nothing to do.');
+         return;
+@@ -58,13 +62,17 @@ function run(command, args) {
+     }
+     case 'done': {
+       const id = parseId(args[0]);
+-      store.save(file, completeTask(tasks, id));
++      store.withLock(file, () => {
++        store.save(file, completeTask(store.load(file), id));
++      });
+       console.log(`Completed ${id}`);
+       return;
+     }
+     case 'rm': {
+       const id = parseId(args[0]);
+-      store.save(file, removeTask(tasks, id));
++      store.withLock(file, () => {
++        store.save(file, removeTask(store.load(file), id));
++      });
+       console.log(`Removed ${id}`);
+       return;
+     }
+diff --git a/src/store.js b/src/store.js
+index 386381f..74260f0 100644
+--- a/src/store.js
++++ b/src/store.js
+@@ -17,4 +17,42 @@ function save(file, tasks) {
+   fs.writeFileSync(file, JSON.stringify(tasks, null, 2) + '\n');
+ }
+ 
+-module.exports = { defaultFile, load, save };
++function sleep(ms) {
++  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
++}
++
++function withLock(file, fn) {
++  const lock = `${file}.lock`;
++  const started = Date.now();
++  let fd;
++  for (;;) {
++    try {
++      fd = fs.openSync(lock, 'wx');
++      break;
++    } catch (err) {
++      if (err.code !== 'EEXIST') throw err;
++      try {
++        if (Date.now() - fs.statSync(lock).mtimeMs > 10000) {
++          fs.unlinkSync(lock);
++          continue;
++        }
++      } catch {
++        // The holder released the lock between openSync and statSync; retry.
++      }
++      if (Date.now() - started > 5000) throw new Error(`Could not lock ${file}`);
++      sleep(5);
++    }
++  }
++  try {
++    return fn();
++  } finally {
++    fs.closeSync(fd);
++    try {
++      fs.unlinkSync(lock);
++    } catch {
++      // Already removed.
++    }
++  }
++}
++
++module.exports = { defaultFile, load, save, withLock };
+diff --git b/test/store.test.js b/test/store.test.js
+new file mode 100644
+index 0000000..eef4182
+--- /dev/null
++++ b/test/store.test.js
+@@ -0,0 +1,27 @@
++const test = require('node:test');
++const assert = require('node:assert');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const store = require('../src/store');
++
++function tempFile() {
++  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tasknotes-'));
++  return path.join(dir, 'tasks.json');
++}
++
++test('withLock serializes and removes the lock file', () => {
++  const file = tempFile();
++  const result = store.withLock(file, () => {
++    assert.ok(fs.existsSync(`${file}.lock`), 'lock should be held inside the critical section');
++    return 42;
++  });
++  assert.strictEqual(result, 42);
++  assert.ok(!fs.existsSync(`${file}.lock`), 'lock should be released');
++});
++
++test('withLock releases the lock when the work throws', () => {
++  const file = tempFile();
++  assert.throws(() => store.withLock(file, () => { throw new Error('boom'); }), /boom/);
++  assert.ok(!fs.existsSync(`${file}.lock`), 'lock should be released after an error');
++});

@@ -1,0 +1,58 @@
+diff --git a/src/store.js b/src/store.js
+index 386381f..251f199 100644
+--- a/src/store.js
++++ b/src/store.js
+@@ -6,10 +6,17 @@ function defaultFile() {
+ }
+ 
+ function load(file = defaultFile()) {
++  let text;
+   try {
+-    return JSON.parse(fs.readFileSync(file, 'utf8'));
+-  } catch {
+-    return [];
++    text = fs.readFileSync(file, 'utf8');
++  } catch (err) {
++    if (err.code === 'ENOENT') return [];
++    throw err;
++  }
++  try {
++    return JSON.parse(text);
++  } catch (err) {
++    throw new Error(`${file} is not valid JSON: ${err.message}`);
+   }
+ }
+ 
+diff --git b/test/store.test.js b/test/store.test.js
+new file mode 100644
+index 0000000..4c7a2b8
+--- /dev/null
++++ b/test/store.test.js
+@@ -0,0 +1,27 @@
++const test = require('node:test');
++const assert = require('node:assert');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const store = require('../src/store');
++
++function tempFile(contents) {
++  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tasknotes-'));
++  const file = path.join(dir, 'tasks.json');
++  if (contents !== undefined) fs.writeFileSync(file, contents);
++  return file;
++}
++
++test('load treats a missing file as an empty list', () => {
++  assert.deepStrictEqual(store.load(tempFile()), []);
++});
++
++test('load rejects a corrupt file instead of treating it as empty', () => {
++  const file = tempFile('[{');
++  assert.throws(() => store.load(file), /not valid JSON/);
++  assert.strictEqual(fs.readFileSync(file, 'utf8'), '[{');
++});
++
++test('load reads a valid file', () => {
++  assert.deepStrictEqual(store.load(tempFile('[]\n')), []);
++});
