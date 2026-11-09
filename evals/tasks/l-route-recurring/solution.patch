@@ -1,0 +1,222 @@
+diff --git a/src/cli.js b/src/cli.js
+index 3a370b6..1c360b6 100644
+--- a/src/cli.js
++++ b/src/cli.js
+@@ -1,34 +1,44 @@
+ const store = require('./store');
+ const { addTask, completeTask, removeTask } = require('./tasks');
++const { todayString, isRealDate } = require('./dates');
+ 
+ const USAGE = `Usage:
+-  tasknotes add <title> [--due YYYY-MM-DD]
++  tasknotes add <title> [--due YYYY-MM-DD] [--repeat weekly|monthly]
+   tasknotes list
+   tasknotes done <id>
+-  tasknotes rm <id>`;
++  tasknotes rm <id>
++  tasknotes agenda [--json]`;
+ 
+ function formatTask(task) {
+   const box = task.done ? '[x]' : '[ ]';
+   const due = task.due ? ` (due ${task.due})` : '';
+-  return `${box} ${task.id} ${task.title}${due}`;
++  const repeat = task.repeat ? ` (repeats ${task.repeat})` : '';
++  return `${box} ${task.id} ${task.title}${due}${repeat}`;
+ }
+ 
+ function parseAdd(args) {
+   const words = [];
+   let due = null;
++  let repeat = null;
+   for (let i = 0; i < args.length; i++) {
+     if (args[i] === '--due') {
+       due = args[++i];
+-      if (!/^\d{4}-\d{2}-\d{2}$/.test(due || '')) {
+-        throw new Error('--due expects a date like 2026-01-31');
++      if (!isRealDate(due)) {
++        throw new Error('--due expects a real date like 2026-01-31');
++      }
++    } else if (args[i] === '--repeat') {
++      repeat = args[++i];
++      if (repeat !== 'weekly' && repeat !== 'monthly') {
++        throw new Error('--repeat expects weekly or monthly');
+       }
+     } else {
+       words.push(args[i]);
+     }
+   }
++  if (repeat && !due) throw new Error('--repeat needs --due');
+   const title = words.join(' ').trim();
+   if (!title) throw new Error('add needs a title');
+-  return { title, due };
++  return { title, due, repeat };
+ }
+ 
+ function parseId(arg) {
+@@ -37,6 +47,12 @@ function parseId(arg) {
+   return id;
+ }
+ 
++function agendaLines(tasks, today) {
++  return tasks
++    .filter((t) => !t.done && t.due && t.due <= today)
++    .sort((a, b) => (a.due < b.due ? -1 : a.due > b.due ? 1 : 0));
++}
++
+ function run(command, args) {
+   const file = store.defaultFile();
+   const tasks = store.load(file);
+@@ -56,6 +72,29 @@ function run(command, args) {
+       for (const task of tasks) console.log(formatTask(task));
+       return;
+     }
++    case 'agenda': {
++      const today = todayString();
++      const items = agendaLines(tasks, today);
++      if (args.includes('--json')) {
++        const out = items.map((t) => ({
++          id: t.id,
++          title: t.title,
++          due: t.due,
++          repeat: t.repeat || null,
++          overdue: t.due < today,
++        }));
++        console.log(JSON.stringify(out, null, 2));
++        return;
++      }
++      if (items.length === 0) {
++        console.log('Nothing due.');
++        return;
++      }
++      for (const task of items) {
++        console.log(formatTask(task) + (task.due < today ? ' (overdue)' : ''));
++      }
++      return;
++    }
+     case 'done': {
+       const id = parseId(args[0]);
+       store.save(file, completeTask(tasks, id));
+diff --git a/src/dates.js b/src/dates.js
+new file mode 100644
+index 0000000..5676278
+--- /dev/null
++++ b/src/dates.js
+@@ -0,0 +1,46 @@
++const DAY_MS = 86400000;
++
++function pad(n) {
++  return String(n).padStart(2, '0');
++}
++
++function daysInMonth(year, month) {
++  return new Date(Date.UTC(year, month, 0)).getUTCDate();
++}
++
++function todayString() {
++  const now = new Date();
++  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
++}
++
++function isRealDate(value) {
++  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
++  const [year, month, day] = value.split('-').map(Number);
++  if (month < 1 || month > 12) return false;
++  return day >= 1 && day <= daysInMonth(year, month);
++}
++
++function formatUtc(ms) {
++  const d = new Date(ms);
++  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
++}
++
++function addDays(date, days) {
++  const [year, month, day] = date.split('-').map(Number);
++  return formatUtc(Date.UTC(year, month - 1, day + days));
++}
++
++function addMonthsClamped(date, anchorDay, months) {
++  const [year, month] = date.split('-').map(Number);
++  const total = year * 12 + (month - 1) + months;
++  const nextYear = Math.floor(total / 12);
++  const nextMonth = (total % 12) + 1;
++  const day = Math.min(anchorDay, daysInMonth(nextYear, nextMonth));
++  return `${nextYear}-${pad(nextMonth)}-${pad(day)}`;
++}
++
++function dayOfMonth(date) {
++  return Number(date.slice(8, 10));
++}
++
++module.exports = { DAY_MS, todayString, isRealDate, addDays, addMonthsClamped, dayOfMonth };
+diff --git a/src/tasks.js b/src/tasks.js
+index 951fb98..b1e5c4b 100644
+--- a/src/tasks.js
++++ b/src/tasks.js
+@@ -1,6 +1,13 @@
+-function addTask(tasks, { title, due = null }) {
++const { todayString, addDays, addMonthsClamped, dayOfMonth } = require('./dates');
++
++function addTask(tasks, { title, due = null, repeat = null }) {
+   const id = tasks.reduce((max, t) => Math.max(max, t.id), 0) + 1;
+-  return [...tasks, { id, title, done: false, due }];
++  const task = { id, title, done: false, due };
++  if (repeat) {
++    task.repeat = repeat;
++    if (repeat === 'monthly' && due) task.repeatDay = dayOfMonth(due);
++  }
++  return [...tasks, task];
+ }
+ 
+ function findIndex(tasks, id) {
+@@ -9,9 +16,21 @@ function findIndex(tasks, id) {
+   return index;
+ }
+ 
+-function completeTask(tasks, id) {
++function advance(task) {
++  if (task.repeat === 'weekly') return addDays(task.due, 7);
++  const anchor = task.repeatDay || dayOfMonth(task.due);
++  return addMonthsClamped(task.due, anchor, 1);
++}
++
++function completeTask(tasks, id, today = todayString()) {
+   const index = findIndex(tasks, id);
+-  return tasks.map((t, i) => (i === index ? { ...t, done: true } : t));
++  return tasks.map((t, i) => {
++    if (i !== index) return t;
++    if (!t.repeat || !t.due) return { ...t, done: true };
++    let next = advance(t);
++    while (next < today) next = advance({ ...t, due: next });
++    return { ...t, due: next };
++  });
+ }
+ 
+ function removeTask(tasks, id) {
+diff --git a/test/dates.test.js b/test/dates.test.js
+new file mode 100644
+index 0000000..738da38
+--- /dev/null
++++ b/test/dates.test.js
+@@ -0,0 +1,22 @@
++const test = require('node:test');
++const assert = require('node:assert');
++const { isRealDate, addDays, addMonthsClamped } = require('../src/dates');
++
++test('isRealDate rejects impossible and malformed dates', () => {
++  assert.equal(isRealDate('2026-02-28'), true);
++  assert.equal(isRealDate('2028-02-29'), true);
++  assert.equal(isRealDate('2026-02-30'), false);
++  assert.equal(isRealDate('2026-13-01'), false);
++  assert.equal(isRealDate('2026-1-01'), false);
++});
++
++test('addDays crosses month and year boundaries', () => {
++  assert.equal(addDays('2026-12-30', 7), '2027-01-06');
++  assert.equal(addDays('2026-03-01', -1), '2026-02-28');
++});
++
++test('addMonthsClamped keeps the original day of month', () => {
++  assert.equal(addMonthsClamped('2030-01-31', 31, 1), '2030-02-28');
++  assert.equal(addMonthsClamped('2030-02-28', 31, 1), '2030-03-31');
++  assert.equal(addMonthsClamped('2030-04-30', 31, 1), '2030-05-31');
++});
