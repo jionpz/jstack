@@ -41,7 +41,7 @@ State the size and the stage path in one sentence. Then record the path with `st
 
 ## 3. Walk the stages
 
-`stage.sh` sits next to this SKILL.md and records where the task is, so the flow hooks and extensions can enforce the gates structurally. In Claude Code, run it as `"${CLAUDE_SKILL_DIR}/stage.sh"`. Claude Code, Cursor, Pi, and OMP all carry the gates; a harness without them (Codex) prints a notice and does nothing, so run it anyway.
+`stage.sh` sits next to this SKILL.md and records where the task is, so the flow hooks and extensions can enforce the gates structurally. In Claude Code, run it as `"${CLAUDE_SKILL_DIR}/stage.sh"`. Claude Code, Cursor, Pi, and OMP all carry the gates; a harness without them (Codex) prints a notice and does nothing, so run it anyway. Workloop records state, but has no Stop hook, so nothing enforces the gates there: before you end the turn, run `stage.sh show` and check the evidence yourself.
 
 Pi and OMP carry the gates through the flow extension; if it is not installed, `stage.sh` prints the same "no session id" notice. Either kind of notice means the gates are off for this session, and the finish report must say so.
 
@@ -82,7 +82,7 @@ Once the user approves the breakdown, execute without further check-ins. poteto-
 
 ## 5. Finish
 
-End with one line per stage on the path: its output, or why it was skipped. A stage whose gate was never met is reported as not done, with what is missing. If `stage.sh` reported that this harness has no session id, add one line: the stage gates were not active in this session.
+End with one line per stage on the path: its output, or why it was skipped. A stage whose gate was never met is reported as not done, with what is missing. If `stage.sh` reported that this harness has no session id, add one line: the stage gates were not active in this session. If it reported that the gates are not enforced in Workloop, add that line too.
 
 ## Never
 

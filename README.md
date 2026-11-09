@@ -4,7 +4,7 @@ jionpz 长期维护的 AI 开发工作流。目标是少占用人的注意力：
 
 工作流由 jstack 自己定义的阶段组成，每个阶段绑定一个当前的提供者；上游 skill 只是提供者，可以被改写或替换。目前以三个插件的形式发布：
 
-- **pstack**：原版 [pstack](https://github.com/cursor/plugins/tree/main/pstack)（Lauren Tan，MIT），负责执行。只维护上游的 Claude Code 树；Cursor 版由 `./jstack build` 按 `patches/pstack-cursor/rules.tsv` 转换生成，Pi/OMP/Codex 通过 `docs/harness/agents.md` 在运行时映射工具名和模型。
+- **pstack**：原版 [pstack](https://github.com/cursor/plugins/tree/main/pstack)（Lauren Tan，MIT），负责执行。只维护上游的 Claude Code 树；Cursor 版由 `./jstack build` 按 `patches/pstack-cursor/rules.tsv` 转换生成，Pi/OMP/Codex/Workloop 通过 `docs/harness/agents.md` 在运行时映射工具名和模型。
 - **spec**：[Matt Pocock 的 skills](https://github.com/mattpocock/skills)（MIT）里负责需求澄清和任务拆解的几个，产出的 spec 和 tickets 交给 pstack 执行。
 - **flow**：jstack 自己写的衔接层，有 `route` 和 `archive` 两个 skill。`route` 给工程任务分级并驱动全部阶段；`archive` 负责收尾：关票、更新领域文档、写回 gbrain、清理 worktree、分流教训。见下面"分工"一节。
 
@@ -329,6 +329,7 @@ pstack：
 | `0004-generic-harness-adapter` | 把 `docs/harness/claude-code.md` 的映射表扩成 `docs/harness/agents.md`，分出 Claude Code、Pi、OMP 三节；`claude-code.md` 只留一个指向它的兼容指针，所有 skill 和 README 里的 adapter 链接改到新文件 | adapter 是模型运行时读的文档，上游只有 Claude Code 一版。Pi 和 OMP 用同一套工具名，但入口、agent 发现和模型角色不同；把差异集中在一个文件里，同步上游后仍只需要维护这一处。Cursor 产物在 build 时删掉这句提示，不读这份 adapter |
 | `0005-adapter-cursor-builtins` | 在 adapter 的 Claude Code 一节补上 `cursor-team-kit` 和 `create-skill`、`/loop`、`/deslop`、`control-ui`、`control-cli` 五个 Cursor 内置项的替代做法；Pi 和 OMP 两节原有这一行 | adapter 是运行时文档，模型读到 `cursor-team-kit` 和这几个名字时，Claude Code 一节原来没有任何说明，模型只能自己猜或者干脆跳过。Cursor 产物在 build 时删掉这句提示，不读这份 adapter |
 | `0006-adapter-codex` | 在 adapter 加 Codex 一节和检测行：工具名（`shell`、`apply_patch`、`update_plan`）、`spawn_agent` 派自定义 agent、模型与 effort、`$<插件>:<skill>` 调用、会话记录路径和 Cursor-only 降级 | adapter 是运行时文档。Codex 0.166 能直接读 Claude 格式的插件清单和 skill，但工具名、子 agent 机制、skill 调用方式都和 Cursor 不同；映射集中在这一节，`locate.sh`、安装和 smoke 都按它来。Cursor 产物在 build 时删掉这句提示，不读这份 adapter |
+| `0007-adapter-workloop` | 在 adapter 加 Workloop 一节和检测行：`agent` 的 `model` / `variant`、`run_workflow` 并行、没有 `Skill` 和 `TodoWrite` 时的做法 | adapter 是运行时文档。Workloop 是第三方云端平台，工具名和子 agent 参数都和 Cursor 不同；映射来自 #33 的沙箱观察，本地 smoke 跑不到，需要在沙箱里手动验收 |
 
 spec：
 

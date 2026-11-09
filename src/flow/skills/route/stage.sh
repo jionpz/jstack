@@ -2,7 +2,7 @@
 # 记录当前任务走到 stages.md 的哪个阶段，供 flow 插件的 hooks / 扩展执行门禁。状态文件格式见 lib.sh。
 # 会话 id 依次取 JSTACK_SESSION_ID（flow 的 OMP 扩展）、PI_SESSION_ID（Pi）、
 # CLAUDE_CODE_SESSION_ID（Claude Code）、CURSOR_CONVERSATION_ID（Cursor）、
-# CODEX_SESSION_ID（Codex）；没有它的 harness 里打印一行说明，什么也不做。
+# CODEX_SESSION_ID（Codex）、WORKLOOP_SESSION_ID（Workloop）；没有它的 harness 里打印一行说明，什么也不做。
 # JSTACK_STAGES_FILE 可覆盖阶段表的路径，只用于测试。
 # 变量后紧跟中文标点时必须写成 ${VAR}：macOS 的 bash 3.2 在 UTF-8 locale 下会把标点首字节算进变量名。
 set -eu
@@ -24,7 +24,7 @@ EOF
 }
 die() { printf 'jstack: %s\n' "$*" >&2; exit 1; }
 
-sid=${JSTACK_SESSION_ID:-${PI_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-${CURSOR_CONVERSATION_ID:-${CODEX_SESSION_ID:-}}}}}
+sid=${JSTACK_SESSION_ID:-${PI_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-${CURSOR_CONVERSATION_ID:-${CODEX_SESSION_ID:-${WORKLOOP_SESSION_ID:-}}}}}}
 if [ -z "$sid" ]; then
 	echo "jstack: 这个 harness 没有会话 id，阶段门禁不生效"
 	exit 0
@@ -57,6 +57,10 @@ start)
 	find "$dir" -type f -mmin +10080 -delete 2>/dev/null || true
 	printf 'path %s\nstage %s\n' "$1" "${1%%,*}" | jstack_replace "$file"
 	echo "jstack: 阶段路径 $(printf '%s' "$1" | sed 's/,/ → /g')，当前阶段 ${1%%,*}"
+	# Workloop 没有 Stop hook：状态照记，但不能让人以为门禁在执行。
+	if [ "$sid" = "${WORKLOOP_SESSION_ID:-}" ]; then
+		echo "jstack: Workloop 没有 Stop hook，门禁未强制。结束前自己运行 stage.sh show 核对证据，并在收尾报告写明“本会话阶段门禁未强制（Workloop）”"
+	fi
 	;;
 enter)
 	[ $# -eq 1 ] && [ -n "$1" ] || usage

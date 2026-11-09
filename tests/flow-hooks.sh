@@ -135,6 +135,8 @@ t "stage.sh 没有会话 id 时只打印说明" sh -c '[ "$("$1" "$2" start nope
 t "stage.sh 在 Cursor 会话里用 CURSOR_CONVERSATION_ID" sh -c 'CURSOR_CONVERSATION_ID=cursor-session "$1" "$2" start execute >/dev/null && [ -f "$3/cursor-session" ]' _ "$BASH" "$ST" "$JSTACK_STATE_DIR"
 t "stage.sh 在 Pi 会话里用 PI_SESSION_ID" sh -c 'PI_SESSION_ID=pi-session "$1" "$2" start execute >/dev/null && [ -f "$3/pi-session" ]' _ "$BASH" "$ST" "$JSTACK_STATE_DIR"
 t "stage.sh 在 OMP 会话里用 JSTACK_SESSION_ID" sh -c 'JSTACK_SESSION_ID=omp-session "$1" "$2" start execute >/dev/null && [ -f "$3/omp-session" ]' _ "$BASH" "$ST" "$JSTACK_STATE_DIR"
+t "stage.sh 在 Workloop 会话里用 WORKLOOP_SESSION_ID 并提示未强制" sh -c 'WORKLOOP_SESSION_ID=workloop-session "$1" "$2" start execute | grep -q "门禁未强制" && [ -f "$3/workloop-session" ]' _ "$BASH" "$ST" "$JSTACK_STATE_DIR"
+t "stage.sh 在其他 harness 不提示 Workloop 未强制" sh -c '! PI_SESSION_ID=pi-other WORKLOOP_SESSION_ID=w "$1" "$2" start execute | grep -q "门禁未强制"' _ "$BASH" "$ST" "$JSTACK_STATE_DIR"
 t "stage.sh 的会话 id 依次取 JSTACK_SESSION_ID、PI_SESSION_ID、Claude、Cursor" sh -c 'JSTACK_SESSION_ID=omp-session PI_SESSION_ID=pi-session CLAUDE_CODE_SESSION_ID=$4 CURSOR_CONVERSATION_ID=$4 "$1" "$2" start execute >/dev/null && [ -f "$3/omp-session" ]' _ "$BASH" "$ST" "$JSTACK_STATE_DIR" "$SID"
 rm -f "$JSTACK_STATE_DIR/cursor-session" "$JSTACK_STATE_DIR/pi-session" "$JSTACK_STATE_DIR/omp-session"
 t "stage.sh start 不认识的阶段时失败" not stage start execute,deploy
