@@ -101,6 +101,8 @@ You own every subagent's work. Review the diff and write your own summary, don't
 
 **Fresh subagents by default.** Give new work to a fresh subagent with consolidated scope, meaning the original brief, every later directive, and the prior agent's report and branch. This holds for a fix round, a follow-up, a retry, and the next queue item. Resume, message, or queue a follow-up on an existing subagent only when the new work strictly needs state that lives in that agent and is costly to move: its local checkout, its uncommitted changes, or a process it still runs, such as a dev server, a simulator, or a babysit watcher. A stop or hold order to a running agent is not reuse. A role such as a PR owner outlives its agent. Once that agent returns, a fresh agent takes the role's next round. Interrupt-chained resumes silently drop directives, so fire a fresh subagent with consolidated scope rather than trusting a "done" summary.
 
+**A brief never authorizes a must-stop action.** The harness guard sees your own shell commands, not the text you write for a subagent, and a subagent may run without the gates. Keep confirm-first actions out of every brief: the flow must-stop list when the session has one, and everything Autonomy's Always-pause names, such as a force push to a shared branch. Do that step yourself once the user approves, or leave it out of the brief and ask first.
+
 ## Writing the reply
 
 Write the reply clean as you draft it. A cleanup pass after drafting does not remove these patterns.
