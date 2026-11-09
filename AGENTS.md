@@ -6,7 +6,7 @@ jstack 是用户长期维护的整条 AI 开发工作流。flow 定义工作流�
 
 - `pstack`：原版 pstack（Lauren Tan）的 Claude Code 版，源码 vendor 自 cursor/plugins 的 `harness/pstack/claude-code`。Cursor 版由 `./jstack build` 从这棵树转换生成，规则在 `patches/pstack-cursor/`。
 - `spec`：Matt Pocock skills 里负责需求澄清和任务拆解的几个，vendor 自 mattpocock/skills。产出交给 execute 阶段的提供者（默认 `flow:execute`，多 ticket 或多天工作时是 `pstack:poteto-mode`）。
-- `flow`：jstack 自己写的衔接层，有 `route`、`execute` 和 `archive` 三个 skill：`route` 按 `src/flow/skills/route/stages.md` 的阶段表驱动任务走完全部阶段，把每个阶段交给表里的提供者；`execute` 是 execute 阶段的默认提供者（精简执行入口，不派子代理），`pstack:poteto-mode` 保留为多 ticket / 多天工作的替代提供者；`archive` 收尾。没有上游，源码在 `src/flow/`，直接改源码再 `./jstack build`。
+- `flow`：jstack 自己写的衔接层，有 `route`、`execute`、`review` 和 `archive` 四个 skill：`route` 按 `src/flow/skills/route/stages.md` 的阶段表驱动任务走完全部阶段，把每个阶段交给表里的提供者；`execute` 是 execute 阶段的默认提供者（精简执行入口，不派子代理），`pstack:poteto-mode` 保留为多 ticket / 多天工作的替代提供者；`review` 是 review 阶段的默认提供者（主会话内重读 diff、修掉或驳回发现），`pstack:interrogate` / `pstack:swarm` 只在设计有争议、碰必须停清单或用户要求时运行；`archive` 收尾。没有上游，源码在 `src/flow/`，直接改源码再 `./jstack build`。
 
 - `upstream/<插件>/` 是上游原样副本，只能由 `./jstack sync <插件>` 写入。`pstack`（Claude Code 版）是整棵树；spec 只取 `jstack` 脚本里 `PICK` 列出的文件和目录。Cursor 版 pstack 没有独立上游。
 - `plugins/<插件>/` 是构建产物，只能由 `./jstack build` 写入。`plugins/pstack-cursor/` 是 `plugins/pstack` 的 Cursor 转换产物，不进 Claude marketplace；转换规则和替换文件在 `patches/pstack-cursor/`，`check` 会核对每条规则都命中差异、转换只改动规则覆盖的文件。`./jstack install-cursor` 把 pstack、spec、flow 三个产物整棵复制到 Cursor 的本地插件目录。Cursor 的本地插件加载器拒绝指向 `~/.cursor/plugins/local` 之外的符号链接，所以这里只复制。

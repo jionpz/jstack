@@ -1,6 +1,6 @@
 ---
 name: execute
-description: jstack's lean execute-stage provider. One task or one ticket done in the main session: inspect, change, verify, review the diff, commit. Route reads this file by path; do not model-invoke it.
+description: "jstack's lean execute-stage provider. One task or one ticket done in the main session: inspect, change, verify, review the diff, commit. Route reads this file by path; do not model-invoke it."
 disable-model-invocation: true
 ---
 

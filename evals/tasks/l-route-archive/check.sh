@@ -2,11 +2,12 @@
 set -u
 fail() { echo "$*" >&2; exit 1; }
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-export TASKNOTES_FILE="$tmp/tasks.json"
 ARCHIVE="$tmp/archive.json"
 tn() { node bin/tasknotes.js "$@"; }
 
+# 在干净环境里跑仓库自己的测试：TASKNOTES_FILE 是下面测 CLI 用的，不能漏进测试进程。
 node --test >/dev/null 2>&1 || fail "unit tests fail"
+export TASKNOTES_FILE="$tmp/tasks.json"
 
 # 老格式：没有 due 字段；4 号已完成且 id 最大，归档后新任务绝不能再用 4。
 cat >"$TASKNOTES_FILE" <<'JSON'
@@ -41,5 +42,5 @@ grep -qE '^\[x\] 4 Four' <<<"$out" || fail "list --archived misses the archived 
 
 # 没有已完成任务时再归档：0 条（说成 nothing 也算），正常退出。
 out=$(tn archive) || fail "second archive exited non-zero"
-grep -qiE '(^|[^0-9])0([^0-9]|$)|nothing' <<<"$out" || fail "second archive did not report 0 moved tasks: $out"
+grep -qiE '(^|[^0-9])0([^0-9]|$)|nothing|no .*tasks?' <<<"$out" || fail "second archive did not report 0 moved tasks: $out"
 exit 0
