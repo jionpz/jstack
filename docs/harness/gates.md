@@ -2,7 +2,7 @@
 
 flow 的三个门禁（阶段提示、验证门禁、红线守卫）的判定逻辑都在 `src/flow/hooks/*.sh`，与 harness 无关。各 harness 用自己的事件把输入翻译成 Claude Code 的 hook 协议，再执行同一个脚本；状态文件格式和会话 id 规则也共用 `lib.sh`。
 
-本文件记录每个 harness 能承载哪些门禁、怎么接、哪些地方降级。Codex 的会话 id 已接，三个门禁还没接；它自带 hooks，接入是后续任务。
+本文件记录每个 harness 能承载哪些门禁、怎么接、哪些地方降级。Codex 的会话 id 已接，三个门禁还没接；它自带 hooks，接入是后续任务。Workloop 的会话 id 已接，但平台没有 Stop hook，门禁只能降级为 agent 自检，见“降级”第 7 条。
 
 ## 能力矩阵
 
@@ -33,12 +33,14 @@ flow 的三个门禁（阶段提示、验证门禁、红线守卫）的判定逻
 4. `CLAUDE_CODE_SESSION_ID`
 5. `CURSOR_CONVERSATION_ID`
 6. `CODEX_SESSION_ID`
+7. `WORKLOOP_SESSION_ID`
 
 - Claude Code 在 shell 里导出 `CLAUDE_CODE_SESSION_ID`，hook 输入里也带 `session_id`。
 - Cursor 导出 `CURSOR_CONVERSATION_ID`，hook 输入里是 `conversation_id`；两者都是 UUID，URI 编码后不变。
 - Pi 给 bash 工具注入 `PI_SESSION_ID`；扩展用 `ctx.sessionManager.getSessionId()` 调 hook。
 - OMP 不向 shell 注入会话 id。`extensions/omp.ts` 在 `session_start` / `session_switch` 把根会话 id 写进进程环境 `JSTACK_SESSION_ID`，子 shell 继承。子 agent 会话（`sessionManager.getHeader().parentSession` 非空）不写，继承根会话的 id，和根会话共用同一份阶段记录。
 - Codex 给 `shell` 工具的环境导出 `CODEX_SESSION_ID`（与 `CODEX_THREAD_ID` 同值），`codex exec` 里同样可用；`stage.sh` 在 Codex 里能照常记阶段和证据。
+- Workloop 沙箱的 shell 环境里有 `WORKLOOP_SESSION_ID`；`stage.sh` 能记阶段和证据。
 
 ## 降级
 
@@ -48,6 +50,7 @@ flow 的三个门禁（阶段提示、验证门禁、红线守卫）的判定逻
 4. **OMP 的扩展目前只装在用户级**：`./jstack install --scope project` 不写 `~/.omp/agent/extensions/`（项目级扩展要写 `.omp/config.yml`，尚未接入）。扩展入口写的是最后一次用户级 `./jstack install` 的 checkout 绝对路径，与项目 vendor 的版本可能漂移；更新或移动 checkout 后重跑一次用户级 install。扩展缺失时 OMP 里没有门禁，`stage.sh` 打印“这个 harness 没有会话 id”。
 5. **子 agent 会话不跑门禁**：Pi / OMP 的扩展跳过 `parentSession` 非空的会话。子 agent 不该也不能替主会话记证据；它的 shell 继承根会话 id，只读同一份状态。
 6. **Codex 三个门禁都还没接**：codex-cli 0.166.0 自带 hooks（`UserPromptSubmit`、`PreToolUse`、`Stop` 等，配置在 `~/.codex/hooks.json`、仓库 `.codex/hooks.json`，插件也可以带 `hooks/hooks.json`），也给 shell 导出会话 id，所以三个门禁都接得上；目前 flow 还没有 Codex 的 hooks 配置和协议适配。`stage.sh` 在 Codex 里可用，只是门禁不触发，收尾报告照写未生效。
+7. **Workloop 三个门禁都不强制**：Workloop 是第三方云端编码平台，没有 Stop hook，也没有已知的扩展点。`stage.sh start` 会打印未强制提示；agent 结束前自己运行 `stage.sh show` 核对证据，收尾报告写明未强制。这是自检，不是门禁。本地 `./jstack smoke` 跑不到 Workloop，只能在它的沙箱里手动验收。
 
 ## 收尾报告
 
@@ -56,6 +59,7 @@ route 的收尾报告（`src/flow/skills/route/SKILL.md` 第 5 节）要写明�
 - `stage.sh` 打印“这个 harness 没有会话 id” → 报告里写“本会话阶段门禁未生效（<harness>）”。
 - OMP 会话里没有 `~/.omp/agent/extensions/jstack-flow-gates.ts` → 同样视为未生效。
 - Codex 会话（`CODEX_SESSION_ID` 存在）→ 三个门禁还没接，同样写未生效。
+- Workloop 会话（`stage.sh start` 打印未强制提示）→ 写“本会话阶段门禁未强制（Workloop）”。
 - 其余情况不写。
 
 ## 验证

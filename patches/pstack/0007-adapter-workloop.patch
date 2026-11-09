@@ -1,0 +1,45 @@
+diff --git a/docs/harness/agents.md b/docs/harness/agents.md
+index 72c09e9..6614f8d 100644
+--- a/docs/harness/agents.md
++++ b/docs/harness/agents.md
+@@ -12,6 +12,7 @@ Cursor's native pstack tree does not read this file. The copy that ships to Curs
+ | An `Agent` tool with `thinking` and `get_subagent_result`; `/skill:<name>` commands; sessions under `~/.pi/agent/sessions/` | Pi | [Pi](#pi) |
+ | A `task` tool with `agent`, `task`, `context`, and `name`; `skill://<name>` or `manage_skill`; sessions under `~/.omp/agent/sessions/` | OMP | [OMP](#omp) |
+ | A `spawn_agent` tool with `agent_type`; `shell` and `apply_patch` instead of file tools; skills written `$<plugin>:<name>`; sessions under `~/.codex/sessions/` | Codex | [Codex](#codex) |
++| An `agent` tool with `variant`, and a `run_workflow` tool; `WORKLOOP_SESSION_ID` in the shell | Workloop | [Workloop](#workloop) |
+ 
+ Use the first row whose tools the session actually exposes. If none match, say which harness you could not identify, then use the Cursor names as written and drop any field the tool rejects.
+ 
+@@ -351,3 +352,32 @@ Codex subagents are threads started with `spawn_agent`. In codex-cli 0.166.0 the
+ | Cursor built-ins and `cursor-team-kit`: `create-skill`, `/loop`, `/deslop`, `control-ui`, `control-cli` | Not built into Codex. Author `SKILL.md` directly, run the loop in the session or the job runner, and use the repo's own UI or CLI driver. Skip a step that needs the Cursor built-in itself with the line. |
+ 
+ When a step needs a Cursor-only feature, put one line in your reply, `Skipped in Codex: <step>. <reason>.`, then go on to the next step. Do not stop, ask, or retry. When a later step needs what the skipped step made, such as a URL or a key, leave a placeholder and name it in the line.
++
++## Workloop
++
++Workloop is a third-party online coding platform that runs agents in a cloud sandbox. Only the rows below differ from the Cursor names. For a file, shell, or search tool with no row, use the one the session lists.
++
++### Tools
++
++| Cursor | Workloop |
++| --- | --- |
++| `Read` | `read_file`. |
++| Run another pstack skill (`/name` or "the **name** skill") | There is no `Skill` tool. `read_file` `<pstack>/skills/<name>/SKILL.md` and follow it. |
++| Open a todolist | There is no `TodoWrite`. Keep the list in your reply and update it at each phase. |
++| `Task` | `agent` (see below). |
++| Several `Task` calls in parallel, then a synthesis | `run_workflow`, a JS script that runs `new Agent({model, variant})` in parallel and collects the results. Use it for `how` explorers plus explainer and `interrogate` adversaries. |
++
++### Subagent tool and parameters
++
++| Cursor | Workloop |
++| --- | --- |
++| `Task` | `agent` with `label`, `message`, and optionally `model` and `variant`. |
++| `subagent_type: "poteto-agent"` | No such field. Start the `message` by telling the agent to read this `poteto-mode` SKILL.md in full before any work. |
++| `readonly: true` | No such field. State that the agent must not write in the `message`. |
++| `claude-<family>-<version>-<effort>[-fast]`, such as `claude-opus-5-5-xhigh` | `model: "claude-opus-5-5"` and `variant: "xhigh"`. Drop `-fast`. Call the `models` tool for the slugs this session offers, and use the closest one from the same family. |
++
++Every other `Task` field has no Workloop equivalent, so drop it and say so.
++
++### Cursor-only features
++
++When a step needs a Cursor-only feature, or a worktree or background run the session has no tool for, put one line in your reply, `Skipped in Workloop: <step>. <reason>.`, then go on to the next step. Do not stop, ask, or retry.

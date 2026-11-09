@@ -79,7 +79,7 @@ jstack_hook_sid() {
 	local sid
 	sid=$(jstack_json_str session_id "$1")
 	[ -n "$sid" ] || sid=$(jstack_json_str conversation_id "$1")
-	printf '%s\n' "${sid:-${JSTACK_SESSION_ID:-${PI_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-${CURSOR_CONVERSATION_ID:-${CODEX_SESSION_ID:-}}}}}}"
+	printf '%s\n' "${sid:-${JSTACK_SESSION_ID:-${PI_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-${CURSOR_CONVERSATION_ID:-${CODEX_SESSION_ID:-${WORKLOOP_SESSION_ID:-}}}}}}}"
 }
 
 jstack_json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
