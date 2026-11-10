@@ -1,7 +1,7 @@
 {
   "name": "flow",
   "version": "0.1.0",
-  "description": "jstack 自己的衔接层：工程任务进来时按大小和清晰度分级，自动把 spec（澄清、拆解）和 pstack（执行）接起来，只在约定的检查点停下来问人。",
+  "description": "jstack 的工作流：route 驱动 size、clarify、plan、execute、verify、review、land、archive 阶段；flow:execute 和 flow:review 分别是默认执行与审查提供者，pstack:poteto-mode 可作为多 ticket 或多天工作的执行替代项。",
   "author": {
     "name": "jionpz"
   },

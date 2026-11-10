@@ -4,7 +4,7 @@
     "name": "jionpz"
   },
   "metadata": {
-    "description": "jionpz 的 AI 工程工作流：pstack 负责执行（cursor/plugins 官方 Claude Code 版），spec 负责需求澄清和任务拆解（Matt Pocock skills 精选），flow 把两者接成一条流程。pstack 和 spec 都锁定上游提交，另加 jstack 补丁。"
+    "description": "jionpz 的 AI 工程工作流：flow 提供 route、execute、review、archive 四个阶段 skill，默认由 flow:execute 执行、flow:review 审查；spec 负责需求澄清和任务拆解，pstack:poteto-mode 可替代 flow:execute 承担多 ticket 或多天工作。pstack 和 spec 都锁定上游提交，另加 jstack 补丁。"
   },
   "plugins": [
     {
@@ -26,7 +26,7 @@
     {
       "name": "spec",
       "source": "./plugins/spec",
-      "description": "Matt Pocock 的需求澄清和任务拆解 skills：grill-with-docs、to-spec、to-tickets、wayfinder、handoff。产出的 spec 和 tickets 交给 /pstack:poteto-mode 执行。来源 mattpocock/skills，版本见 upstream/spec.lock.json。",
+      "description": "Matt Pocock 的需求澄清和任务拆解 skills：grill-with-docs、to-spec、to-tickets、wayfinder、handoff。产出的 spec 和 tickets 默认交给 flow:execute 执行；多 ticket 或多天工作可交给 pstack:poteto-mode。来源 mattpocock/skills，版本见 upstream/spec.lock.json。",
       "author": {
         "name": "Matt Pocock",
         "url": "https://www.aihero.dev"
@@ -44,7 +44,7 @@
     {
       "name": "flow",
       "source": "./plugins/flow",
-      "description": "jstack 的衔接层：工程任务进来时自动分级，按大小把 spec（澄清、拆解）和 pstack（执行）接起来，只在约定的检查点问人。",
+      "description": "jstack 的工作流：route 驱动 size、clarify、plan、execute、verify、review、land、archive 阶段；flow:execute 和 flow:review 分别是默认执行与审查提供者，pstack:poteto-mode 可作为多 ticket 或多天工作的执行替代项。",
       "author": {
         "name": "jionpz"
       },

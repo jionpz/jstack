@@ -22,7 +22,7 @@ A Hook of `-` means no command pattern can detect the action, so the agent must 
 
 ## Patterns
 
-The guard hook splits each shell command into segments at `;`, `&&`, `||`, `|`, and newlines, then matches every segment against these extended regular expressions. One line is `<hook><TAB><regex>`. A hook may have several lines; any match makes the harness ask the user before the command runs.
+The guard hook splits each shell command into segments at `;`, `&&`, `||`, `|`, and newlines, then matches every segment against these extended regular expressions. One line is `<hook><TAB><regex>`. A hook may have several lines. Claude Code and Cursor's `beforeShellExecution` can ask before running a match; Codex and Cursor's `preToolUse` return deny, and Pi/OMP without UI block it. User approval does not make a denied command runnable on retry. Give the approved command to the user to run themselves; do not retry it through another tool or change it to evade the guard.
 
 ```patterns
 rm-rf	(^|[[:space:]/])rm[[:space:]](.*[[:space:]])?(-[[:alnum:]]*[rR][[:alnum:]]*f|-[[:alnum:]]*f[[:alnum:]]*[rR])[[:alnum:]]*([[:space:]]|$)
