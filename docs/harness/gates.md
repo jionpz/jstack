@@ -18,9 +18,9 @@ flow 的三个门禁（阶段提示、验证门禁、红线守卫）的判定逻
 
 - **Claude Code**：`src/flow/hooks/hooks.json`，插件清单的 `hooks` 字段。
 - **Cursor**：`src/flow/hooks/hooks.cursor.json`，由 `.cursor-plugin/plugin.json` 的 `hooks` 字段指向；`./jstack install-cursor` 复制插件树。
-- **Pi**：根 `package.json` 的 `pi.extensions` → `plugins/flow/extensions/pi.ts`，`./jstack install-pi`（或 `install --all`）安装 package 后自动加载。扩展用 `import.meta.url` 找到 flow 根，脚本仍从 `plugins/flow/hooks/` 执行。
-- **OMP**：OMP 的插件清单只收 skills / agents，不收 flow 的 Claude 格式 hooks。`./jstack install`（用户级）把 `plugins/flow/extensions/omp.ts` 写成一个入口文件 `~/.omp/agent/extensions/jstack-flow-gates.ts`，OMP 的 ambient extension 目录加载它，入口再转出插件里的扩展本身。
-- **Codex**：`./jstack install --scope project` 写仓库的 `.codex/hooks.json`，事件名和输入都是 Claude Code 的形状；命令用仓库内 vendor 的绝对路径（Codex 不给项目 hooks 暴露 PROJECT_DIR 一类的变量，仓库搬家后重跑一次 install）。hooks 默认要落过信任才执行：交互式会话里同意一次；headless（`codex exec`）加 `--dangerously-bypass-hook-trust`，只对已审查的 hooks 来源用。
+- **Pi**：根 `package.json` 的 `pi.extensions` → `plugins/flow/extensions/pi.ts`，`./jstack install-pi`（或 `install --all`）安装 package 后自动加载。项目级安装在 `.pi/extensions/jstack-flow-gates.ts` 写相对路径入口，转出 `.jstack/vendor/plugins/flow/extensions/pi.ts`。扩展用 `import.meta.url` 找到 flow 根，脚本从对应安装树的 `hooks/` 执行。Pi 的项目扩展需要信任；项目 smoke 对临时安装使用 `--approve`。
+- **OMP**：OMP 的插件清单只收 skills / agents，不收 flow 的 Claude 格式 hooks。用户级 `./jstack install` 把 `plugins/flow/extensions/omp.ts` 写成 `~/.omp/agent/extensions/jstack-flow-gates.ts`；项目级安装写 `.omp/extensions/jstack-flow-gates.ts`，相对路径转出 `.jstack/vendor/plugins/flow/extensions/omp.ts`。OMP 的对应 extension 目录加载入口文件。
+- **Codex**：`./jstack install --scope project` 写仓库的 `.codex/hooks.json`，事件名和输入都是 Claude Code 的形状；命令用安装时 checkout 的绝对路径（Codex 不给项目 hooks 暴露 PROJECT_DIR 一类的变量），所以只对当前 clone 有效，移动仓库或重新 clone 后必须重跑 install。hooks 默认要落过信任才执行：交互式会话里同意一次；headless（`codex exec`）加 `--dangerously-bypass-hook-trust`，只对已审查的 hooks 来源用。
 
 三个门禁都只读状态文件、不调模型；状态文件的路径和格式见 `lib.sh`。
 
@@ -48,7 +48,7 @@ flow 的三个门禁（阶段提示、验证门禁、红线守卫）的判定逻
 1. **没有 UI 时“先问”变“拦下”**（Cursor 的 `preToolUse`、Pi / OMP 的 print / JSON 运行）：没有人能回答确认框，`guard.sh` 命中的命令直接拒绝执行，不会先运行。交互式会话（包括 Claude Code 的 `bypassPermissions`）仍弹确认框。
 2. **Pi 的 Stop 门禁每条用户消息最多拦 3 次**：Pi 没有 Claude Code / Cursor / OMP 那种由 harness 维护的 `stop_hook_active`，`agent_before_settle` 的 `continue` 只对本次结算有效。扩展自己计数，模型硬顶着不记证据时第 4 次放行；用户发新消息或门禁满足时清零。代价是模型坚持不记证据时会溜过去，收益是不会无限续跑。
 3. **Cursor 的 Stop 门禁拿不到最后一条回复**：标了 `ask` 时直接放行，无法核对回复里是否真的提了问题；`loop_limit` 3 兜底。
-4. **OMP 的扩展目前只装在用户级**：`./jstack install --scope project` 不写 `~/.omp/agent/extensions/`（项目级扩展要写 `.omp/config.yml`，尚未接入）。扩展入口写的是最后一次用户级 `./jstack install` 的 checkout 绝对路径，与项目 vendor 的版本可能漂移；更新或移动 checkout 后重跑一次用户级 install。扩展缺失时 OMP 里没有门禁，`stage.sh` 打印“这个 harness 没有会话 id”。
+4. **OMP 扩展缺失时门禁不生效**：用户级检查 `~/.omp/agent/extensions/jstack-flow-gates.ts`；项目级检查 `.omp/extensions/jstack-flow-gates.ts`。用户级入口仍引用安装时 checkout 的绝对路径，移动 checkout 后需重跑用户级 install。若当前作用域的入口文件缺失或未加载，`stage.sh` 打印“这个 harness 没有会话 id”。
 5. **子 agent 会话不跑门禁**：Pi / OMP 的扩展跳过 `parentSession` 非空的会话。子 agent 不该也不能替主会话记证据；它的 shell 继承根会话 id，只读同一份状态。
 6. **Codex 的 ask 降级为 deny，hooks 要先信任**：Codex 的 `PreToolUse` 只认 deny，返回 `permissionDecision: ask` 会被忽略、命令照跑（0.166.0 实测），所以 `guard.sh` 在 Codex 输入下直接 deny，和 Cursor 的 `preToolUse` 同规则，交互式会话里也没有“先问”这一步。另外 Codex 的 hooks 默认要落过信任才执行：交互式会话首次会要求同意；`codex exec` 不加 `--dangerously-bypass-hook-trust` 就静默跳过未信任的 hooks。
 7. **Workloop 三个门禁都不强制**：Workloop 是第三方云端编码平台，没有 Stop hook，也没有已知的扩展点。`stage.sh start` 会打印未强制提示；agent 结束前自己运行 `stage.sh show` 核对证据，收尾摘要的门禁一行写明未强制。这是自检，不是门禁。本地 `./jstack smoke` 跑不到 Workloop，只能在它的沙箱里手动验收。
@@ -58,7 +58,7 @@ flow 的三个门禁（阶段提示、验证门禁、红线守卫）的判定逻
 route 的收尾摘要（`src/flow/skills/route/SKILL.md` 第 5 节）的“门禁”一行要写明门禁是否生效：
 
 - `stage.sh` 打印“这个 harness 没有会话 id” → 摘要里写“本会话阶段门禁未生效（<harness>）”。
-- OMP 会话里没有 `~/.omp/agent/extensions/jstack-flow-gates.ts` → 同样视为未生效。
+- OMP 会话里没有当前作用域的 `jstack-flow-gates.ts`（`~/.omp/agent/extensions/` 用户级，或 `.omp/extensions/` 项目级）→ 同样视为未生效。
 - Codex 会话里仓库没有 `.codex/hooks.json`（或 hooks 没被信任）→ 同样视为未生效。
 - Workloop 会话（`stage.sh start` 打印未强制提示）→ 写“本会话阶段门禁未强制（Workloop）”。
 - 其余情况不写这一行。

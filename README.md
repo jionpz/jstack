@@ -49,14 +49,16 @@ pstack 和 spec 都锁定在上游某个提交，另外叠加了 jstack 自己�
 - vendor 保留完整插件树，不摊平 skill。
 - 只把 9 个入口 skill 链进发现目录：`route`、`archive`、`poteto-mode`、spec 的 `grill-with-docs`、`to-spec`、`to-tickets`、`wayfinder`、`handoff`、`setup-matt-pocock-skills`。其余 skill 留在 vendor，由 `locate.sh` 按物理路径定位。
 - 发现目录：Claude Code 用 `.claude/skills`，Pi、OMP 和 Codex 共用 `.agents/skills`，Cursor 用 `.cursor/skills`。链接是相对路径，仓库搬走也有效。
+- Pi / OMP 的项目级门禁扩展分别写到 `.pi/extensions/jstack-flow-gates.ts` 和 `.omp/extensions/jstack-flow-gates.ts`；各入口用相对路径转出 `.jstack/vendor/plugins/flow/extensions/` 中对应的扩展。
 - Claude Code 另外复制 `poteto-agent`、`comment-sicko` 到 `.claude/agents`，并把 flow 的三个 hook 写进 `.claude/settings.json`，命令用 `${CLAUDE_PROJECT_DIR}` 指向 vendor；不注册 marketplace。
+- Pi 的 `poteto-agent`、`comment-sicko` 写到 `.agents/agents/`；OMP 写到 `.omp/agents/`；Cursor 从转换产物 `plugins/pstack-cursor/agents/` 复制两个 agent 到 `.cursor/agents/`。
 - Codex 另外把两个 agent 的 Markdown 正文转成 TOML，写到 `.codex/agents/{poteto-agent,comment-sicko}.toml`（`name`、`description`、`developer_instructions`），`spawn_agent` 按名字派出去。
-- Codex 的门禁写进 `.codex/hooks.json`，三个事件和 Claude Code 同形，命令用 vendor 的绝对路径（Codex 不给项目 hooks 暴露 PROJECT_DIR 一类的变量，仓库搬家后重跑一次 install）。hooks 默认要落过信任才执行：交互式会话里同意一次，headless（`codex exec`）加 `--dangerously-bypass-hook-trust`。
-- 重复运行幂等；`--dry-run` 只打印；不写任何用户级文件。安装完成后提交 `.jstack/`、三个入口目录、`.claude/` 和 `.codex/` 的产物。
+- Codex 的门禁写进 `.codex/hooks.json`，三个事件和 Claude Code 同形，命令用安装时 checkout 的绝对路径（Codex 不给项目 hooks 暴露 PROJECT_DIR 一类的变量）；它只对当前 clone 有效，移动仓库或重新 clone 后必须重跑 install。hooks 默认要落过信任才执行：交互式会话里同意一次，headless（`codex exec`）加 `--dangerously-bypass-hook-trust`。
+- 重复运行幂等；`--dry-run` 只打印；不写任何用户级文件。锁与 `doctor --repo` 覆盖项目扩展和 agent 文件。安装完成后提交 `.jstack/`、三个入口目录及各 harness 项目产物；若 ignore 规则屏蔽了产物，安装和 doctor 会通过 `git check-ignore` 检测并给出 白名单建议。
 
 同一个 harness 不要同时做用户级和项目级安装：插件或入口会加载两次，flow 的 hooks 也会跑两遍。换仓库时用项目级；只想全局装一次时用用户级。
 
-`./jstack doctor --repo <repo>` 会核对 vendor 版本、树哈希、lock 记录与入口链接，任何一处对不上都返回非 0。
+`./jstack doctor --repo <repo>` 会核对 vendor 版本、树哈希、lock 记录、入口链接、Pi / OMP 扩展和 agent 文件；也会用 `git check-ignore` 检测被忽略的项目级产物并给出 白名单建议。任何一处对不上都返回非 0。
 
 ### Claude Code
 
@@ -91,7 +93,7 @@ claude plugin marketplace add jionpz/jstack && claude plugin install pstack@jsta
 
 它会执行 `pi install <仓库> --approve`，并把 `plugins/pstack/agents/` 里的 `poteto-agent`、`comment-sicko` 转换后写到 `~/.pi/agent/agents/`（`background: true` 改成 Pi 的 `run_in_background: true`）。重复运行是幂等的；同名的非 jstack agent 文件不会被覆盖。
 
-在 Pi 里用 `/skill:poteto-mode`、`/skill:route` 这类命令调用入口。pstack 的入口 skill 都是 `disable-model-invocation: true`，不会出现在模型自动选择的 skill 列表里，这是正常的，`/skill:<名字>` 仍然能加载。子 agent 需要 `@tintinweb/pi-subagents`；`install-pi` 检测不到会提示安装命令。
+在 Pi 里用 `/skill:poteto-mode`、`/skill:route` 这类命令调用入口。pstack 的入口 skill 都是 `disable-model-invocation: true`，不会出现在模型自动选择的 skill 列表里，这是正常的，`/skill:<名字>` 仍然能加载。子 agent 需要 `@tintinweb/pi-subagents`；`install-pi` 检测不到会提示安装命令。Pi 的项目级扩展首次加载可能要求信任项目扩展；核对 `.pi/extensions/jstack-flow-gates.ts` 指向本仓库 vendor 后，在 Pi 中信任它，门禁才会运行。
 
 ### OMP
 

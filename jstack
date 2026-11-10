@@ -380,10 +380,87 @@ smoke_run() {
 # 本地仓库的 locate.sh 打印的提供者，smoke 用它核对各 harness 里 route 的输出。
 local_providers() { bash "$ROOT/plugins/flow/skills/route/locate.sh" | cut -f1; }
 
+# 在全新项目里运行；保留用户的模型凭据，入口和状态来自项目安装。
+# Pi 的非交互会话需要 --approve 才加载刚安装到临时项目的扩展和 agents。
+smoke_project() { # <pi|omp>
+	local h=$1 dir="$WORK/smoke/$1/project with spaces" out session state stage prompt text rc=0
+	mkdir -p "$dir"
+	if ! install_project "$dir" 0 "$h" >"$WORK/smoke/$h/project-install.log" 2>&1; then
+		say "✗ $h: 项目级安装失败"
+		tail -10 "$WORK/smoke/$h/project-install.log" | sed 's/^/  /'
+		return 1
+	fi
+	session="$dir/sessions"
+	mkdir -p "$session"
+	state="$dir/state"
+	stage="$dir/.jstack/vendor/plugins/flow/skills/route/stage.sh"
+	out="$dir/gates.jsonl"
+	prompt="Run bash: rm -rf /tmp/jstack-smoke-gate-nonexistent ; then run bash: \"$stage\" start execute,verify. Stop without recording evidence."
+	if [ "$h" = pi ]; then
+		set -- pi -p --approve --session-dir "$session" --no-context-files --mode json "$prompt"
+	else
+		set -- omp -p --session-dir "$session" --mode json --auto-approve --tools=bash "$prompt"
+	fi
+	if smoke_run "$h 项目门禁" "$out" env JSTACK_STATE_DIR="$state" bash -c 'cd "$1" || exit; shift; exec "$@"' _ "$dir" "$@"; then
+		# OMP 在 tool_call 阶段拦截，可能没有 tool_execution_start/end；用 assistant
+		# 的工具调用和关联的 toolResult 检查，Pi 也会输出这些事件。
+		if ! jq -s -e '
+			[.[] | select(.type == "message_end" and .message.role == "assistant")
+			 | .message.content[]? | select(.type == "toolCall" and .name == "bash")
+			 | select((.arguments.command // "") | contains("rm -rf /tmp/jstack-smoke-gate-nonexistent")) | .id] as $ids
+			| any(.[]; .type == "message_end" and .message.role == "toolResult"
+				and (.message.toolCallId as $id | $ids | index($id) != null)
+				and .message.isError == true
+				and any(.message.content[]?; (.text // "") | contains("jstack must-stop")))
+		' "$out" >/dev/null; then
+			say "✗ $h: 项目 must-stop 没有拦下目标命令"
+			rc=1
+		fi
+		if ! jq -s -e 'any(.[]; .type == "tool_execution_start" and .toolName == "bash" and ((.args.command // "") | contains("start execute,verify")))' "$out" >/dev/null ||
+			! jq -r '.. | objects | select(.customType? == "jstack-gates" or .customType? == "session-stop-continuation") | .content // empty | strings' "$out" | grep -q 'jstack verify 门禁'; then
+			say "✗ $h: 项目 Stop 门禁没有给出缺证据理由"
+			rc=1
+		fi
+	else
+		rc=1
+	fi
+	# 第二轮必须复用同一会话：before_agent_start 才能注入第一轮写下的阶段。
+	out="$dir/prompt.jsonl"
+	if [ "$h" = pi ]; then
+		set -- pi -p --approve --session-dir "$session" --continue --no-context-files --mode json "Reply PROJECT-PROMPT-OK and stop. Do not record evidence."
+	else
+		set -- omp -p --session-dir "$session" --continue --mode json --auto-approve --tools=bash "Reply PROJECT-PROMPT-OK and stop. Do not record evidence."
+	fi
+	if smoke_run "$h 项目阶段注入" "$out" env JSTACK_STATE_DIR="$state" bash -c 'cd "$1" || exit; shift; exec "$@"' _ "$dir" "$@"; then
+		text=$(jq -r '.. | objects | select(.customType? == "jstack-gates") | .content // empty | strings' "$out")
+		if ! grep -q 'jstack 阶段门禁：当前阶段 execute' <<<"$text" || ! grep -qF "$dir/.jstack/vendor/plugins/flow/skills/route/stage.sh" <<<"$text"; then
+			say "✗ $h: 没有看到项目阶段注入"
+			rc=1
+		fi
+	else
+		rc=1
+	fi
+	if [ "$h" = pi ]; then
+		out="$dir/subagent.jsonl"
+		prompt="Use the Agent tool exactly once with subagent_type \"poteto-agent\", description \"smoke\", prompt \"Read $ROOT/README.md and reply with its first line. Do not edit files.\" Then call get_subagent_result with wait true and report the result. Stop."
+		if smoke_run "Pi 项目 poteto-agent" "$out" bash -c 'cd "$1" || exit; shift; exec "$@"' _ "$dir" pi -p --approve --no-session --no-context-files --mode json "$prompt" &&
+			jq -r 'select(.type=="tool_execution_start" and .toolName=="Agent") | .args.subagent_type // empty' "$out" | grep -qx poteto-agent &&
+			jq -r 'select(.type=="tool_execution_end" and .toolName=="get_subagent_result") | .result.content[]?.text // empty' "$out" | grep -q completed; then
+			say "✓ Pi: 项目 poteto-agent 派发并返回结果"
+		else
+			say "✗ Pi: 项目 poteto-agent 派发或结果缺失"
+			rc=1
+		fi
+	fi
+	[ "$rc" -ne 0 ] || say "✓ $h: 项目扩展阶段注入、must-stop 与 Stop 门禁"
+	return "$rc"
+}
+
 smoke_pi() {
 	command -v pi >/dev/null || { say "- 没找到 Pi CLI，跳过 Pi smoke"; return 0; }
 	local dir="$WORK/smoke/pi" out skills s rc=0 bad=0 prompt
 	mkdir -p "$dir"
+	smoke_project pi || rc=1
 	# 1. 系统提示里的 skill 目录：pstack 的 setup-pstack、spec 的 grilling、flow 的 route。
 	out="$dir/catalog.jsonl"
 	smoke_run "Pi skill catalog" "$out" pi -p --no-session --no-context-files --mode json "List the names of skills available to you that are named setup-pstack, grilling, or route, then stop." || return 1
@@ -462,12 +539,13 @@ smoke_pi() {
 
 smoke_omp() {
 	command -v omp >/dev/null || { say "- 没找到 OMP CLI，跳过 OMP smoke"; return 0; }
-	if ! omp plugin list 2>/dev/null | grep -q 'pstack@jstack'; then
-		say "- OMP 没有安装 jstack 插件，跳过 OMP smoke（先 omp plugin marketplace add jionpz/jstack && omp plugin install pstack@jstack spec@jstack flow@jstack）"
-		return 0
-	fi
 	local dir="$WORK/smoke/omp" out text pstack_dir flow_dir s rc=0 bad=0 prompt
 	mkdir -p "$dir"
+	smoke_project omp || rc=1
+	if ! omp plugin list 2>/dev/null | grep -q 'pstack@jstack'; then
+		say "- OMP 没有安装 jstack 用户插件，跳过用户级 smoke"
+		return "$rc"
+	fi
 	pstack_dir=$(ls -dt "$HOME/.omp/plugins/cache/plugins"/jstack___pstack___* 2>/dev/null | head -1 || true)
 	flow_dir=$(ls -dt "$HOME/.omp/plugins/cache/plugins"/jstack___flow___* 2>/dev/null | head -1 || true)
 	# 1. 三个插件的 skill URI。
@@ -1599,6 +1677,12 @@ SH
 		fi
 	done
 	for e in poteto-agent comment-sicko; do
+		for d in .agents/agents .omp/agents .cursor/agents; do
+			if ! grep -q 'generated by jstack install' "$r/$d/$e.md" 2>/dev/null; then
+				say "✗ 项目 agent 缺失：$d/$e.md"
+				rc=1
+			fi
+		done
 		grep -q 'generated by jstack install' "$r/.claude/agents/$e.md" 2>/dev/null || {
 			say "✗ 缺少 jstack 生成的 .claude/agents/$e.md"
 			rc=1
@@ -1636,7 +1720,16 @@ SH
 		rc=1
 	fi
 
-	# lock：版本、树哈希、四个 harness 的记录。
+	for p in pi omp; do
+		if ! grep -qxF "export { default } from \"../../.jstack/vendor/plugins/flow/extensions/$p.ts\";" \
+			"$r/.$p/extensions/jstack-flow-gates.ts"; then
+			say "✗ $p 项目扩展没有相对转出 vendor"
+			rc=1
+		fi
+	done
+	grep -q '^run_in_background: true$' "$r/.agents/agents/poteto-agent.md" || rc=1
+	grep -q '^is_background: true$' "$r/.cursor/agents/poteto-agent.md" || rc=1
+	# lock：版本、树哈希、五个 harness 的记录。
 	tree=$(jq -r '.vendor.tree // empty' "$r/.jstack/lock.json" 2>/dev/null || true)
 	if [ "$tree" != "$(tree_hash "$r/.jstack/vendor")" ]; then
 		say "✗ lock 的 vendor 树哈希与实际 vendor 不一致"
@@ -1678,13 +1771,15 @@ SH
 	done
 
 	# 重复运行：不新增链接、不重复 hooks、lock 不变。
-	before=$({ LC_ALL=C /bin/ls -lA "$r/.claude/skills" "$r/.agents/skills" "$r/.cursor/skills" "$r/.codex/agents"
+	before=$({ tree_hash "$r/.pi"; tree_hash "$r/.omp"; tree_hash "$r/.agents/agents"; tree_hash "$r/.cursor/agents"
+		LC_ALL=C /bin/ls -lA "$r/.claude/skills" "$r/.agents/skills" "$r/.cursor/skills" "$r/.codex/agents"
 		cat "$r/.claude/settings.json" "$r/.cursor/hooks.json" "$r/.codex/hooks.json" "$r/.jstack/lock.json" "$r"/.codex/agents/*.toml; } | sha256_stream)
 	if ! PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" install --all --scope project --repo "$r" >/dev/null 2>&1; then
 		say "✗ 重复运行 install 失败"
 		rc=1
 	fi
-	after=$({ LC_ALL=C /bin/ls -lA "$r/.claude/skills" "$r/.agents/skills" "$r/.cursor/skills" "$r/.codex/agents"
+	after=$({ tree_hash "$r/.pi"; tree_hash "$r/.omp"; tree_hash "$r/.agents/agents"; tree_hash "$r/.cursor/agents"
+		LC_ALL=C /bin/ls -lA "$r/.claude/skills" "$r/.agents/skills" "$r/.cursor/skills" "$r/.codex/agents"
 		cat "$r/.claude/settings.json" "$r/.cursor/hooks.json" "$r/.codex/hooks.json" "$r/.jstack/lock.json" "$r"/.codex/agents/*.toml; } | sha256_stream)
 	if [ "$before" != "$after" ]; then
 		say "✗ 重复运行 install 改变了安装产物（hooks、链接或 lock）"
@@ -1739,8 +1834,58 @@ assert all(r["lock"] == "ok" for r in vendor), vendor
 		rc=1
 	fi
 
+	# 新入口记入 lock：删除任一文件后 doctor 必须发现，install 能恢复。
+	for path in .pi/extensions/jstack-flow-gates.ts .omp/extensions/jstack-flow-gates.ts \
+		.agents/agents/poteto-agent.md .omp/agents/poteto-agent.md .cursor/agents/poteto-agent.md .claude/settings.json; do
+		rm -f "$r/$path"
+		if PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" doctor --repo "$r" >/dev/null 2>&1; then
+			say "✗ $path 缺失时 doctor 没有失败"
+			rc=1
+		fi
+		PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" install --all --scope project --repo "$r" >/dev/null 2>&1 || rc=1
+	done
+	printf '// tampered\n' >>"$r/.pi/extensions/jstack-flow-gates.ts"
+	sed -i.bak 's|../../.jstack|/wrong/.jstack|' "$r/.pi/extensions/jstack-flow-gates.ts"
+	rm -f "$r/.pi/extensions/jstack-flow-gates.ts.bak"
+	if PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" doctor --repo "$r" >/dev/null 2>&1; then
+		say "✗ 项目扩展指向其他 checkout 时 doctor 没有失败"
+		rc=1
+	fi
+	PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" install --all --scope project --repo "$r" >/dev/null 2>&1 || rc=1
+	# 非 jstack 的文件必须保留。
+	for path in .pi/extensions/jstack-flow-gates.ts .agents/agents/poteto-agent.md .cursor/agents/comment-sicko.md; do
+		cp "$r/$path" "$WORK/saved-entry"
+		printf 'user owned\n' >"$r/$path"
+		if PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" install --all --scope project --repo "$r" >/dev/null 2>&1 ||
+			[ "$(cat "$r/$path")" != 'user owned' ]; then
+			say "✗ install 没有保护已有的 $path"
+			rc=1
+		fi
+		cp "$WORK/saved-entry" "$r/$path"
+	done
+	# 真实 Git 忽略规则：vendor 的目录、样本和项目入口都不能静默漏提交。
+	git -C "$r" init -q
+	printf 'research/\n*.out\n/.pi/\n.omp/\n/.claude/*\n' >"$r/.gitignore"
+	printf 'fixture\n' >"$r/.jstack/vendor/plugins/flow/sample.out"
+	for p in install doctor; do
+		if [ "$p" = install ]; then
+			out=$(PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" install --all --scope project --repo "$r" 2>"$err") && rc=1
+		else
+			out=$(PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" doctor --repo "$r" --json 2>"$err") && rc=1
+			printf '%s\n' "$out" | python3 -I -c 'import json,sys; json.load(sys.stdin)' || rc=1
+		fi
+		grep -q '被 Git 忽略' "$err" && grep -q '!/.jstack/\*\*' "$err" && grep -q '.pi/extensions/jstack-flow-gates.ts' "$err" || rc=1
+	done
+	# 把诊断中的建议原样追加，必须能修复安装。
+	sed -n 's/^  \(!\/.*\)/\1/p' "$err" >>"$r/.gitignore"
+	PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" install --all --scope project --repo "$r" >/dev/null 2>&1 || rc=1
+	PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" doctor --repo "$r" >/dev/null 2>&1 || rc=1
+	# 已提交的文件不受后加的忽略规则影响。
+	git -C "$r" add -f .pi/extensions/jstack-flow-gates.ts
+	printf '/.pi/\n' >"$r/.gitignore"
+	PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" doctor --repo "$r" >/dev/null 2>&1 || rc=1
 	if [ "$rc" -eq 0 ]; then
-		say "✓ 项目级安装：vendor、9 个入口、Claude hooks、Cursor hooks、Codex agents 与 hooks、lock、五 harness 的 locate（Pi/OMP/Codex 共用 .agents）、幂等、dry-run 与 doctor 都通过"
+		say "✓ 项目级安装：vendor、9 入口、五 harness agents/hooks/extensions、lock、locate、幂等、dry-run、冲突保护与 Git 忽略规则检查通过"
 	fi
 	return $rc
 }
@@ -1871,7 +2016,7 @@ check_codex_manifest() {
 			say "✗ Codex 缓存的 $p 里没有 .claude-plugin/plugin.json"
 			rc=1
 		}
-		find "$home/plugins/cache/jstack/$p" -maxdepth 6 -name SKILL.md 2>/dev/null | grep -q . || {
+		find "$home/plugins/cache/jstack/$p" -maxdepth 6 -name SKILL.md 2>/dev/null | grep . >/dev/null || {
 			say "✗ Codex 缓存的 $p 里没有 skill"
 			rc=1
 		}
@@ -3194,6 +3339,18 @@ cmd_doctor() {
 	fi
 	[ -z "$tree_bad" ] || rc=1
 	[ -z "$missing_rec" ] || rc=1
+	if [ -n "$lock" ]; then
+		project_ignored_files "$repo" || rc=1
+		for h in pi omp; do
+			if jq -e --arg h "$h" '.harnesses[$h] != null' "$lock" >/dev/null; then
+				if ! grep -qxF "export { default } from \"../../.jstack/vendor/plugins/flow/extensions/$h.ts\";" \
+					"$repo/.$h/extensions/jstack-flow-gates.ts" 2>/dev/null; then
+					say "! $h 项目门禁扩展没有转出 lock 对应的 vendor；重跑项目级 install" >&2
+					rc=1
+				fi
+			fi
+		done
+	fi
 
 	if [ "$json" -eq 1 ]; then
 		python3 -I - "$WORK/doctor-final" <<'PY'
@@ -3342,6 +3499,62 @@ install_agent() { # <仓库> <vendor> <名字> <dry>
 	} >"$dst"
 }
 
+# 项目 agent 保留各 harness 所需的 frontmatter；已有非 jstack 文件不覆盖。
+install_project_agents() { # <仓库> <vendor> <harness> <dry>
+	local repo=$1 vendor=$2 h=$3 dry=$4 name src dst dir
+	case $h in
+	pi) dir=.agents/agents ;;
+	omp) dir=.omp/agents ;;
+	cursor) dir=.cursor/agents ;;
+	esac
+	for name in poteto-agent comment-sicko; do
+		src="$vendor/plugins/pstack/agents/$name.md"
+		[ "$h" != cursor ] || src="$ROOT/plugins/pstack-cursor/agents/$name.md"
+		dst="$repo/$dir/$name.md"
+		if [ "$dry" -eq 1 ]; then
+			say "  安装 $h agent $name.md 到 $dir/"
+			continue
+		fi
+		[ -f "$src" ] || die "缺少 $src，先运行 ./jstack build"
+		mkdir -p "$repo/$dir"
+		if [ -L "$dst" ] || { [ -e "$dst" ] && ! grep -q 'generated by jstack install' "$dst"; }; then
+			die "$dst 已存在且不是 jstack 生成的普通文件；先备份或移走"
+		fi
+		if [ "$h" = pi ]; then
+			sed 's/^background: true$/run_in_background: true/' "$src" |
+				awk -v name="$name" 'BEGIN{fm=0} /^---$/{fm++; print; if(fm==2) print "\n<!-- generated by jstack install --scope project; source: pstack/agents/" name ".md -->"; next} {print}' >"$dst"
+			if [ "$name" = poteto-agent ]; then
+				grep -q '^run_in_background: true$' "$dst" || die "$src 的 background 字段没有转成 run_in_background"
+			fi
+		else
+			{
+				cat "$src"
+				printf '\n<!-- generated by jstack install --scope project; source: pstack/agents/%s.md -->\n' "$name"
+			} >"$dst"
+		fi
+	done
+}
+
+install_project_extension() { # <仓库> <harness> <dry>
+	local repo=$1 h=$2 dry=$3 dir target src
+	dir=".$h/extensions"
+	target="$repo/$dir/jstack-flow-gates.ts"
+	src="../../.jstack/vendor/plugins/flow/extensions/$h.ts"
+	if [ "$dry" -eq 1 ]; then
+		say "  写 $dir/jstack-flow-gates.ts，转出 $src"
+		return 0
+	fi
+	[ -f "$repo/.jstack/vendor/plugins/flow/extensions/$h.ts" ] || die "vendor 里缺少 flow extensions/$h.ts"
+	mkdir -p "$repo/$dir"
+	if [ -L "$target" ] || { [ -e "$target" ] && ! grep -q 'generated by jstack install' "$target"; }; then
+		die "$target 已存在且不是 jstack 生成的普通文件；先备份或移走"
+	fi
+	{
+		printf '// generated by jstack install --scope project\n'
+		printf 'export { default } from "%s";\n' "$src"
+	} >"$target"
+}
+
 # Codex 的自定义 agent 是 TOML（.codex/agents/<name>.toml），Claude 的是带 YAML frontmatter 的 Markdown。
 # 项目级安装按 name / description / developer_instructions 转换；Codex 没有 background 字段，frontmatter 其余键丢弃。
 # developer_instructions 用 TOML 的无转义多行字面量（'''），正文里的反斜杠、引号和反引号都原样保留。
@@ -3470,10 +3683,16 @@ harness_records() { # <harness>：lock 里记录、doctor 会核对的安装入�
 		done
 	done
 	if [ "$h" = claude-code ]; then
-		printf '%s\n' .claude/agents/poteto-agent.md .claude/agents/comment-sicko.md
+		printf '%s\n' .claude/agents/poteto-agent.md .claude/agents/comment-sicko.md .claude/settings.json
+	fi
+	if [ "$h" = pi ]; then
+		printf '%s\n' .pi/extensions/jstack-flow-gates.ts .agents/agents/poteto-agent.md .agents/agents/comment-sicko.md
+	fi
+	if [ "$h" = omp ]; then
+		printf '%s\n' .omp/extensions/jstack-flow-gates.ts .omp/agents/poteto-agent.md .omp/agents/comment-sicko.md
 	fi
 	if [ "$h" = cursor ]; then
-		printf '%s\n' .cursor/hooks.json
+		printf '%s\n' .cursor/hooks.json .cursor/agents/poteto-agent.md .cursor/agents/comment-sicko.md
 	fi
 	if [ "$h" = codex ]; then
 		printf '%s\n' .codex/agents/poteto-agent.toml .codex/agents/comment-sicko.toml .codex/hooks.json
@@ -3514,6 +3733,56 @@ write_lock() { # <仓库> <harness>...：install 是唯一写 lock 的命令
 	mv "$WORK/lock.json" "$repo/.jstack/lock.json"
 }
 
+# 只检查可提交性，不改目标仓库的忽略规则。已跟踪文件不受 ignore 影响。
+project_ignored_files() { # <仓库>：诊断写 stderr，保持 doctor --json 可解析
+	python3 -I - "$1" <<'PY'
+import json, os, subprocess, sys
+repo = sys.argv[1]
+probe = subprocess.run(["git", "-C", repo, "rev-parse", "--is-inside-work-tree"], capture_output=True)
+if probe.returncode or probe.stdout.strip() != b"true":
+    sys.exit(0)
+with open(os.path.join(repo, ".jstack/lock.json"), encoding="utf-8") as f:
+    lock = json.load(f)
+paths = {".jstack/lock.json"}
+for h in lock.get("harnesses", {}).values():
+    paths.update(h.get("records", []))
+for root, dirs, files in os.walk(os.path.join(repo, ".jstack/vendor")):
+    for name in files + [d for d in dirs if os.path.islink(os.path.join(root, d))]:
+        paths.add(os.path.relpath(os.path.join(root, name), repo))
+result = subprocess.run(["git", "-C", repo, "check-ignore", "--stdin", "-z"],
+                        input=b"".join(os.fsencode(p) + b"\0" for p in sorted(paths)), capture_output=True)
+if result.returncode not in (0, 1):
+    print("! git check-ignore 失败：" + os.fsdecode(result.stderr), file=sys.stderr)
+    sys.exit(1)
+ignored = [os.fsdecode(p) for p in result.stdout.split(b"\0") if p]
+if not ignored:
+    sys.exit(0)
+print(f"! 项目级安装有 {len(ignored)} 个路径被 Git 忽略，同事 clone 后会缺文件：", file=sys.stderr)
+for p in ignored:
+    print("  " + p, file=sys.stderr)
+# gitignore 的 ! 不能穿过被忽略的父目录；按根到叶的顺序同时给出父目录白名单。
+prefix = subprocess.check_output(["git", "-C", repo, "rev-parse", "--show-prefix"]).decode().strip()
+rules = set()
+for path in ignored:
+    path = prefix + path
+    if path.startswith(prefix + ".jstack/"):
+        path = prefix + ".jstack/"
+    parts = path.rstrip("/").split("/")
+    for i in range(1, len(parts)):
+        rules.add("/".join(parts[:i]) + "/")
+    rules.add(path)
+    if path.endswith("/"):
+        rules.add(path + "**")
+def escape(pattern):
+    return pattern.replace("\\", "\\\\").replace("[", "\\[").replace("?", "\\?").replace("*", "\\*")
+print("  请在 Git 根目录的 .gitignore 末尾加入所需白名单，并确认嵌套 .gitignore 没有再次排除：", file=sys.stderr)
+for rule in sorted(rules):
+    pattern = escape(rule[:-2]) + "**" if rule.endswith("/**") else escape(rule)
+    print("  !/" + pattern, file=sys.stderr)
+sys.exit(1)
+PY
+}
+
 install_project() { # <仓库> <dry> <harness>...
 	local repo=$1 dry=$2 vendor h d p e rel
 	shift 2
@@ -3543,8 +3812,15 @@ install_project() { # <仓库> <dry> <harness>...
 		install_agent "$repo" "$vendor" comment-sicko "$dry"
 		install_claude_hooks "$repo" "$dry"
 	fi
+	for h in pi omp; do
+		if printf '%s\n' "$@" | grep -qx "$h"; then
+			install_project_extension "$repo" "$h" "$dry"
+			install_project_agents "$repo" "$vendor" "$h" "$dry"
+		fi
+	done
 	# Cursor 的项目 hooks 与 Claude 同源，但事件名和输出协议是 Cursor 原生的。
 	if printf '%s\n' "$@" | grep -qx cursor; then
+		install_project_agents "$repo" "$vendor" cursor "$dry"
 		install_cursor_hooks "$repo" "$dry"
 	fi
 	# Codex 从 .agents/skills 读 skill（和 Pi/OMP 共用），自定义 agent 要转成 TOML；
@@ -3555,6 +3831,10 @@ install_project() { # <仓库> <dry> <harness>...
 	fi
 	if [ "$dry" -eq 0 ]; then
 		write_lock "$repo" "$@"
+		project_ignored_files "$repo" || die "安装文件被 Git 忽略；调整白名单后重新运行 install"
+		if printf '%s\n' "$@" | grep -qx codex; then
+			say "! Codex 项目门禁使用本机 clone 的绝对路径；其他机器 clone 或移动目录后须重跑 install（仅 skills 和 agents 可直接随仓库使用）。"
+		fi
 		say "✓ 项目级安装完成（${*}）：vendor 在 .jstack/vendor/，lock 在 .jstack/lock.json，提交这些文件和入口链接。"
 		say "  Pi / OMP 首次读取 .agents/skills 时会要求信任项目；Cursor 需要重开窗口。"
 	else
