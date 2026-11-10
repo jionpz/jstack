@@ -283,6 +283,18 @@ cmd_build() {
 		build_plugin
 	done
 	build_cursor_plugin
+	warn_claude_cache
+}
+
+# Claude Desktop 读取 installed_plugins.json 的缓存，不一定和 CLI 的源目录相同。
+warn_claude_cache() {
+	local file="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/installed_plugins.json" p version stale
+	command -v jq >/dev/null 2>&1 && [ -f "$file" ] || return 0
+	for p in $PLUGINS; do
+		version=$(json_get version "$ROOT/plugins/$p/.claude-plugin/plugin.json")
+		stale=$(jq -r --arg id "$p@$MARKETPLACE" --arg v "$version" '.plugins[$id][]? | select((.version // "") != $v) | "\(.scope // "unknown"): \(.version // "unknown")"' "$file" 2>/dev/null || true)
+		[ -z "$stale" ] || say "! Claude $p 缓存版本落后于构建版本 $version（$stale）；运行 ./jstack install 更新。"
+	done
 }
 
 sync_plugin() {
@@ -1533,18 +1545,21 @@ PY
 
 # doctor 的验收：临时 HOME 构造 Claude / Pi / OMP / Cursor / vendor / lock，核对输出与漂移。
 check_doctor() {
-	local h="$WORK/doctor-home" r="$WORK/doctor-repo" bin="$WORK/doctor-bin" out rc=0 tree
+	local h="$WORK/doctor-home" r="$WORK/doctor-repo" bin="$WORK/doctor-bin" out rc=0 tree pv fv sv
+	pv=$(built_plugin_version pi pstack)
+	fv=$(built_plugin_version omp flow)
+	sv=$(built_plugin_version cursor spec)
 	rm -rf "$h" "$r" "$bin"
-	mkdir -p "$h/.omp/plugins/cache/plugins/jstack___flow___1.2.3+jstack.abc" \
+	mkdir -p "$h/.omp/plugins/cache/plugins/jstack___flow___$fv" \
 		"$h/.cursor/plugins/local/spec/.claude-plugin" \
 		"$h/.pi/agent/npm/node_modules/jstack/plugins/pstack/.claude-plugin" \
 		"$h/.codex/plugins/cache/jstack/spec/0.9.0/.claude-plugin" \
 		"$r/.git" "$r/.jstack/vendor/plugins/pstack/.claude-plugin" \
 		"$r/.jstack/vendor/plugins/flow/.claude-plugin" "$bin"
 	printf '{"name":"jstack","version":"0.1.0"}\n' >"$h/.pi/agent/npm/node_modules/jstack/package.json"
-	printf '{"version":"4.4.4"}\n' >"$h/.pi/agent/npm/node_modules/jstack/plugins/pstack/.claude-plugin/plugin.json"
-	printf '{"version":"3.3.3"}\n' >"$h/.cursor/plugins/local/spec/.claude-plugin/plugin.json"
-	printf '{"version":"0.9.0"}\n' >"$h/.codex/plugins/cache/jstack/spec/0.9.0/.claude-plugin/plugin.json"
+	printf '{"version":"%s"}\n' "$pv" >"$h/.pi/agent/npm/node_modules/jstack/plugins/pstack/.claude-plugin/plugin.json"
+	printf '{"version":"%s"}\n' "$sv" >"$h/.cursor/plugins/local/spec/.claude-plugin/plugin.json"
+	printf '{"version":"%s"}\n' "$sv" >"$h/.codex/plugins/cache/jstack/spec/0.9.0/.claude-plugin/plugin.json"
 	printf '{"version":"9.9.9"}\n' >"$r/.jstack/vendor/plugins/pstack/.claude-plugin/plugin.json"
 	printf '{"version":"1.0.0"}\n' >"$r/.jstack/vendor/plugins/flow/.claude-plugin/plugin.json"
 	tree=$(tree_hash "$r/.jstack/vendor")
@@ -1555,15 +1570,16 @@ printf '%s\n' '[{"id":"pstack@jstack","version":"9.9.9","scope":"user","installP
 EOF
 	chmod +x "$bin/claude"
 
-	if ! out=$(PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" doctor --repo "$r" --json 2>/dev/null); then
+	if ! out=$(PATH="$bin:$PATH" HOME="$h" CODEX_HOME="$h/.codex" PI_AGENT_DIR="$h/.pi/agent" OMP_PLUGINS_DIR="$h/.omp/plugins" CURSOR_PLUGINS_DIR="$h/.cursor/plugins" "$ROOT/jstack" doctor --repo "$r" --json 2>/dev/null); then
 		say "✗ doctor 在构造好的布局上报了失败："
 		printf '%s\n' "$out" | head -20 | sed 's/^/  /'
 		return 1
 	fi
-	if ! python3 -I - "$out" "$r" <<'PY'
+	if ! python3 -I - "$out" "$r" "$pv" "$fv" "$sv" <<'PY'
 import json, sys
 rows = json.loads(sys.argv[1])
 repo = sys.argv[2]
+pv, fv, sv = sys.argv[3:6]
 def find(h, scope, plugin):
 	hits = [r for r in rows if r["harness"] == h and r["scope"] == scope and r["plugin"] == plugin]
 	assert hits, f"缺少 {h}/{scope}/{plugin} 行：{rows}"
@@ -1574,10 +1590,10 @@ assert r["lock"] == "-", r
 r = find("claude-code", "project", "flow")
 assert r["version"] == "1.0.0" and r["lock"] == "ok", r
 assert repo in r["source"], r
-assert find("pi", "package", "pstack")["version"] == "4.4.4"
-assert find("omp", "cache", "flow")["version"] == "1.2.3+jstack.abc"
-assert find("cursor", "local", "spec")["version"] == "3.3.3"
-assert find("codex", "cache", "spec")["version"] == "0.9.0"
+assert find("pi", "package", "pstack")["version"] == pv
+assert find("omp", "cache", "flow")["version"] == fv
+assert find("cursor", "local", "spec")["version"] == sv
+assert find("codex", "cache", "spec")["version"] == sv
 assert find("vendor", "project", "pstack")["lock"] == "ok"
 assert find("vendor", "project", "flow")["lock"] == "ok"
 assert len(rows) >= 7, len(rows)
@@ -1589,19 +1605,46 @@ PY
 
 	# 篡改 lock：版本漂移要失败；--no-fail 只警告。
 	printf '{"version":1,"vendor":{"tree":"%s"},"plugins":{"pstack":{"version":"9.9.9"},"flow":{"version":"0.0.0"}}}\n' "$tree" >"$r/.jstack/lock.json"
-	if PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" doctor --repo "$r" >/dev/null 2>&1; then
+	if PATH="$bin:$PATH" HOME="$h" CODEX_HOME="$h/.codex" PI_AGENT_DIR="$h/.pi/agent" OMP_PLUGINS_DIR="$h/.omp/plugins" CURSOR_PLUGINS_DIR="$h/.cursor/plugins" "$ROOT/jstack" doctor --repo "$r" >/dev/null 2>&1; then
 		say "✗ lock 版本被篡改后 doctor 没有失败"
 		rc=1
 	fi
-	if ! PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" doctor --repo "$r" --no-fail >/dev/null 2>&1; then
+	if ! PATH="$bin:$PATH" HOME="$h" CODEX_HOME="$h/.codex" PI_AGENT_DIR="$h/.pi/agent" OMP_PLUGINS_DIR="$h/.omp/plugins" CURSOR_PLUGINS_DIR="$h/.cursor/plugins" "$ROOT/jstack" doctor --repo "$r" --no-fail >/dev/null 2>&1; then
 		say "✗ doctor --no-fail 仍然失败"
 		rc=1
 	fi
-	out=$(PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" doctor --repo "$r" --json 2>/dev/null || true)
+	out=$(PATH="$bin:$PATH" HOME="$h" CODEX_HOME="$h/.codex" PI_AGENT_DIR="$h/.pi/agent" OMP_PLUGINS_DIR="$h/.omp/plugins" CURSOR_PLUGINS_DIR="$h/.cursor/plugins" "$ROOT/jstack" doctor --repo "$r" --json 2>/dev/null || true)
 	printf '%s\n' "$out" | grep -q 'drift' || {
 		say "✗ doctor --json 没有报 drift"
 		rc=1
 	}
+
+	# 各 harness 的旧缓存必须被标为 stale；Codex 读 manifest 而不是目录名。
+	printf '{"version":"0.0.0"}\n' >"$h/.pi/agent/npm/node_modules/jstack/plugins/pstack/.claude-plugin/plugin.json"
+	printf '{"version":"0.0.0"}\n' >"$h/.cursor/plugins/local/spec/.claude-plugin/plugin.json"
+	printf '{"version":"0.0.0"}\n' >"$h/.codex/plugins/cache/jstack/spec/0.9.0/.claude-plugin/plugin.json"
+	mv "$h/.omp/plugins/cache/plugins/jstack___flow___$fv" "$h/.omp/plugins/cache/plugins/jstack___flow___0.0.0"
+	out=$(PATH="$bin:$PATH" HOME="$h" CODEX_HOME="$h/.codex" PI_AGENT_DIR="$h/.pi/agent" OMP_PLUGINS_DIR="$h/.omp/plugins" CURSOR_PLUGINS_DIR="$h/.cursor/plugins" "$ROOT/jstack" doctor --repo "$r" --json 2>/dev/null || true)
+	if ! printf '%s\n' "$out" | jq -e '[.[] | select(.lock == "stale") | .harness] | (index("pi") != null and index("omp") != null and index("cursor") != null and index("codex") != null)' >/dev/null; then
+		say "✗ doctor 没有发现各 harness 的旧缓存"
+		rc=1
+	fi
+	printf '{"version":"%s"}\n' "$pv" >"$h/.pi/agent/npm/node_modules/jstack/plugins/pstack/.claude-plugin/plugin.json"
+	printf '{"version":"%s"}\n' "$sv" >"$h/.cursor/plugins/local/spec/.claude-plugin/plugin.json"
+	printf '{"version":"%s"}\n' "$sv" >"$h/.codex/plugins/cache/jstack/spec/0.9.0/.claude-plugin/plugin.json"
+	mv "$h/.omp/plugins/cache/plugins/jstack___flow___0.0.0" "$h/.omp/plugins/cache/plugins/jstack___flow___$fv"
+	mkdir -p "$h/.omp/agent/extensions" "$h/other/plugins/flow/.claude-plugin" "$h/other/plugins/flow/extensions"
+	printf '{"version":"0.0.0"}\n' >"$h/other/plugins/flow/.claude-plugin/plugin.json"
+	: >"$h/other/plugins/flow/extensions/omp.ts"
+	printf 'export { default } from "%s";\n' "$h/other/plugins/flow/extensions/omp.ts" >"$h/.omp/agent/extensions/jstack-flow-gates.ts"
+	out=$(PATH="$bin:$PATH" HOME="$h" CODEX_HOME="$h/.codex" PI_AGENT_DIR="$h/.pi/agent" OMP_PLUGINS_DIR="$h/.omp/plugins" CURSOR_PLUGINS_DIR="$h/.cursor/plugins" "$ROOT/jstack" doctor --repo "$r" --json 2>/dev/null || true)
+	printf '%s\n' "$out" | jq -e 'any(.[]; .harness == "omp" and .plugin == "flow" and .lock == "stale")' >/dev/null || rc=1
+	# manifest 版本匹配也不能掩盖扩展目标缺失。
+	printf '{"version":"%s"}\n' "$fv" >"$h/other/plugins/flow/.claude-plugin/plugin.json"
+	rm -f "$h/other/plugins/flow/extensions/omp.ts"
+	out=$(PATH="$bin:$PATH" HOME="$h" CODEX_HOME="$h/.codex" PI_AGENT_DIR="$h/.pi/agent" OMP_PLUGINS_DIR="$h/.omp/plugins" CURSOR_PLUGINS_DIR="$h/.cursor/plugins" "$ROOT/jstack" doctor --repo "$r" --json 2>/dev/null || true)
+	printf '%s\n' "$out" | jq -e 'any(.[]; .harness == "omp" and .plugin == "flow" and .lock == "stale")' >/dev/null || { say "✗ OMP 扩展目标缺失时 doctor 没有报错"; rc=1; }
+	rm -f "$h/.omp/agent/extensions/jstack-flow-gates.ts"
 
 	# 源目录版本漂移（本地 marketplace 的记录落后）也要失败。
 	printf '{"version":1,"vendor":{"tree":"%s"},"plugins":{"pstack":{"version":"9.9.9"},"flow":{"version":"1.0.0"}}}\n' "$tree" >"$r/.jstack/lock.json"
@@ -1610,8 +1653,62 @@ PY
 printf '%s\n' '[{"id":"pstack@jstack","version":"9.9.9","scope":"user","installPath":"/fake/user/pstack","readFromFolder":"/fake/src/pstack","folderVersion":"9.9.10"},{"id":"flow@jstack","version":"1.0.0","scope":"project","installPath":"/fake/proj/flow","readFromFolder":"/fake/src/flow","folderVersion":"1.0.0","projectPath":"$r"}]'
 EOF
 	chmod +x "$bin/claude"
-	if PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" doctor --repo "$r" >/dev/null 2>&1; then
+	if PATH="$bin:$PATH" HOME="$h" CODEX_HOME="$h/.codex" PI_AGENT_DIR="$h/.pi/agent" OMP_PLUGINS_DIR="$h/.omp/plugins" CURSOR_PLUGINS_DIR="$h/.cursor/plugins" "$ROOT/jstack" doctor --repo "$r" >/dev/null 2>&1; then
 		say "✗ 源目录版本漂移时 doctor 没有失败"
+		rc=1
+	fi
+
+	# build 只提示各 scope 的旧缓存；不存在记录时静默。
+	mkdir -p "$h/.claude/plugins"
+	printf '{"plugins":{"flow@jstack":[{"scope":"local","projectPath":"%s","version":"0.0.0"}]}}\n' "$r" >"$h/.claude/plugins/installed_plugins.json"
+	out=$(HOME="$h" CLAUDE_CONFIG_DIR="$h/.claude" warn_claude_cache)
+	grep -q 'flow.*local' <<<"$out" || { say "✗ build 没有提醒旧 Claude 缓存"; rc=1; }
+
+	# 伪 CLI 不改变旧缓存：install 必须失败；同 scope 其他项目的记录不能充当本项目。
+	cat >"$bin/claude" <<'SH'
+#!/usr/bin/env bash
+if [ "$1 $2" = "plugin list" ]; then
+  printf '%s\n' '[{"id":"flow@jstack","scope":"local","projectPath":"/other"}]'
+elif [ "$1 $2 $3" = "plugin marketplace list" ]; then
+  printf '%s\n' '[]'
+fi
+exit 0
+SH
+	chmod +x "$bin/claude"
+	if (cd "$r" && PATH="$bin:$PATH" HOME="$h" CLAUDE_CONFIG_DIR="$h/.claude" install_claude_user local) >"$WORK/claude-install-test" 2>&1; then
+		say "✗ Claude 安装接受了旧缓存"
+		rc=1
+	fi
+	grep -q '缓存未更新' "$WORK/claude-install-test" || rc=1
+	# 其他项目的同 scope 新版本也不能通过；本项目的记录必须匹配。
+	jq -n --arg repo "$r" --arg p "$(built_plugin_version pi pstack)" --arg s "$(built_plugin_version pi spec)" --arg f "$(built_plugin_version pi flow)" '
+		{plugins: {"pstack@jstack": [{scope:"local",projectPath:$repo,version:"0.0.0"},{scope:"local",projectPath:"/other",version:$p}],
+		"spec@jstack": [{scope:"local",projectPath:$repo,version:$s}], "flow@jstack": [{scope:"local",projectPath:$repo,version:$f}]}}' >"$h/.claude/plugins/installed_plugins.json"
+	if (cd "$r" && PATH="$bin:$PATH" HOME="$h" CLAUDE_CONFIG_DIR="$h/.claude" install_claude_user local) >"$WORK/claude-install-test" 2>&1; then
+		say "✗ Claude 安装把其他项目的版本当成本项目"
+		rc=1
+	fi
+	jq --arg v "$(built_plugin_version pi pstack)" '.plugins["pstack@jstack"][0].version = $v' "$h/.claude/plugins/installed_plugins.json" >"$WORK/claude-cache"
+	cp "$WORK/claude-cache" "$h/.claude/plugins/installed_plugins.json"
+	if ! (cd "$r" && PATH="$bin:$PATH" HOME="$h" CLAUDE_CONFIG_DIR="$h/.claude" install_claude_user local) >"$WORK/claude-install-test" 2>&1; then
+		say "✗ Claude 安装没有接受匹配的版本"
+		rc=1
+	fi
+
+	# Codex 已安装时也必须调用 add；伪 CLI 写出 manifest 来模拟刷新。
+	cat >"$bin/codex" <<'SH'
+#!/usr/bin/env bash
+if [ "$1 $2" = "plugin add" ]; then
+  p=${3%@*}
+  mkdir -p "$CODEX_HOME/plugins/cache/jstack/$p/cache/.claude-plugin"
+  cp "$JSTACK_TEST_ROOT/plugins/$p/.claude-plugin/plugin.json" "$CODEX_HOME/plugins/cache/jstack/$p/cache/.claude-plugin/plugin.json"
+  printf '%s\n' "$p" >>"$CODEX_HOME/adds"
+fi
+SH
+	chmod +x "$bin/codex"
+	if ! (PATH="$bin:$PATH" HOME="$h" CODEX_HOME="$h/.codex" JSTACK_TEST_ROOT="$ROOT" install_codex_user) >"$WORK/codex-install-test" 2>&1 ||
+		[ "$(wc -l <"$h/.codex/adds" | tr -d ' ')" != 3 ]; then
+		say "✗ Codex 安装没有刷新并核对缓存"
 		rc=1
 	fi
 
@@ -3155,6 +3252,19 @@ doctor_add() { # <文件> <harness> <scope> <plugin> <version> <path> <source> <
 	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" >>"$1"
 }
 
+built_plugin_version() { # <harness> <plugin>
+	local h=$1 p=$2 src
+	src="$ROOT/plugins/$p"
+	[ "$h" != cursor ] || [ "$p" != pstack ] || src="$ROOT/plugins/pstack-cursor"
+	doctor_manifest_version "$src"
+}
+
+plugin_is_stale() { # <harness> <plugin> <installed version>
+	local expected
+	expected=$(built_plugin_version "$1" "$2") || return 1
+	[ -n "$expected" ] && [ "$3" != "$expected" ]
+}
+
 doctor_pi_tree() { # <文件> <已见文件> <包目录>
 	local file=$1 seen=$2 pkg=${3%/} plugin v
 	[ -d "$pkg" ] || return 0
@@ -3170,7 +3280,9 @@ doctor_pi_tree() { # <文件> <已见文件> <包目录>
 		v=$(doctor_manifest_version "$pkg/plugins/$plugin") || v=
 		[ -n "$v" ] || v=$(jq -r '.version // empty' "$pkg/package.json" 2>/dev/null) || v=
 		[ -n "$v" ] || v=-
-		doctor_add "$file" pi package "$plugin" "$v" "$pkg/plugins/$plugin" "path:$pkg" 0 0
+		local stale=0
+		plugin_is_stale pi "$plugin" "$v" && stale=1
+		doctor_add "$file" pi package "$plugin" "$v" "$pkg/plugins/$plugin" "path:$pkg" 0 "$stale"
 	done
 }
 
@@ -3246,7 +3358,26 @@ cmd_doctor() {
 		plugin=${plugin%%___*}
 		version=${h##*___}
 		[ -n "$plugin" ] && [ "$version" != "$h" ] && [ -n "$version" ] || continue
-		doctor_add "$file" omp cache "$plugin" "$version" "$path" omp-cache 0 0
+		stale=0
+		plugin_is_stale omp "$plugin" "$version" && stale=1
+		# 用户扩展可能指向另一棵 checkout；与 flow 缓存版本分别核对。
+		if [ "$plugin" = flow ] && [ -f "$HOME/.omp/agent/extensions/jstack-flow-gates.ts" ]; then
+			source=$(sed -nE 's/^export \{ default \} from "([^"]+)";$/\1/p' "$HOME/.omp/agent/extensions/jstack-flow-gates.ts" | head -1)
+			case $source in
+			/*) ;;
+			*) source="$HOME/.omp/agent/extensions/$source" ;;
+			esac
+			fold=$(doctor_manifest_version "$(dirname "$(dirname "$source")")") || fold=
+			if [ ! -f "$source" ] || [ -z "$fold" ] || [ "$fold" != "$version" ]; then
+				stale=1
+				source="omp-cache extension:${fold:-unknown}"
+			else
+				source=omp-cache
+			fi
+		else
+			source=omp-cache
+		fi
+		doctor_add "$file" omp cache "$plugin" "$version" "$path" "$source" 0 "$stale"
 	done
 
 	# Cursor：本地插件目录。
@@ -3255,7 +3386,9 @@ cmd_doctor() {
 		[ -d "$path" ] || continue
 		plugin=${path##*/}
 		version=$(doctor_manifest_version "$path") || continue
-		doctor_add "$file" cursor local "$plugin" "$version" "$path" cursor-local 0 0
+		stale=0
+		plugin_is_stale cursor "$plugin" "$version" && stale=1
+		doctor_add "$file" cursor local "$plugin" "$version" "$path" cursor-local 0 "$stale"
 	done
 
 	# Codex：marketplace 缓存是 <CODEX_HOME>/plugins/cache/<marketplace>/<插件>/<版本>。
@@ -3264,8 +3397,11 @@ cmd_doctor() {
 		[ -d "$path" ] || continue
 		plugin=$(dirname "$path")
 		plugin=${plugin##*/}
-		version=${path##*/}
-		doctor_add "$file" codex cache "$plugin" "$version" "$path" codex-cache 0 0
+		version=$(jq -r '.version // empty' "$path/.claude-plugin/plugin.json" 2>/dev/null) || version=
+		[ -n "$version" ] || version=unknown
+		stale=0
+		plugin_is_stale codex "$plugin" "$version" && stale=1
+		doctor_add "$file" codex cache "$plugin" "$version" "$path" codex-cache 0 "$stale"
 	done
 
 	# 仓库 vendor 树。
@@ -3367,7 +3503,7 @@ with open(sys.argv[1], encoding="utf-8") as f:
 		rows.append(dict(zip(("harness", "scope", "plugin", "version", "path", "source", "lock"), parts)))
 print(json.dumps(rows, ensure_ascii=False, indent=2))
 PY
-		[ "$stale_n" -eq 0 ] || say "! ${stale_n} 条安装的记录版本落后于源目录（本地 marketplace 直接从源目录加载）" >&2
+		[ "$stale_n" -eq 0 ] || say "! ${stale_n} 条安装的记录与构建版本或对应扩展不一致；Claude Desktop 从缓存加载" >&2
 		[ "$drift" -eq 0 ] || say "! ${drift} 条安装有版本漂移或与 lock 不一致" >&2
 	else
 		if [ "$n" -eq 0 ]; then
@@ -3869,25 +4005,33 @@ install_omp_user() {
 }
 
 install_codex_user() {
-	local p
+	local p path expected actual found
 	command -v codex >/dev/null 2>&1 || die "需要 Codex CLI（codex）"
+	command -v jq >/dev/null 2>&1 || die "核对 Codex 缓存版本需要 jq"
 	codex plugin marketplace add "$ROOT" --json >/dev/null 2>&1 ||
 		die "codex plugin marketplace add $ROOT 失败"
 	for p in $PLUGINS; do
-		# 已在 jstack marketplace 下装过就跳过；codex plugin add 不是幂等的幂等写法。
-		if codex plugin list 2>/dev/null | grep -qE "^${p}@jstack[[:space:]]+installed"; then
-			continue
-		fi
-		codex plugin add "$p@jstack" --json >/dev/null 2>&1 ||
-			die "codex plugin add $p@jstack 失败"
+		codex plugin add "$p@jstack" --json >/dev/null 2>&1 || die "codex plugin add $p@jstack 失败"
+		expected=$(json_get version "$ROOT/plugins/$p/.claude-plugin/plugin.json")
+		found=0
+		for path in "${CODEX_HOME:-$HOME/.codex}/plugins/cache/jstack/$p"/*; do
+			[ -f "$path/.claude-plugin/plugin.json" ] || continue
+			actual=$(jq -r '.version // empty' "$path/.claude-plugin/plugin.json" 2>/dev/null || true)
+			[ "$actual" != "$expected" ] || found=1
+		done
+		[ "$found" -eq 1 ] || die "Codex $p 缓存没有构建版本 $expected；请检查 codex plugin add $p@jstack"
 	done
-	say "✓ 已在 Codex 里添加 jstack marketplace 并安装 pstack、spec、flow"
+	say "✓ 已刷新 Codex 的 pstack、spec、flow 缓存"
+	say "! 用户级安装不含门禁和 agents；门禁由 --scope project 写入。"
 	say "重开 Codex 会话；用 \$flow:route 或 /skills 选择器验证。"
 }
 
 install_claude_user() { # <scope>
-	local scope=$1 p conflicts tool installed scoped by_scope=0 installed_now=0 markets
+	local scope=$1 p conflicts tool installed scoped by_scope=0 installed_now=0 markets cache expected repo
 	command -v claude >/dev/null || die "需要 Claude Code CLI（claude）"
+	command -v jq >/dev/null || die "核对 Claude 缓存版本需要 jq"
+	cache="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/installed_plugins.json"
+	repo=$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)
 	for p in $PLUGINS; do
 		[ -f "$ROOT/plugins/$p/.claude-plugin/plugin.json" ] || { cmd_build; break; }
 	done
@@ -3898,7 +4042,7 @@ install_claude_user() { # <scope>
 	scoped=$installed
 	if command -v jq >/dev/null 2>&1; then
 		scoped=$(printf '%s\n' "$installed" |
-			jq -r --arg s "$scope" '.[] | select((.scope // "") == $s) | .id' 2>/dev/null || true)
+			jq -r --arg s "$scope" --arg repo "$repo" '.[] | select((.scope // "") == $s and ($s != "local" or .projectPath == $repo)) | .id' 2>/dev/null || true)
 		by_scope=1
 	fi
 	# 别的 marketplace 里的同名插件命令前缀相同，同时装会冲突，例如所有 pstack 移植版都是 /pstack:*。
@@ -3919,13 +4063,19 @@ install_claude_user() { # <scope>
 		fi
 		if [ "$installed_now" -eq 1 ]; then
 			claude plugin enable "$p@$MARKETPLACE" --scope "$scope" >/dev/null 2>&1 || true
-			# 本地 marketplace 的插件本来就从源目录加载；update 让 claude plugin list 里记的版本号跟上，
-			# marketplace 来自 GitHub 时则真正拉取新版本。
+			# CLI 可从源目录读取，桌面端仍从缓存加载；更新后核对缓存记录。
 			claude plugin update "$p@$MARKETPLACE" --scope "$scope" >/dev/null 2>&1 || true
-			say "✓ $p@$MARKETPLACE 已是最新，重开会话或运行 /reload-plugins 生效。"
 		else
 			claude plugin install "$p@$MARKETPLACE" --scope "$scope"
 		fi
+		expected=$(json_get version "$ROOT/plugins/$p/.claude-plugin/plugin.json")
+		if [ ! -f "$cache" ] || ! jq -e --arg id "$p@$MARKETPLACE" --arg scope "$scope" \
+			--arg repo "$repo" --arg version "$expected" \
+			'any(.plugins[$id][]?; .scope == $scope and ($scope != "local" or .projectPath == $repo) and .version == $version)' \
+			"$cache" >/dev/null; then
+			die "Claude $p@$MARKETPLACE 的 $scope 缓存未更新到 $expected；手动运行 claude plugin update $p@$MARKETPLACE --scope $scope 并检查 $cache"
+		fi
+		say "✓ $p@$MARKETPLACE 的 $scope 缓存版本为 $expected"
 	done
 	for tool in bun gh rg jq; do
 		command -v "$tool" >/dev/null || case $tool in
@@ -3942,8 +4092,7 @@ install_claude_user() { # <scope>
   2. 运行 ./jstack models init 配置各 harness 的模型，再运行 ./jstack models apply：
      写入 ~/.claude/rules/pstack-models.md 和 ~/.claude/settings.json 的模型 env（只需一次）
   3. 在要用 spec 的仓库里运行一次 /spec:setup-matt-pocock-skills，选定 issue tracker 和领域文档的位置
-  4. 运行 /pstack:poteto-mode <任务描述> 开始工作。需求不清或任务较大时，先用 /spec:grill-with-docs、
-     /spec:to-spec、/spec:to-tickets 澄清和拆解，再把 spec 或 ticket 交给 poteto-mode
+  4. 运行 /flow:route <任务描述> 开始工作。
 EOF
 }
 
