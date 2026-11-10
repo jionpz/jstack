@@ -1,0 +1,25 @@
+{
+  "name": "spec",
+  "version": "1.3.2+jstack.93e1737",
+  "description": "Matt Pocock skills 里负责需求澄清和任务拆解的部分：grill-with-docs、to-spec、to-tickets、wayfinder、handoff，以及它们运行时调用的 skill。产出的 spec 和 tickets 交给 /pstack:poteto-mode 执行，不含 implement 这类实现编排。",
+  "author": {
+    "name": "Matt Pocock",
+    "url": "https://www.aihero.dev"
+  },
+  "homepage": "https://github.com/mattpocock/skills",
+  "repository": "https://github.com/mattpocock/skills",
+  "license": "MIT",
+  "keywords": ["spec", "requirements", "grilling", "tickets", "planning", "handoff"],
+  "skills": [
+    "./skills/engineering/grill-with-docs",
+    "./skills/engineering/to-spec",
+    "./skills/engineering/to-tickets",
+    "./skills/engineering/wayfinder",
+    "./skills/productivity/handoff",
+    "./skills/productivity/grilling",
+    "./skills/engineering/domain-modeling",
+    "./skills/engineering/research",
+    "./skills/engineering/prototype",
+    "./skills/engineering/setup-matt-pocock-skills"
+  ]
+}

@@ -30,7 +30,7 @@ Claude Code 有 `--scope project`，其余 harness 只有用户级安装；四�
 
 - `vendor/plugins/` 保持完整的插件布局，不摊平 skill。路径解析、相对链接、adapter 引用都按插件目录原样工作。
 - 只把 9 个入口 skill 链到各 harness 的项目 skill 目录：flow 的 `route`、`archive`，pstack 的 `poteto-mode`，spec 的 `grill-with-docs`、`to-spec`、`to-tickets`、`wayfinder`、`handoff`、`setup-matt-pocock-skills`。其余 skill 由 `locate.sh` 按物理路径读取，不进入发现目录。
-- 发现目录按实测：Claude Code 用 `.claude/skills`，Pi 和 OMP 共用 `.agents/skills`（两者都按项目向上查找），Cursor 用 `.cursor/skills`。链接用相对路径，仓库搬走也有效。
+- 发现目录按实测：Claude Code 用 `.claude/skills`；Pi、OMP、Codex 和 Cursor 共用 `.agents/skills`（Pi 和 OMP 按项目向上查找，Codex 项目根实测可读，Cursor 应用内置读取）。链接用相对路径，仓库搬走也有效。旧安装留在 `.cursor/skills` 的 jstack 软链会在 install 时清理；`.agents` 里已有的同名入口视为用户配置，install 保留并跳过，不覆盖。
 - Claude Code 不注册 marketplace：入口 skill 链进 `.claude/skills`，`poteto-agent`、`comment-sicko` 复制到 `.claude/agents`，flow 的三个 hook 写进项目 `.claude/settings.json`，命令用 `${CLAUDE_PROJECT_DIR}` 指向 vendor。
 - Cursor 项目级同样只链入口：flow 的三个 hook 写进项目 `.cursor/hooks.json`（Cursor 原生事件与输出协议），命令用 `${CURSOR_PROJECT_DIR}` 指向 vendor。
 
@@ -70,7 +70,7 @@ Claude Code 有 `--scope project`，其余 harness 只有用户级安装；四�
 
 ### 5. 不新建第五套安装器
 
-全部扩展 `./jstack` 子命令（install / doctor），底层仍用各 harness 的原生机制：Claude Code 用户级用 plugin marketplace、项目级用 skill 目录与 settings hooks，Pi 用 package 或 `.agents/skills`，OMP 用 plugin 或 `.agents/skills`，Cursor 用本地插件目录复制或 `.cursor/skills`。jstack 只负责编排、放置 vendor、写 lock 和核对。
+全部扩展 `./jstack` 子命令（install / doctor），底层仍用各 harness 的原生机制：Claude Code 用户级用 plugin marketplace、项目级用 skill 目录与 settings hooks，Pi 用 package 或 `.agents/skills`，OMP 用 plugin 或 `.agents/skills`，Cursor 用本地插件目录复制或 `.agents/skills`。jstack 只负责编排、放置 vendor、写 lock 和核对。
 
 ### 6. 门禁可降级，不可静默
 
@@ -109,6 +109,7 @@ flow 的三个 hook（阶段注入、Stop 证据、must-stop guard）目前有 C
 | F6 | Pi extension / OMP hook 能否承载阶段注入、Stop 证据检查、命令 guard 中的哪些 | #28 |
 | F7 | Cursor 的 hooks（若存在）事件模型能否承载 guard / Stop；不能时如何降级 | #27 已实测：Cursor 3.27 有完整 hooks 运行时。插件清单可指向 Cursor 原生配置；`beforeShellExecution` 的 `ask` 会弹确认（`preToolUse` 的 `ask` 不执行，降级为 `deny`），`stop` 输出 `followup_message`，`beforeSubmitPrompt` 输出 `additional_context`。`stop` 输入没有最后一条回复，`ask` 只能无条件放行。项目级写 `.cursor/hooks.json` |
 | F8 | 四个 harness 同时存在用户级与项目级安装时的优先级与去重规则 | #25 |
+| F9 | Cursor 是否读取项目 `.agents/skills` | 2026-11-10 从 Cursor 应用 bundle 实测：扫描列表包含 `.agents/skills`、`.cursor/skills`、`.claude/skills`、`.codex/skills`；项目级入口统一放 `.agents/skills`，旧 `.cursor/skills` 软链由 install 清理 |
 
 ## 被否方案
 
