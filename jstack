@@ -33,6 +33,7 @@
 #   ./jstack models apply [--dry-run] [--yes]      写入四个 harness 的模型规则；--dry-run 只打印
 #   ./jstack models status                         premium 今日 token 用量与预算
 #   ./jstack doctor [--json] [--no-fail] [--repo <dir>]  只读列出各 harness × 作用域的安装、版本、来源与 lock 状态
+#   ./jstack managed-export [--root <dir>]           导出只读调查协议包给 Keel；不改既有交互工作流
 #
 # upstream/<插件> 是上游原样副本，plugins/<插件> 是构建产物，两者都不要手改。
 # 要改 pstack 或 spec，就在 patches/<插件>/ 下加补丁；flow 没有上游，直接改 src/flow。
@@ -1622,6 +1623,22 @@ EOF
 }
 
 # 项目级安装：vendor、入口软链、Claude hooks、lock，以及 doctor 的树哈希与入口核对。
+# 只比较入口名称、链接目标和内容；ls -l 的分钟级 mtime 会让跨分钟运行误报不幂等。
+install_entry_snapshot() {
+	python3 - "$1" <<'PY'
+import hashlib, json, os, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+rows = []
+for name in ('.claude/skills', '.agents/skills', '.cursor/skills', '.codex/agents'):
+    directory = root / name
+    for entry in sorted(directory.iterdir()):
+        value = ('link', os.readlink(entry)) if entry.is_symlink() else ('file', hashlib.sha256(entry.read_bytes()).hexdigest())
+        rows.append((str(entry.relative_to(root)), value))
+print(json.dumps(rows, sort_keys=True))
+PY
+}
+
 check_install_project() {
 	local h="$WORK/install-home" r="$WORK/install-repo" bin="$WORK/install-bin" out want rc=0
 	local d count p e v tree before after link path err="$WORK/install.err"
@@ -1772,14 +1789,14 @@ SH
 
 	# 重复运行：不新增链接、不重复 hooks、lock 不变。
 	before=$({ tree_hash "$r/.pi"; tree_hash "$r/.omp"; tree_hash "$r/.agents/agents"; tree_hash "$r/.cursor/agents"
-		LC_ALL=C /bin/ls -lA "$r/.claude/skills" "$r/.agents/skills" "$r/.cursor/skills" "$r/.codex/agents"
+		install_entry_snapshot "$r"
 		cat "$r/.claude/settings.json" "$r/.cursor/hooks.json" "$r/.codex/hooks.json" "$r/.jstack/lock.json" "$r"/.codex/agents/*.toml; } | sha256_stream)
 	if ! PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" install --all --scope project --repo "$r" >/dev/null 2>&1; then
 		say "✗ 重复运行 install 失败"
 		rc=1
 	fi
 	after=$({ tree_hash "$r/.pi"; tree_hash "$r/.omp"; tree_hash "$r/.agents/agents"; tree_hash "$r/.cursor/agents"
-		LC_ALL=C /bin/ls -lA "$r/.claude/skills" "$r/.agents/skills" "$r/.cursor/skills" "$r/.codex/agents"
+		install_entry_snapshot "$r"
 		cat "$r/.claude/settings.json" "$r/.cursor/hooks.json" "$r/.codex/hooks.json" "$r/.jstack/lock.json" "$r"/.codex/agents/*.toml; } | sha256_stream)
 	if [ "$before" != "$after" ]; then
 		say "✗ 重复运行 install 改变了安装产物（hooks、链接或 lock）"
@@ -2162,6 +2179,13 @@ cmd_check() {
 	check_install_project || rc=1
 	check_codex_manifest || rc=1
 	# 阶段门禁对构建产物测。macOS 上用 /bin/bash 跑，确认 hook 在系统自带的 bash 3.2 下也能用。
+	if python3 "$ROOT/tests/managed-export.py" >"$WORK/managed-export" 2>&1; then
+		say "✓ managed 只读导出协议测试通过（4 项）"
+	else
+		say "✗ managed 只读导出协议测试失败："
+		cat "$WORK/managed-export"
+		rc=1
+	fi
 	if "$([ -x /bin/bash ] && echo /bin/bash || echo bash)" "$ROOT/tests/flow-hooks.sh" >"$WORK/hooks" 2>&1; then
 		say "✓ flow 的 stage.sh 和 hooks 测试通过（$(grep -c '^✓' "$WORK/hooks") 项）"
 	else
@@ -4106,6 +4130,7 @@ cmd_install_pi() {
 }
 
 case "${1:-}" in
+managed-export) shift; exec python3 "$ROOT/scripts/managed-export.py" "$@" ;;
 install) shift; cmd_install "$@" ;;
 install-pi) cmd_install_pi ;;
 install-cursor) shift; cmd_install_cursor "$@" ;;
