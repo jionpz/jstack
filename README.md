@@ -93,7 +93,7 @@ claude plugin marketplace add jionpz/jstack && claude plugin install pstack@jsta
 
 它会执行 `pi install <仓库> --approve`，并把 `plugins/pstack/agents/` 里的 `poteto-agent`、`comment-sicko` 转换后写到 `~/.pi/agent/agents/`（`background: true` 改成 Pi 的 `run_in_background: true`）。重复运行是幂等的；同名的非 jstack agent 文件不会被覆盖。
 
-在 Pi 里用 `/skill:poteto-mode`、`/skill:route` 这类命令调用入口。pstack 的入口 skill 都是 `disable-model-invocation: true`，不会出现在模型自动选择的 skill 列表里，这是正常的，`/skill:<名字>` 仍然能加载。子 agent 需要 `@tintinweb/pi-subagents`；`install-pi` 检测不到会提示安装命令。Pi 的项目级扩展首次加载可能要求信任项目扩展；核对 `.pi/extensions/jstack-flow-gates.ts` 指向本仓库 vendor 后，在 Pi 中信任它，门禁才会运行。
+在 Pi 里用 `/skill:poteto-mode`、`/skill:route` 这类命令调用入口。pstack 的入口 skill 都是 `disable-model-invocation: true`，不会出现在模型自动选择的 skill 列表里，这是正常的，`/skill:<名字>` 仍然能加载。子 agent 由固定的 `@tintinweb/pi-subagents@0.23.2` 提供；`install-pi` 和 `install --all` 检测到目标作用域没有它时，会用原生 `pi install` 安装（项目级加 `-l`，并设置 `npm_config_ignore_scripts=true`），已有包则按作用域跳过并报告版本，`--dry-run` 不联网也不写文件。安装只动包资源，不改 provider、models、auth 或权限设置，也不会另外装一个 hooks 包。Pi 的项目级扩展首次加载可能要求信任项目扩展；核对 `.pi/extensions/jstack-flow-gates.ts` 指向本仓库 vendor 后，在 Pi 中信任它，门禁才会运行。
 
 ### OMP
 
@@ -230,6 +230,18 @@ route 只在证据定不了、而且做错代价高的决策上停下来问你�
 收尾摘要固定五段：目标、改了什么、验证证据、采用的默认决定、需要你处理的事（外加门禁未生效时的说明），控制在一手机屏内。业务仓库的 `CLAUDE.md` 或 `.claude/rules/` 里定义了不同的分级、spec 位置或门禁时，以仓库为准。
 
 `disable-model-invocation: true` 的 skill（pstack 57 个、spec 6 个：5 个入口加 setup）不能被模型用 Skill 工具调用，Claude Code 会直接拒绝，提示 "reserved for explicit user invocation"。route 用随附的 `locate.sh` 找到这些提供者文件的路径，然后直接读取并照着做，这也是 pstack 内部 skill 之间互相路由的方式。`locate.sh` 不写死 skill 名，而是读同目录 `stages.md` 的 Providers 列：换掉某个阶段的提供者只改表里那一格。它支持本地 marketplace、Claude Code 的 GitHub 缓存、OMP 缓存、Cursor 本地插件、Pi package、Codex marketplace 缓存和入口软链七种安装布局，入口 skill 以软链暴露时按物理路径解析；任一提供者找不到就点名并以非 0 退出。
+
+### 工具配置
+
+[`src/flow/skills/route/stages.md`](src/flow/skills/route/stages.md) 的末列给每个阶段指定一个 Tool profile；[`tool-policy.json`](src/flow/skills/route/tool-policy.json) 只定义 profile（role、必需能力和可选能力）和 Pi / Claude Code 的原生映射，不复制阶段表。辅助角色 investigator、tianwen 也有 profile，但它们不是阶段。
+
+```bash
+./jstack tools export --pretty
+./jstack tools resolve --stage execute --harness pi --inventory inventory.json
+./jstack tools resolve --role verifier --harness claude-code --inventory inventory.json --allow-shell-fallback
+```
+
+`export` 输出 `protocol_version=1.0`、`source_commit`、阶段到 profile 的映射、profiles、harness 映射和 `content_digest`。digest 是对去掉 `content_digest` 的对象按键递归排序后的紧凑 JSON 取 UTF-8 SHA256，Keel 可以独立复算。`resolve` 只读取 inventory 里真实存在的工具：缺必需工具时拒绝，缺可选工具时列在 `missing_optional`，只有显式传 `--allow-shell-fallback` 才会给只读角色加 shell 并输出 `degradations`。它只打印结果，不执行命令，也不在交互式会话里切换工具。原生 `--tools` / `--allowedTools` 的用法、Pi 推荐包和托管委派的边界见 [`docs/harness/tools.md`](docs/harness/tools.md)。
 
 几条硬规则：
 
@@ -385,7 +397,9 @@ pstack 只同步 Claude Code 树；Cursor 版由 `build` 转换，不再单独�
 13. 模型分层命令（`./jstack models`）：在临时 HOME 里跑 init、set、apply、status，核对四个 harness 的规则文件、Pi/OMP 标记块合并与首次确认、旧配置迁移备份、roles 覆盖、settings.json 的模型 env 和原有键、备份幂等、`--dry-run` 不落盘、预算降级，以及今日 token 统计
 14. 仓库级配置（`<repo>/.jstack/config.json`，ADR-0006）：当前仓库有配置时校验字段与 `stages_file`；在临时仓库里验证 `stage.sh` 按 `stages_file` 收/拒阶段、`guard.sh` 合并 `must_stop` 并在 reason 里标明“仓库追加”、`prompt.sh` 注入配置，坏 JSON、禁用键、缺 `execute` 都要报出来
 15. `./jstack doctor`：临时 HOME 构造 Claude user/project、Pi package、OMP 缓存、Cursor 本地插件、Codex 缓存、vendor 和 lock 七种来源，核对表格与 `--json` 的值；篡改 lock 版本或源目录版本后必须报漂移并返回非 0，`--no-fail` 只警告
-16. 项目级安装（`./jstack install --all --scope project`）：在临时仓库和假 HOME 里核对 vendor、9 个入口链接、Claude agents 与 hooks、Cursor hooks、Codex 的 `.codex/agents/*.toml` 与 `.codex/hooks.json`（三条绝对路径、PreToolUse 匹配 Bash）、lock 的版本与树哈希；三路 `locate.sh` 都要找全阶段表提供者，重复运行不改产物，`--dry-run` 不落盘，改 vendor 文件、删入口、删 `.cursor/hooks.json`、`.codex/hooks.json` 或 `.codex/agents` 后 `doctor` 必须失败
+16. 项目级安装（`./jstack install --all --scope project`）：在临时仓库和假 HOME 里核对 vendor、9 个入口链接、Claude agents 与 hooks、Cursor hooks、Codex 的 `.codex/agents/*.toml` 与 `.codex/hooks.json`（三条绝对路径、PreToolUse 匹配 Bash）、lock 的版本、树哈希与 `recommended.pi`；三路 `locate.sh` 都要找全阶段表提供者，重复运行不改产物，`--dry-run` 不落盘，改 vendor 文件、删入口、删 `.pi/settings.json`、`.cursor/hooks.json`、`.codex/hooks.json` 或 `.codex/agents` 后 `doctor` 必须失败
+17. 工具配置（`tests/tool-policy.py`）：阶段 profile 引用变化反映在导出、重复导出 digest 稳定、digest 可由标准 JSON 复算、重复字段/未知能力/未知 profile 被拒绝、Pi 与 Claude Code 的原生名选择、缺必需工具拒绝、shell fallback 需显式接受、缺可选工具不伪装成可用
+18. Pi 推荐包（`tests/pi-recommended.py`）：缺包时安装固定 source、第二次跳过、项目作用域不复用用户作用域、已装的较新版本保留并报告、`--dry-run` 不安装不写文件、安装时禁用 lifecycle scripts、provider/models/auth 配置不变
 
 第 3、4、5 项专门查 adapter 管不到的地方：脚本和 frontmatter 都不经过模型，上游新引入的 Cursor 依赖在同步时就能发现；第 5 项查的是 spec 这种"只收一部分 skill"的插件有没有漏掉依赖。`claude plugin validate` 不查 frontmatter 键，也不查插件内部 skill 之间的调用关系，更不查 YAML 合法性，所以 `: ` 这种写法只能由第 4 项拦。全部通过才提交。
 
@@ -424,54 +438,62 @@ git diff --no-index --src-prefix= --dst-prefix= a/<路径> b/<路径> > patches/
 
 ## 评测
 
-`./jstack eval` 衡量工作流本身。它把一批固定任务交给 headless 的 Claude Code，后者加载仓库里的 pstack、spec、flow，再看三件事：做成了没有、要人插手几次、花了多少。smoke 只证明调用链跑得通。改了工作流以后是变好还是变差，要靠评测回答。
+`./jstack eval` 衡量工作流本身。它把一批固定任务交给 headless 的 harness（默认 Claude Code，也可以选 Pi），后者加载仓库里的 pstack、spec、flow，再看三件事：做成了没有、要人插手几次、花了多少。smoke 只证明调用链跑得通。改了工作流以后是变好还是变差，要靠评测回答。
 
-每个任务在 `evals/tasks/<名字>/` 下，包括 `prompt.md`（原样作为第一条用户消息）、`check.sh`（判定是否完成）、`solution.patch` 或 `answer.md`（参考解），以及可选的 `seed/`。每个样本都有自己的工作目录 `<临时目录>/<随机>/tasknotes`：先复制 `evals/fixture/`，再叠加 `seed/`，然后 `git init` 并提交一次。路径里不出现 eval、test 这类词，被测 agent 不知道自己在被评测。`seed/CLAUDE.md` 可以让样本仓库按 jstack 的方式从 `flow:route` 开始；check 仍只看功能，route / poteto 是否触发由记录里的对应列给出。
+每个任务在 `evals/tasks/<名字>/` 下，包括 `prompt.md`（原样作为第一条用户消息）、`check.sh`（判定是否完成）、`solution.patch` 或 `answer.md`（参考解），以及可选的 `seed/`。每个样本都有自己的工作目录 `<临时目录>/<随机>/tasknotes`：先复制 `evals/fixture/`，再叠加 `seed/`，然后 `git init` 并提交一次。路径里不出现 eval、test 这类词，被测 agent 不知道自己在被评测。`seed/CLAUDE.md` 可以让样本仓库按 jstack 的方式从 `flow:route` 开始；check 仍只看功能，route / poteto 是否触发由记录里的对应列给出。同一份 seed 在 Pi 下原样传入；seed 里如果写的是 Claude 的 `/flow:route`，Pi 不会自动改写成 `/skill:route`，跨 harness 比较 route 触发率时要把这个差异算进去。
 
 ```bash
 ./jstack eval list                           # 列出任务
 ./jstack eval --selftest                     # 不调模型：初始状态 check 必须失败，参考解下必须通过（check 也跑这一项）
-./jstack eval                                # 全部任务，各 1 个样本
+./jstack eval                                # 全部任务，各 1 个样本（Claude Code）
 ./jstack eval --samples 3 --jobs 3           # 每个任务 3 个样本，3 个并发
 ./jstack eval --model <模型> --max-nudges 1 --keep xs-empty-message
+./jstack eval --harness pi --provider <provider> --model <模型> --thinking high --samples 3 --jobs 3
 ```
 
-不传 `--model` 时，runner 从用户级配置 `~/.jstack/config.json`（还没迁移时退回旧 `~/.config/jstack/models.json`）的 `models.claude-code.bulk[0]` 取默认，启动时打印用的是哪个模型；读不到就拒绝运行，不会跟随 Claude Code 的默认模型跑到 premium。每次运行的 `RUN_ID` 带随机后缀，同一秒启动的两次评测不会共用目录和报告区段。
+不传 `--harness` 时是 `claude`，旧命令和旧基线保持不变。Claude 不传 `--model` 时，runner 从用户级配置 `~/.jstack/config.json`（还没迁移时退回旧 `~/.config/jstack/models.json`）的 `models.claude-code.bulk[0]` 取默认，启动时打印用的是哪个模型；读不到就拒绝运行，不会跟随 Claude Code 的默认模型跑到 premium。Pi 必须显式传 `--model`，`--provider` 和 `--thinking` 也只对 Pi 生效；runner 不读用户配置，也不猜 Pi 的默认模型。`--thinking` 取 `off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`。每次运行的 `RUN_ID` 带随机后缀，同一秒启动的两次评测不会共用目录和报告区段。
 
-每轮结束后跑 `check.sh`，cwd 是工作目录，`ANSWER_FILE` 指向 agent 最后一条回复。check 没通过，runner 就用 `--resume` 发一条固定的催促消息："我现在不在电脑前，回答不了问题。需要决定的地方按你推荐的方案处理，把这件事做完。"每个样本最多催 `--max-nudges` 次，默认 2 次。每轮的时限是 `JSTACK_EVAL_TIMEOUT` 秒，默认 1800。超时的样本直接判失败，不再催促。评测是测量，任务失败不影响退出码，只有参数错误或缺少依赖才非 0。
+Pi 评测前先 `./jstack build`，runner 会核对 flow 扩展和三个 skill 目录的构建产物。provider 名以 `pi --list-models` 的结果为准；没有 `--provider` 时由 Pi 自己解析模型。
+
+每轮结束后跑 `check.sh`，cwd 是工作目录，`ANSWER_FILE` 指向 agent 最后一条回复。Claude 的 check 没通过，runner 就用 `--resume` 发一条固定的催促消息："我现在不在电脑前，回答不了问题。需要决定的地方按你推荐的方案处理，把这件事做完。"每个样本最多催 `--max-nudges` 次，默认 2 次。Pi 目前只跑单轮，`nudges` 固定为 0，`--max-nudges` 只能是 0；runner 不会假装 Pi 的续跑和 Claude 的 `--resume` 等价。每轮的时限是 `JSTACK_EVAL_TIMEOUT` 秒，默认 1800；超时会杀掉整个进程组，避免留下 shell 子进程。超时的样本直接判失败，不再催促。只有 check 通过、进程退出码为 0、且本轮有干净的结束事件（Claude 的 `result`、Pi 的 `agent_end`）时才记 `pass: true`；check 通过但进程非零退出、缺结束事件或助手报错时，记录里会写明 `error`。评测是测量，任务失败不影响退出码，只有参数错误或缺少依赖才非 0。
 
 每个样本记一行 JSON，字段如下：
 
 | 字段 | 含义 |
 |---|---|
-| `pass` | 最终 check 是否通过 |
-| `nudges` | **打断次数**，等于实际发出的催促次数。agent 每停下一次（提问、等确认，或自认为做完但 check 不通过）就会被催一次，对应真实使用中人要回来插手一次。0 表示一次做完 |
-| `rounds` | 跑了几轮 claude，等于 `nudges + 1` |
-| `turns` | 各轮 `num_turns` 之和 |
+| `harness` / `provider` / `thinking` | 跑评测的 harness；Pi 的 provider 和推理等级。旧记录没有 `harness` 时按 `claude` 处理 |
+| `pass` | 最终 check 是否通过，同时要求本轮退出码为 0、有干净的结束事件、助手没有报错 |
+| `nudges` | **打断次数**，等于实际发出的催促次数。agent 每停下一次（提问、等确认，或自认为做完但 check 不通过）就会被催一次，对应真实使用中人要回来插手一次。0 表示一次做完。Pi 固定为 0 |
+| `rounds` | 跑了几轮 agent，Claude 等于 `nudges + 1`；Pi 为 1 |
+| `turns` | Claude 是各轮 `num_turns` 之和；Pi 是 `turn_end` 事件数 |
 | `wall_s` | 样本从开始到结束的秒数，包括 check |
-| `tokens` | input、output、cache read、cache creation 四类 token 之和，覆盖全部模型和子 agent |
-| `premium_tokens` | 只算模型名匹配 `JSTACK_PREMIUM_MODELS` 的部分，默认正则 `(^|/)(claude|anthropic)|opus`。两层模型（#11）以后会换成配置 |
-| `cost_usd` | Claude Code 报告的费用 |
+| `tokens` | input、output、cache read、cache write 四类 token 之和，覆盖全部模型和子 agent。Pi 的 provider 没有报告 usage 时为 `null`，不填 0 |
+| `premium_tokens` | 只算模型名匹配 `JSTACK_PREMIUM_MODELS` 的部分，默认正则 `(^|/)(claude|anthropic)|opus`。Pi 没有 usage 时同样为 `null` |
+| `cost_usd` | Claude Code 报告的费用；Pi 从 `usage.cost.total` 汇总，缺失时为 `null` |
 | `route` / `poteto` | 主会话有没有调 `route` skill，有没有进入 poteto-mode（调 skill 或读它的 `SKILL.md`） |
-| `subagents` | 主会话派出的 `Agent` / `Task` 次数 |
-| `timed_out` / `error` | 是否超时；某轮没有 `result` 事件或 `result` 报错时，`error` 写明是哪一轮、什么错。出错的样本不等于工作流退化，先看 `error` |
-| `model` / `commit` | init 事件里的模型；仓库提交号，工作区有改动时带 `-dirty` |
+| `subagents` | 主会话派出的 `Agent` / `Task` / `subagent` 次数 |
+| `timed_out` / `error` | 是否超时；某轮非零退出、没有结束事件、结束事件报错或助手停止原因是 `error` / `aborted` / `length` 时，`error` 写明是哪一轮、什么错。出错的样本不等于工作流退化，先看 `error` |
+| `model` / `commit` | Claude 取 init 事件里的模型，Pi 取最后一条助手消息的模型；仓库提交号，工作区有改动时带 `-dirty` |
 
-`--resume` 之后，`result` 事件里的 `modelUsage` 和 `total_cost_usd` 是整个会话的累计值，而 `num_turns` 只算本轮（2026-11-07 实测）。所以 runner 按轮取 token 和费用的增量，不会重复计算。
+Claude 的 `--resume` 之后，`result` 事件里的 `modelUsage` 和 `total_cost_usd` 是整个会话的累计值，而 `num_turns` 只算本轮（2026-11-07 实测）。所以 runner 按轮取 token 和费用的增量，不会重复计算。Pi 每轮都是独立进程，没有这个累计问题。
 
 隔离方式：
 
-- `env -i` 只传 `HOME`、`USER`、`PATH`、`LANG`、`LC_ALL`、`TMPDIR`、`SHELL`。不这样做的话，claude 会继承宿主（桌面 App、外层 Claude 会话）的变量，报 "Not logged in"
-- `--plugin-dir` 从仓库的 `plugins/` 加载三个插件，同时在 `--settings` 里关掉已安装的 `pstack@jstack`、`spec@jstack`、`flow@jstack`。测的是当前工作区，不是已安装版本
-- `disableAllHooks: true` 关掉全部 hooks。issue #12 给 flow 加自带的 hook 时，要改成只关用户 hooks，否则评测量不到那个 hook
-- `--strict-mcp-config` 不加载任何 MCP，被测 agent 写不进 gbrain 这类用户记忆
-- 没有隔离的部分：用户级 `~/.claude/CLAUDE.md` 和 `~/.claude/rules/`（包括 `/pstack:setup-pstack` 写的模型角色表）、其他已安装的插件、用户 skills 仍然会加载；会话记录写进 `~/.claude/projects/`。基线要在同一台机器、同一套用户配置下对比
+- `env -i` 只传 `HOME`、`USER`、`PATH`、`LANG`、`LC_ALL`、`TMPDIR`、`SHELL`，再额外传 `JSTACK_STATE_DIR` 把 flow 门禁状态写进样本工作目录同级（不在工作目录里，不污染 diff）。不这样做的话，claude 会继承宿主（桌面 App、外层 Claude 会话）的变量，报 "Not logged in"
+- Claude：`--plugin-dir` 从仓库的 `plugins/` 加载三个插件，同时在 `--settings` 里关掉已安装的 `pstack@jstack`、`spec@jstack`、`flow@jstack`。测的是当前工作区，不是已安装版本
+- Claude：`disableAllHooks: true` 关掉全部 hooks。issue #12 给 flow 加自带的 hook 时，要改成只关用户 hooks，否则评测量不到那个 hook
+- Claude：`--strict-mcp-config` 不加载任何 MCP，被测 agent 写不进 gbrain 这类用户记忆
+- Pi：调用 `pi -p --mode json --no-session --no-mcp --no-extensions --no-skills --no-prompt-templates --no-context-files --no-approve`，再用 `-e plugins/flow/extensions/pi.ts` 显式加载当前构建的 flow 扩展（它的 hooks 仍然从 `plugins/flow/hooks/` 跑），用三个 `--skill` 显式加载 `plugins/pstack/skills`、`plugins/spec/skills`、`plugins/flow/skills`。`--no-*` 挡住用户已装的扩展、skills、prompt templates 和发现的 AGENTS/CLAUDE；`--no-approve` 不信任项目 `.pi` 配置和资源
+- Pi：样本仓库里的任务上下文（`AGENTS.override.md`、`AGENTS.md` 或 `CLAUDE.md`）由 runner 用 `--append-system-prompt <文件>` 显式传入，不会把用户级 AGENTS/CLAUDE 带进来。`--no-session` 不写会话文件，`PI_SESSION_FILE` 为空
+- 没有隔离的部分：Claude 的用户级 `~/.claude/CLAUDE.md` 和 `~/.claude/rules/`（包括 `/pstack:setup-pstack` 写的模型角色表）、其他已安装的插件、用户 skills 仍然会加载；会话记录写进 `~/.claude/projects/`。Pi 的用户级 `SYSTEM.md` / `APPEND_SYSTEM.md` 不在 `--no-context-files` 的关闭范围。基线要在同一台机器、同一套用户配置下对比
 
 产物：
 
 - `evals/results.jsonl`：每个样本一行，只追加，和代码一起提交，当作基线
-- `evals/reports/<日期>.md`：每次运行追加一节，包括 commit、model、样本数、max-nudges，以及按任务汇总的表。这一节同时打印到终端
-- `.scratch/evals/<run_id>/<任务>-<n>/`：原始材料，不提交。包括每轮的 `round-<k>.jsonl` 和 `.err`、`answer-<k>.txt`、`check-<k>.txt`、最终的 `diff.patch`、`record.json`。工作目录默认跑完就删，加 `--keep` 会保留并打印路径
+- `evals/reports/<日期>.md`：每次运行追加一节，包括 commit、harness、provider、thinking、model、样本数、max-nudges，以及按任务汇总的表。这一节同时打印到终端
+- `.scratch/evals/<run_id>/<任务>-<n>/`：原始材料，不提交。包括每轮的 `round-<k>.jsonl` 和 `.err`、`answer-<k>.txt`、`check-<k>.txt`、合并后的 `rounds.jsonl` 和 `rounds.err`、最终的 `diff.patch`、`record.json`；门禁状态在样本工作目录同级的 `gates/`，默认一起删。工作目录默认跑完就删，加 `--keep` 会保留并打印路径
+
+`tests/eval-pi.sh` 是 runner 的无模型测试：用假的 `pi` / `claude` 只验证 argv、事件解析、usage 缺失、错误 / 缺 `agent_end` / 超时判定和进程组清理。它不代表真实模型验收，目前也不挂在 `./jstack check` 里，需要手动跑 `bash tests/eval-pi.sh`；真实基线仍要跑上面的评测命令。
 
 下面这些改动必须先跑 `./jstack eval`，再和 `evals/results.jsonl` 里最近一次同模型的基线对比：
 
@@ -481,7 +503,7 @@ git diff --no-index --src-prefix= --dst-prefix= a/<路径> b/<路径> > patches/
 - 改模型配置（模型角色表、默认模型、两层模型）
 - 改 hooks
 
-退化要么修掉，要么在提交说明里写明理由。单个样本的噪声很大，判断退化至少用 `--samples 3`。差距小于同一提交多次运行之间的波动时，不算退化。改了 `evals/` 本身（runner、任务、fixture）以后，旧基线就不能直接比了，要先重跑一份新基线。
+退化要么修掉，要么在提交说明里写明理由。单个样本的噪声很大，判断退化至少用 `--samples 3`。差距小于同一提交多次运行之间的波动时，不算退化。改了 `evals/` 本身（runner、任务、fixture）以后，旧基线就不能直接比了，要先重跑一份新基线。`harness`、`provider`、`thinking` 是记录里的分基线字段：同一次改动前后必须用同一组值；Pi 没有 Claude 的续跑，`nudges` 不要跨 harness 比较。
 
 ## 推广到团队项目
 

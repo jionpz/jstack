@@ -14,6 +14,8 @@ Run `locate.sh`, which sits next to this SKILL.md. In Claude Code, run `"${CLAUD
 
 It prints one line per provider in stages.md, as `provider<TAB>absolute path`. Many providers are marked `disable-model-invocation: true`, so the harness will not launch them as model-invoked skills. Read the file at the printed path and follow it as if the user had invoked that skill, with the task as its argument. Relative links inside it resolve from that file's directory. If it reports a missing provider, name it to the user. Stop only when that provider's stage is on this task's path; otherwise continue and mention the gap in the finish report.
 
+The Tool profile column in stages.md names a profile in `tool-policy.json`, next to it. Together they declare what each role needs and how a harness maps it to native tools; they do not change the tools of the current interactive session. A managed launcher exports the policy with `./jstack tools export` and resolves a stage with `./jstack tools resolve` from the jstack checkout. Shell fallback and optional tools follow `docs/harness/tools.md`. Never claim a profile is enforced when the harness was not launched with that tool set.
+
 When you tell the user how to invoke a skill directly, use this table.
 
 | Harness | Invocation |

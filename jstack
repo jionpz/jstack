@@ -34,6 +34,10 @@
 #   ./jstack models status                         premium 今日 token 用量与预算
 #   ./jstack doctor [--json] [--no-fail] [--repo <dir>]  只读列出各 harness × 作用域的安装、版本、来源与 lock 状态
 #   ./jstack managed-export [--root <dir>]           导出只读调查协议包给 Keel；不改既有交互工作流
+#   ./jstack tools export [--root <dir>] [--pretty]   导出阶段→工具 profile、profiles、harness 映射和内容摘要
+#   ./jstack tools resolve --stage <阶段>|--role <profile> --harness pi|claude-code
+#                          --inventory <JSON> [--allow-shell-fallback]
+#                                                  把能力解析为该 harness 的原生工具；缺工具时拒绝或列出降级
 #
 # upstream/<插件> 是上游原样副本，plugins/<插件> 是构建产物，两者都不要手改。
 # 要改 pstack 或 spec，就在 patches/<插件>/ 下加补丁；flow 没有上游，直接改 src/flow。
@@ -1652,6 +1656,31 @@ check_install_project() {
 		cat >"$bin/$p" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-} ${2:-}" = "plugin list" ]; then printf '[]\n'; fi
+if [ "${1:-}" = install ]; then
+	shift
+	src=
+	scope_local=0
+	for a in "$@"; do
+		case $a in
+		-l | --local) scope_local=1 ;;
+		npm:*) src=$a ;;
+		esac
+	done
+	if [ "$scope_local" -eq 1 ]; then d=.pi; else d="$HOME/.pi/agent"; fi
+	mkdir -p "$d"
+	[ -f "$d/settings.json" ] || printf '{}\n' >"$d/settings.json"
+	jq --arg s "$src" '.packages = (((.packages // []) + [$s]) | unique)' "$d/settings.json" >"$d/settings.json.tmp" &&
+		mv "$d/settings.json.tmp" "$d/settings.json"
+	exit 0
+fi
+if [ "${1:-}" = list ]; then
+	if [ -f .pi/settings.json ] &&
+		jq -e '(.packages // []) | any(.[]; type == "string" and contains("pi-subagents"))' .pi/settings.json >/dev/null 2>&1; then
+		printf 'Project packages:\n'
+		jq -r '.packages[] | select(contains("pi-subagents")) | "  \(.)"' .pi/settings.json
+	fi
+	exit 0
+fi
 exit 0
 SH
 		chmod +x "$bin/$p"
@@ -1808,7 +1837,7 @@ SH
 		say "✗ 用户自己的 .cursor/skills/keep 被删了"
 		rc=1
 	}
-	printf '%s\n' "$out" | grep -q '.cursor/skills 里还有非 jstack 的入口' || {
+	grep -q '.cursor/skills 里还有非 jstack 的入口' <<<"$out" || {
 		say "✗ install 没有提示 .cursor/skills 里还有用户入口"
 		rc=1
 	}
@@ -1880,7 +1909,7 @@ assert all(r["lock"] == "ok" for r in vendor), vendor
 	fi
 
 	# 新入口记入 lock：删除任一文件后 doctor 必须发现，install 能恢复。
-	for path in .pi/extensions/jstack-flow-gates.ts .omp/extensions/jstack-flow-gates.ts \
+	for path in .pi/extensions/jstack-flow-gates.ts .pi/settings.json .omp/extensions/jstack-flow-gates.ts \
 		.agents/agents/poteto-agent.md .omp/agents/poteto-agent.md .cursor/agents/poteto-agent.md .claude/settings.json; do
 		rm -f "$r/$path"
 		if PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" doctor --repo "$r" >/dev/null 2>&1; then
@@ -1947,7 +1976,7 @@ assert all(r["lock"] == "ok" for r in vendor), vendor
 	PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" install --all --scope project --repo "$r" >/dev/null 2>&1 || rc=1
 	PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" doctor --repo "$r" >/dev/null 2>&1 || rc=1
 	# 已提交的文件不受后加的忽略规则影响。
-	git -C "$r" add -f .pi/extensions/jstack-flow-gates.ts
+	git -C "$r" add -f .pi/extensions/jstack-flow-gates.ts .pi/settings.json
 	printf '/.pi/\n' >"$r/.gitignore"
 	PATH="$bin:$PATH" HOME="$h" "$ROOT/jstack" doctor --repo "$r" >/dev/null 2>&1 || rc=1
 	if [ "$rc" -eq 0 ]; then
@@ -2240,6 +2269,20 @@ cmd_check() {
 	else
 		say "✗ Pi package 的 ~/.agents/skills 去重测试失败："
 		cat "$WORK/pi-skill-filter"
+		rc=1
+	fi
+	if python3 -I "$ROOT/tests/tool-policy.py" >"$WORK/tool-policy" 2>&1; then
+		say "✓ 工具 profile 导出与原生工具解析测试通过"
+	else
+		say "✗ 工具 profile 导出或原生工具解析测试失败："
+		cat "$WORK/tool-policy"
+		rc=1
+	fi
+	if python3 -I "$ROOT/tests/pi-recommended.py" >"$WORK/pi-recommended" 2>&1; then
+		say "✓ Pi 推荐包安装的幂等、dry-run、作用域与配置保护测试通过"
+	else
+		say "✗ Pi 推荐包安装测试失败："
+		cat "$WORK/pi-recommended"
 		rc=1
 	fi
 	if "$([ -x /bin/bash ] && echo /bin/bash || echo bash)" "$ROOT/tests/flow-hooks.sh" >"$WORK/hooks" 2>&1; then
@@ -3257,7 +3300,7 @@ doctor_pi_tree() { # <文件> <已见文件> <包目录>
 cmd_doctor() {
 	local json=0 nofail=0 repo= out file="$WORK/doctor-rows" seen="$WORK/doctor-seen" rc=0
 	local h scope plugin version path source inrepo stale lock lockver lock_cell n drift=0 stale_n=0 tab
-	local lock_tree actual_tree tree_bad= missing_rec= rec
+	local lock_tree actual_tree tree_bad= missing_rec= rec rec_source rec_config
 	local pi_agent omp_plugins cursor_plugins codex_plugins id fold proj
 	while [ $# -gt 0 ]; do
 		case $1 in
@@ -3421,6 +3464,18 @@ cmd_doctor() {
 	[ -z "$missing_rec" ] || rc=1
 	if [ -n "$lock" ]; then
 		project_ignored_files "$repo" || rc=1
+		rec_source=$(jq -r '.recommended.pi.source // empty' "$lock" 2>/dev/null || true)
+		if [ -n "$rec_source" ]; then
+			rec_config=$(jq -r '.recommended.pi.config // empty' "$lock" 2>/dev/null || true)
+			if [ -z "$rec_config" ] || [ ! -f "$repo/$rec_config" ]; then
+				say "! lock 记录的 Pi 推荐包配置不存在：${rec_config:-（缺 config）}；重跑项目级 install" >&2
+				rc=1
+			elif ! jq -e '(.packages // []) | any(.[]; type == "string" and contains("pi-subagents"))' \
+				"$repo/$rec_config" >/dev/null 2>&1; then
+				say "! ${rec_config} 里没有 @tintinweb/pi-subagents；重跑项目级 install" >&2
+				rc=1
+			fi
+		fi
 		for h in pi omp; do
 			if jq -e --arg h "$h" '.harnesses[$h] != null' "$lock" >/dev/null; then
 				if ! grep -qxF "export { default } from \"../../.jstack/vendor/plugins/flow/extensions/$h.ts\";" \
@@ -3573,10 +3628,10 @@ cleanup_cursor_skills() { # <仓库> <dry>
 			case $target in
 			*/.jstack/vendor/*)
 				if [ "$dry" -eq 1 ]; then
-					say "  移除旧的 .cursor/skills/$e（Cursor 改读 .agents/skills）"
+					say "  移除旧的 .cursor/skills/${e}（Cursor 改读 .agents/skills）"
 				else
 					rm "$path"
-					say "✓ 移除旧的 .cursor/skills/$e（Cursor 改读 .agents/skills）"
+					say "✓ 移除旧的 .cursor/skills/${e}（Cursor 改读 .agents/skills）"
 				fi
 				;;
 			esac
@@ -3823,7 +3878,7 @@ harness_records() { # <harness>：lock 里记录、doctor 会核对的安装入�
 		printf '%s\n' .claude/agents/poteto-agent.md .claude/agents/comment-sicko.md .claude/settings.json
 	fi
 	if [ "$h" = pi ]; then
-		printf '%s\n' .pi/extensions/jstack-flow-gates.ts .agents/agents/poteto-agent.md .agents/agents/comment-sicko.md
+		printf '%s\n' .pi/extensions/jstack-flow-gates.ts .pi/settings.json .agents/agents/poteto-agent.md .agents/agents/comment-sicko.md
 	fi
 	if [ "$h" = omp ]; then
 		printf '%s\n' .omp/extensions/jstack-flow-gates.ts .omp/agents/poteto-agent.md .omp/agents/comment-sicko.md
@@ -3837,7 +3892,7 @@ harness_records() { # <harness>：lock 里记录、doctor 会核对的安装入�
 }
 
 write_lock() { # <仓库> <harness>...：install 是唯一写 lock 的命令
-	local repo=$1 vendor tree ver commit upstream plugins harnesses h recs
+	local repo=$1 vendor tree ver commit upstream plugins harnesses h recs recommended='{}'
 	shift
 	vendor="$repo/.jstack/vendor"
 	tree=$(tree_hash "$vendor")
@@ -3856,14 +3911,20 @@ write_lock() { # <仓库> <harness>...：install 是唯一写 lock 的命令
 		harnesses=$(printf '%s\n' "$harnesses" |
 			jq --arg h "$h" --argjson r "$recs" '. + {($h): {scope: "project", records: $r}}')
 	done
+	if printf '%s\n' "$@" | grep -qx pi; then
+		recommended=$(python3 "$ROOT/scripts/pi-recommended.py" --metadata --scope project --repo "$repo" |
+			jq '{pi: {source: .source, version: .pinned_version, scope: .scope, config: .config}}') ||
+			die "读取 Pi 推荐包元数据失败"
+	fi
 	printf '%s\n' "$harnesses" | jq --arg ver "$ver" --arg commit "$commit" --arg tree "$tree" \
-		--argjson upstream "$upstream" --argjson plugins "$plugins" '
+		--argjson upstream "$upstream" --argjson plugins "$plugins" --argjson recommended "$recommended" '
 		{
 			version: 1,
 			jstack: ({version: $ver} + (if $commit == "" then {} else {commit: $commit} end)),
 			vendor: {tree: $tree},
 			upstream: $upstream,
 			plugins: $plugins,
+			recommended: $recommended,
 			harnesses: .
 		}' >"$WORK/lock.json" || die "生成 lock 失败"
 	mkdir -p "$repo/.jstack"
@@ -3950,6 +4011,9 @@ install_project() { # <仓库> <dry> <harness>...
 			install_project_agents "$repo" "$vendor" "$h" "$dry"
 		fi
 	done
+	if printf '%s\n' "$@" | grep -qx pi; then
+		install_pi_recommended project "$dry" "$repo"
+	fi
 	# Cursor 的项目 hooks 与 Claude 同源，但事件名和输出协议是 Cursor 原生的。
 	if printf '%s\n' "$@" | grep -qx cursor; then
 		cleanup_cursor_skills "$repo" "$dry"
@@ -4211,6 +4275,15 @@ cmd_install_cursor() {
 	say "在 Cursor 里重开窗口或运行 /reload；用 /poteto-mode、/route 验证。"
 }
 
+install_pi_recommended() { # <scope> <dry> <repo>
+	local scope=$1 dry=$2 repo=$3
+	local args=(--scope "$scope")
+	[ "$scope" != project ] || args+=(--repo "$repo")
+	[ "$dry" -eq 0 ] || args+=(--dry-run)
+	python3 "$ROOT/scripts/pi-recommended.py" "${args[@]}" ||
+		die "安装 Pi 推荐包失败：npm:@tintinweb/pi-subagents@0.23.2；网络不可用时先手动运行 pi install"
+}
+
 cmd_install_pi() {
 	local agent_dir="${PI_AGENT_DIR:-$HOME/.pi/agent}"
 	local agents="$agent_dir/agents" src spec
@@ -4240,14 +4313,13 @@ cmd_install_pi() {
 	grep -q '^run_in_background: true$' "$agents/poteto-agent.md" ||
 		die "poteto-agent 的 background 字段没有转成 run_in_background，检查上游 frontmatter"
 	say "✓ 已安装 Pi package 和 pstack agents 到 $agents"
+	install_pi_recommended user 0 ""
 	say "重开 Pi 会话；用 /skill:poteto-mode 验证。"
-	if ! pi list 2>/dev/null | grep -q 'pi-subagents'; then
-		say "! 没找到 @tintinweb/pi-subagents：pstack 的子 agent 需要它，先运行 pi install npm:@tintinweb/pi-subagents"
-	fi
 }
 
 case "${1:-}" in
 managed-export) shift; exec python3 "$ROOT/scripts/managed-export.py" "$@" ;;
+tools) shift; exec python3 "$ROOT/scripts/tool-policy.py" "$@" ;;
 install) shift; cmd_install "$@" ;;
 install-pi) cmd_install_pi ;;
 install-cursor) shift; cmd_install_cursor "$@" ;;
