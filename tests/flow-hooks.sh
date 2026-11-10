@@ -6,7 +6,7 @@ set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
-unset JSTACK_SESSION_ID PI_SESSION_ID CLAUDE_CODE_SESSION_ID CURSOR_CONVERSATION_ID JSTACK_NO_JQ JSTACK_STAGES_FILE
+unset JSTACK_SESSION_ID PI_SESSION_ID CLAUDE_CODE_SESSION_ID CURSOR_CONVERSATION_ID CODEX_SESSION_ID WORKLOOP_SESSION_ID JSTACK_NO_JQ JSTACK_STAGES_FILE
 export CLAUDE_PLUGIN_ROOT="$ROOT/plugins/flow" JSTACK_STATE_DIR="$T/state"
 SID=test-session-0001
 ST="$CLAUDE_PLUGIN_ROOT/skills/route/stage.sh"
@@ -96,6 +96,23 @@ codex_prompts() {
 		printf '%s' "$out" | grep -qF '"additionalContext"' &&
 		printf '%s' "$out" | grep -qF '当前阶段 execute'
 }
+# 首轮还没有任务状态时也要能观测提示 hook，不能靠配置文件推断它已运行。
+injection_receipt() {
+	local proto=$1 out text
+	case $proto in
+	claude) out=$(hook prompt "$(prompt_in)"); text=$out ;;
+	cursor)
+		out=$(hook prompt "$(cursor_prompt_in)")
+		valid_json "$out" || return 1
+		text=$(printf '%s' "$out" | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["additional_context"])') ;;
+	codex)
+		out=$(hook prompt "$(codex_prompt_in)")
+		valid_json "$out" || return 1
+		text=$(printf '%s' "$out" | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["hookSpecificOutput"]["additionalContext"])') ;;
+	esac
+	printf '%s' "$text" | grep -qF "jstack 提示门禁注入：session=$SID" &&
+		printf '%s' "$text" | grep -qF 'Stop/guard 未由此验证'
+}
 old_file_cleaned() {
 	mkdir -p "$JSTACK_STATE_DIR"
 	touch -t 202001010000 "$JSTACK_STATE_DIR/stale-session"
@@ -136,6 +153,7 @@ t "stage.sh 没有会话 id 时只打印说明" sh -c '[ "$("$1" "$2" start nope
 t "stage.sh 在 Cursor 会话里用 CURSOR_CONVERSATION_ID" sh -c 'CURSOR_CONVERSATION_ID=cursor-session "$1" "$2" start execute >/dev/null && [ -f "$3/cursor-session" ]' _ "$BASH" "$ST" "$JSTACK_STATE_DIR"
 t "stage.sh 在 Pi 会话里用 PI_SESSION_ID" sh -c 'PI_SESSION_ID=pi-session "$1" "$2" start execute >/dev/null && [ -f "$3/pi-session" ]' _ "$BASH" "$ST" "$JSTACK_STATE_DIR"
 t "stage.sh 在 OMP 会话里用 JSTACK_SESSION_ID" sh -c 'JSTACK_SESSION_ID=omp-session "$1" "$2" start execute >/dev/null && [ -f "$3/omp-session" ]' _ "$BASH" "$ST" "$JSTACK_STATE_DIR"
+t "stage.sh 在 Codex 会话里用 CODEX_SESSION_ID" sh -c 'CODEX_SESSION_ID=codex-session "$1" "$2" start execute >/dev/null && [ -f "$3/codex-session" ]' _ "$BASH" "$ST" "$JSTACK_STATE_DIR"
 t "stage.sh 在 Workloop 会话里用 WORKLOOP_SESSION_ID 并提示未强制" sh -c 'WORKLOOP_SESSION_ID=workloop-session "$1" "$2" start execute | grep -q "门禁未强制" && [ -f "$3/workloop-session" ]' _ "$BASH" "$ST" "$JSTACK_STATE_DIR"
 t "stage.sh 在其他 harness 不提示 Workloop 未强制" sh -c '! PI_SESSION_ID=pi-other WORKLOOP_SESSION_ID=w "$1" "$2" start execute | grep -q "门禁未强制"' _ "$BASH" "$ST" "$JSTACK_STATE_DIR"
 t "stage.sh 的会话 id 依次取 JSTACK_SESSION_ID、PI_SESSION_ID、Claude、Cursor" sh -c 'JSTACK_SESSION_ID=omp-session PI_SESSION_ID=pi-session CLAUDE_CODE_SESSION_ID=$4 CURSOR_CONVERSATION_ID=$4 "$1" "$2" start execute >/dev/null && [ -f "$3/omp-session" ]' _ "$BASH" "$ST" "$JSTACK_STATE_DIR" "$SID"
@@ -206,7 +224,24 @@ stage end >/dev/null
 t "stage.sh end 删掉状态文件" test ! -e "$STATE"
 t "stage.sh show 没有状态时打印 none" prints none stage show
 t "stop.sh 没有状态时放行" silent hook stop "$(stop_in)"
-t "prompt.sh 没有状态时不输出" silent hook prompt "$(prompt_in)"
+for mode in jq nojq; do
+	if [ "$mode" = nojq ]; then export JSTACK_NO_JQ=1; else command -v jq >/dev/null || continue; fi
+	for proto in claude cursor codex; do
+		t "[$mode] $proto 首轮没有状态时也输出会话注入标记" injection_receipt "$proto"
+	done
+	t "[$mode] 提示注入不创建或恢复任务状态" test ! -e "$STATE"
+	t "[$mode] prompt 没有会话 id 时不假报注入" silent hook prompt '{"hook_event_name":"UserPromptSubmit"}'
+	t "[$mode] prompt 拒绝非法会话 id" silent hook prompt '{"session_id":"../escape","hook_event_name":"UserPromptSubmit"}'
+done
+unset JSTACK_NO_JQ
+stage start investigate >/dev/null
+t "调查路线不进入实现阶段" state_is 'path investigate' 'stage investigate'
+t "调查提示注入引用证据回答的产出" sh -c '
+	out=$(printf "%s" "$1" | "$2" "$3")
+	printf "%s" "$out" | grep -qF "当前阶段 investigate" &&
+	printf "%s" "$out" | grep -qF "A cited answer"' _ "$(prompt_in)" "$BASH" "$H/prompt.sh"
+t "调查路线不要求实现验证证据" silent hook stop "$(stop_in)"
+stage end >/dev/null
 t "stage.sh start 顺带删掉 7 天前的状态文件" old_file_cleaned
 stage end >/dev/null
 

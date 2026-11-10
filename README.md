@@ -4,9 +4,9 @@ jionpz 长期维护的 AI 开发工作流。目标是少占用人的注意力：
 
 工作流由 jstack 自己定义的阶段组成，每个阶段绑定一个当前的提供者；上游 skill 只是提供者，可以被改写或替换。目前以三个插件的形式发布：
 
-- **pstack**：原版 [pstack](https://github.com/cursor/plugins/tree/main/pstack)（Lauren Tan，MIT），负责执行。只维护上游的 Claude Code 树；Cursor 版由 `./jstack build` 按 `patches/pstack-cursor/rules.tsv` 转换生成，Pi/OMP/Codex/Workloop 通过 `docs/harness/agents.md` 在运行时映射工具名和模型。
-- **spec**：[Matt Pocock 的 skills](https://github.com/mattpocock/skills)（MIT）里负责需求澄清和任务拆解的几个，产出的 spec 和 tickets 交给 pstack 执行。
-- **flow**：jstack 自己写的衔接层，有 `route` 和 `archive` 两个 skill。`route` 给工程任务分级并驱动全部阶段；`archive` 负责收尾：关票、更新领域文档、写回 gbrain、清理 worktree、分流教训。见下面"分工"一节。
+- **pstack**：原版 [pstack](https://github.com/cursor/plugins/tree/main/pstack)（Lauren Tan，MIT），提供多 ticket / 多阶段执行编排；默认执行入口是 `flow:execute`。只维护上游的 Claude Code 树；Cursor 版由 `./jstack build` 按 `patches/pstack-cursor/rules.tsv` 转换生成，Pi/OMP/Codex/Workloop 通过 `docs/harness/agents.md` 在运行时映射工具名和模型。
+- **spec**：[Matt Pocock 的 skills](https://github.com/mattpocock/skills)（MIT）里负责需求澄清和任务拆解的几个，产出的 spec 和 tickets 交给 `flow:execute` 执行；多 ticket 或多天工作可改交 `pstack:poteto-mode`。
+- **flow**：jstack 自己写的衔接层，有 `route`、`execute`、`review` 和 `archive` 四个 skill。`route` 给工程任务分级并驱动全部阶段；`execute` 是默认执行提供者；`review` 是默认审查提供者；`archive` 负责收尾：关票、更新领域文档、写回 gbrain、清理 worktree、分流教训。见下面"分工"一节。
 
 pstack 和 spec 都锁定在上游某个提交，另外叠加了 jstack 自己的少量补丁。flow 没有上游，源码在 `src/flow/`。
 
@@ -203,7 +203,7 @@ Cursor 的本地插件加载器只接受 `~/.cursor/plugins/local` 内的符号�
 
 ## 分工
 
-工作流由 [`src/flow/skills/route/stages.md`](src/flow/skills/route/stages.md) 定义成固定阶段：size、clarify、plan、execute、verify、review、land、archive。每个阶段写明产出、门禁和当前提供者（ADR-0002）。`flow:route` 先分级，再按大小选出要走的阶段，逐个交给提供者，不需要你选命令：
+工作流由 [`src/flow/skills/route/stages.md`](src/flow/skills/route/stages.md) 定义成固定阶段：size、clarify、plan、investigate、execute、verify、review、land、archive。每个阶段写明产出、门禁和当前提供者（ADR-0002）。`flow:route` 先分级，再按大小选出要走的阶段，逐个交给提供者，不需要你选命令：
 
 | 任务大小 | 阶段路线 |
 |---|---|
@@ -212,9 +212,9 @@ Cursor 的本地插件加载器只接受 `~/.cursor/plugins/local` 内的符号�
 | M，需求有多种合理解释 | clarify → execute → verify → review → land → archive |
 | L（新模块、跨模块改造） | clarify → plan（spec + tickets）→ 每张 ticket 走 execute → land → archive |
 | XL（跨会话、跨阶段） | 先用 wayfinder 规划，再对每块按 L 走；需要换会话时 handoff |
-| 提问、调查 | 只走 execute，产出就是带出处的回答 |
+| 提问、调查 | 只走 investigate，由 `pstack:poteto-mode/playbooks/investigation.md` 给出带出处的回答 |
 
-execute 默认交给 `flow:execute`：jstack 自己的精简执行入口，在主会话里直接改、验证、自审 diff、提交，不派子代理。多张独立 ticket 或多天工程交给 `pstack:poteto-mode`（Orchestrate / Multi-phase playbook），它的 playbook 同时包含验证、审查和开 PR。review 默认交给 `flow:review`：主会话里重读 diff、对照任务、修掉或驳回每个发现；只有设计有争议、改动碰必须停清单、或你要求对抗审查时才跑 `pstack:interrogate`。route 只补执行提供者之后仍未满足的门禁。仓库没有 remote 时，分支上的提交就满足 land。archive 交给 `flow:archive`：关票并附证据、补 GLOSSARY/ADR、写回 gbrain、按 pstack 的 worktree-cleanup 清理已合并的 worktree，并把教训分流到项目约定库或 jionpz/jstack 的 issue。
+execute 默认交给 `flow:execute`：jstack 自己的精简执行入口，在主会话里直接改、验证、自审 diff、提交，不派子代理。多张独立 ticket 或多天工程交给 `pstack:poteto-mode`（Orchestrate / Multi-phase playbook），它的 playbook 同时包含验证、审查和开 PR。review 默认交给 `flow:review`：当执行者还没有写出完整的审查结论时，在主会话里重读 diff、对照任务、修掉或驳回每个发现；若已留下审查结论和逐条处置，则不重复审查。设计有争议、任务碰到 must-stop，或用户要求对抗审查时，按需调用 `pstack:interrogate`；设计有争议或用户要求多视角对抗时，可按需调用 `pstack:swarm`。route 只补执行提供者之后仍未满足的门禁。仓库没有 remote 时，分支上的提交就满足 land。archive 交给 `flow:archive`：关票并附证据、补 GLOSSARY/ADR、写回 gbrain、按 pstack 的 worktree-cleanup 清理已合并的 worktree，并把教训分流到项目约定库或 jionpz/jstack 的 issue。
 
 仓库可以用 `<repo>/.jstack/config.json` 调整这套流程：`stages_file` 整表替换阶段表，`must_stop` 追加必须停项（`guard.sh` 会拦），`tracker` / `domain_docs` / `verify` 声明任务账本、文档位置和验证命令。字段表和读取规则见 [`docs/agents/jstack-config.md`](docs/agents/jstack-config.md)（ADR-0006）；没有这个文件时行为与以前完全一致。
 
@@ -225,7 +225,7 @@ route 只在证据定不了、而且做错代价高的决策上停下来问你�
 3. **拆解**（L、XL）：拆解本身没有高风险分歧时不再要签字，直接发布；只有顺序或范围以后难改、测试接缝证据定不了、或命中必须停清单时，才把测试接缝和 ticket 拆分放在同一条消息里请你确认。
 4. **一轮问完**：等待回答的 ticket 在 tracker 上打 `needs-human` 标签后挂起，不依赖它的 ticket 继续推进；攒着的问题合并成一轮，逐个编号、带推荐答案。答完去掉标签。通知渠道是可替换的提供者：在 Paseo 里就推给手机，否则靠标签，下次会话看得到。
 
-收尾摘要固定五段：目标、改了什么、验证证据、采用的默认决定、需要你处理的事（外加门禁未生效时的说明），控制在一手机屏内。业务仓库的 `CLAUDE.md` 或 `.claude/rules/` 里定义了不同的分级、spec 位置或门禁时，以仓库为准。
+收尾摘要固定六段：目标、改了什么、验证证据、采用的默认决定、需要你处理的事、门禁状态，控制在一手机屏内。门禁状态始终区分提示注入是否观测到，以及 Stop / guard 是否实际验证；没有证据时写“未验证”，Workloop 写“未强制”。业务仓库的 `CLAUDE.md` 或 `.claude/rules/` 里定义了不同的分级、spec 位置或门禁时，以仓库为准。
 
 `disable-model-invocation: true` 的 skill（pstack 57 个、spec 6 个：5 个入口加 setup）不能被模型用 Skill 工具调用，Claude Code 会直接拒绝，提示 "reserved for explicit user invocation"。route 用随附的 `locate.sh` 找到这些提供者文件的路径，然后直接读取并照着做，这也是 pstack 内部 skill 之间互相路由的方式。`locate.sh` 不写死 skill 名，而是读同目录 `stages.md` 的 Providers 列：换掉某个阶段的提供者只改表里那一格。它支持本地 marketplace、Claude Code 的 GitHub 缓存、OMP 缓存、Cursor 本地插件、Pi package、Codex marketplace 缓存和入口软链七种安装布局，入口 skill 以软链暴露时按物理路径解析；任一提供者找不到就点名并以非 0 退出。
 
@@ -249,11 +249,11 @@ route 只在证据定不了、而且做错代价高的决策上停下来问你�
 
 flow 插件自带三个门禁（Claude Code 的 `src/flow/hooks/hooks.json`，Cursor 的 `hooks/hooks.cursor.json`，Pi / OMP 的 `src/flow/extensions/*.ts`），把阶段门禁从提示词变成结构。Pi / OMP 的扩展只是协议翻译，判定仍由同一组 hook 脚本做。hook 只读状态文件，不调模型；任何内部错误都无输出地放行，不会卡住会话。各 harness 的能力、接入方式和降级见 [`docs/harness/gates.md`](docs/harness/gates.md)。
 
-- **阶段提示（UserPromptSubmit，`prompt.sh`）**：你每发一条消息，就把当前阶段、阶段路径、这一阶段在 `stages.md` 里的产出和门禁、下一阶段以及 `stage.sh` 的用法注入上下文，并清掉"等待用户回答"标记。没有阶段记录时什么也不做。
+- **阶段提示（UserPromptSubmit，`prompt.sh`）**：你每发一条消息，hook 都输出 `jstack 提示门禁注入：session=<id>` 作为本会话 hook 已运行的凭据。存在阶段记录时，还会注入当前阶段、阶段路径、这一阶段在 `stages.md` 里的产出和门禁、下一阶段以及 `stage.sh` 的用法，并清掉"等待用户回答"标记。没有阶段记录时只输出凭据，不注入阶段内容；该凭据不能证明 Stop 或 guard 已运行。
 - **验证门禁（Stop，`stop.sh`）**：路径含 verify、已经进入 execute 或之后的阶段、却一条验证证据都没记录时，拦下这次结束，让 agent 先验证并用 `stage.sh evidence` 记录。agent 运行过 `stage.sh ask` 且这一轮的回复里确实向你提了问题、或者这一轮本身就是被 Stop hook 拦回来的，都放行。每次进入 execute 会清掉之前的证据，L 路径的下一张 ticket 要重新验证。
 - **红线守卫（Claude Code 的 PreToolUse / Cursor 的 beforeShellExecution / Pi、OMP 的 bash `tool_call`，只看 shell 命令，`guard.sh`）**：命令在 `;`、`&&`、`||`、`|`、换行处切段，任一段命中 `must-stop.md` 的 patterns 就让 harness 先问你，原因写明命中的是哪条必须停事项。它不看阶段状态，对所有会话生效，包括没走 route 的会话。
 
-route 用同目录的 `stage.sh` 记录阶段（`start`、`enter`、`evidence`、`default`、`ask`、`end`、`show`）。状态按会话存成纯文本 `${JSTACK_STATE_DIR:-${XDG_STATE_HOME:-~/.local/state}/jstack/sessions}/<会话 id>`，`start` 时顺带删掉 7 天没动过的旧记录。会话 id 依次取 `JSTACK_SESSION_ID`（OMP 扩展写入）、`PI_SESSION_ID`（Pi）、`CLAUDE_CODE_SESSION_ID`、`CURSOR_CONVERSATION_ID`、`CODEX_SESSION_ID`；都没有的 harness 里 `stage.sh` 只打印一行说明，不做任何事。
+route 用同目录的 `stage.sh` 记录阶段（`start`、`enter`、`evidence`、`default`、`ask`、`end`、`show`）。状态按会话存成纯文本 `${JSTACK_STATE_DIR:-${XDG_STATE_HOME:-~/.local/state}/jstack/sessions}/<会话 id>`，`start` 时顺带删掉 7 天没动过的旧记录。会话 id 依次取 `JSTACK_SESSION_ID`（OMP 扩展写入）、`PI_SESSION_ID`（Pi）、`CLAUDE_CODE_SESSION_ID`、`CURSOR_CONVERSATION_ID`、`CODEX_SESSION_ID`、`WORKLOOP_SESSION_ID`；都没有的 harness 里 `stage.sh` 只打印一行说明，不做任何事。Workloop 没有 Stop hook，阶段状态只供 agent 自检，收尾摘要必须写门禁未强制。
 
 Cursor 的 hook 是它自己的事件和协议，不复用 Claude 的 `hooks.json`：`beforeShellExecution` 对应 guard（`permission: ask` 会弹出确认），`beforeSubmitPrompt` 对应阶段提示（输出 `additional_context`），`stop` 对应验证门禁（输出 `followup_message`）。Cursor 的 `stop` 输入没有最后一条回复，所以标了 `ask` 时只能直接放行，无法像 Claude 那样核对回复里是否真的提了问题；`stop` 的 `loop_limit` 设为 3，避免反复拦住同一轮。`./jstack install-cursor` 现在会复制完整插件树，Cursor 加载器按 `.cursor-plugin/plugin.json` 的 `hooks` 字段只加载 `hooks.cursor.json`。项目级安装同样会写 `.cursor/hooks.json`，命令指向 `.jstack/vendor`。
 
@@ -416,7 +416,7 @@ git diff --no-index --src-prefix= --dst-prefix= a/<路径> b/<路径> > patches/
 
 版本号由 `build` 写成 `<上游版本>+jstack.<内容哈希>`，内容一变版本号就变。pstack 的上游版本从 `plugin.json` 读，spec 的从锁文件读（它不收上游的 manifest）；spec 和 flow 的 Cursor manifest 版本由 `build` 与 Claude manifest 一起重写。
 
-本机的 marketplace 是从本地路径添加的，会话直接从 `plugins/<插件>` 加载。Claude Code 在缓存里也复制了一份，但不读它（2026-11-06 用 `claude --debug-file` 看启动日志确认）。所以 `build` 之后，重开会话或运行 `/reload-plugins` 就生效。再跑一次 `./jstack install`，`claude plugin list` 里的版本号也会跟上。
+本机的 marketplace 从本地路径添加；Claude Code 桌面端会话加载的是 `~/.claude/plugins/cache/` 里的安装副本，不会直接读取仓库的 `plugins/<插件>`。运行 `./jstack build` 更新源码产物后，重新运行 `./jstack install` 刷新已安装副本，再重开会话或运行 `/reload-plugins`。`claude plugin list` 中的版本号也会随 install 更新。
 
 其他机器从 GitHub 安装，插件复制进缓存，只有版本号变了才会更新。更新命令：`claude plugin marketplace update jstack && claude plugin update pstack@jstack && claude plugin update spec@jstack && claude plugin update flow@jstack`。
 

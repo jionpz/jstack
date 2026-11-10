@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # UserPromptSubmit hook（Claude Code / Codex）/ beforeSubmitPrompt（Cursor）：用户回话时，
 # 把当前阶段、它的产出和门禁、stage.sh 的用法注入上下文，并清掉 ask。
-# 没有状态文件就不输出。内部出错一律无输出地放行，hook 不能卡住用户。
+# 没有任务状态时仍输出会话注入标记，供 route 区分未加载/未信任的提示 hook。
+# 内部出错一律无输出地放行，hook 不能卡住用户。
 exec 2>/dev/null
 route=${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd -P)}/skills/route
 . "$route/lib.sh" || exit 0
@@ -29,7 +30,7 @@ emit() {
 }
 
 main() {
-	local input evt proto=claude file path stage row next arrow n d st cfg warn stages text
+	local input evt proto=claude file path stage row next arrow n d st cfg warn stages text sid receipt=
 	input=$(cat)
 	evt=$(jstack_json_str hook_event_name "$input")
 	if [ "$evt" = beforeSubmitPrompt ]; then
@@ -38,8 +39,11 @@ main() {
 		proto=codex
 	fi
 	warn=$(jstack_config_warning)
-	file=$(jstack_state_file "$(jstack_hook_sid "$input")") && [ -f "$file" ] || {
-		[ -z "$warn" ] || emit "$warn" "$proto"
+	sid=$(jstack_hook_sid "$input")
+	file=$(jstack_state_file "$sid") && receipt="jstack 提示门禁注入：session=${sid}（仅证明提示 hook 已运行，Stop/guard 未由此验证）"
+	[ -n "$receipt" ] && [ -f "$file" ] || {
+		text=$(printf '%s\n' "$receipt" "$warn" | sed '/^$/d')
+		[ -z "$text" ] || emit "$text" "$proto"
 		return 0
 	}
 	if grep -qx ask "$file"; then
@@ -57,6 +61,7 @@ main() {
 	d=$(grep -c '^default ' "$file")
 	st="\"$route/stage.sh\""
 	text=$(
+		printf '%s\n' "$receipt"
 		printf '%s\n' "jstack 阶段门禁：当前阶段 ${stage}" \
 			"路径：${arrow}" \
 			"本阶段产出：$(printf '%s' "$row" | cut -f2)" \
