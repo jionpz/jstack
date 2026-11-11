@@ -9,6 +9,8 @@
 ./jstack managed-export > /tmp/jstack-investigation.json
 ./jstack managed-export --ticket-id JT-101 --ticket-title "修复登录回跳" \
   > /tmp/jstack-ticket.json
+./jstack managed-export --ticket-id JT-101 --ticket-title "修复登录回跳" \
+  --completion-target pr_ready > /tmp/jstack-ticket-pr-ready.json
 ```
 
 ## 调查包
@@ -43,8 +45,11 @@ launcher 的安全覆盖，不声称与交互式 route 完全相同。
 排除该字段本身。provider 文件缺失、为空、越界软链、stage 行缺 provider/profile、
 tool profile 不存在或来源内容变化都会拒绝导出或改变摘要。
 
-`completion_target` 固定为 `branch_ready`：导出包只声明分支/提交交付边界，
-push、PR、CI 属 Keel 的后续受控网关，不在本导出器中执行。
+`completion_target` 缺省为 `branch_ready`，可用 `--completion-target pr_ready`
+显式导出 managed 自动交付包。两者都只声明包期望的完成边界：导出器本身不执行
+push、PR 或 CI；`pr_ready` 表示后续 Keel 网关必须创建真实 PR 并等待准确 head
+SHA 的必需 check 通过。
 
 验证：`python3 tests/managed-export.py` 覆盖调查包、ticket 四阶段、完整来源清单、
-摘要稳定性、缺 provider/缺 profile/非法 size 与内容变化。
+`branch_ready` / `pr_ready` 两种完成目标、摘要稳定性、缺 provider/缺 profile/
+非法 size 与内容变化。

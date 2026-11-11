@@ -213,6 +213,54 @@ class ManagedExportTests(unittest.TestCase):
                 )
                 self.assertEqual(source["bytes"], len(content.encode("utf-8")))
 
+    def test_ticket_exports_pr_ready_completion_target(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.ticket_fixture(Path(directory))
+            command = [
+                sys.executable,
+                str(root / "scripts/managed-export.py"),
+                "--root",
+                str(root),
+                "--ticket-id",
+                "JT-101",
+            ]
+            default = subprocess.run(command, text=True, capture_output=True, check=False)
+            self.assertEqual(default.returncode, 0, default.stderr)
+            pr_ready = subprocess.run(
+                command + ["--completion-target", "pr_ready"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(pr_ready.returncode, 0, pr_ready.stderr)
+            default_payload = json.loads(default.stdout)
+            pr_ready_payload = json.loads(pr_ready.stdout)
+            self.assertEqual(default_payload["completion_target"], "branch_ready")
+            self.assertEqual(pr_ready_payload["completion_target"], "pr_ready")
+            self.assertNotEqual(
+                default_payload["content_digest"], pr_ready_payload["content_digest"]
+            )
+
+    def test_completion_target_requires_ticket_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.fixture(Path(directory))
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(root / "scripts/managed-export.py"),
+                    "--root",
+                    str(root),
+                    "--completion-target",
+                    "pr_ready",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, "")
+            self.assertIn("--completion-target", result.stderr)
+
     def test_ticket_rejects_missing_provider_missing_profile_and_bad_size(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = self.ticket_fixture(Path(directory))
