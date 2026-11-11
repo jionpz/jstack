@@ -2258,7 +2258,7 @@ cmd_check() {
 	check_codex_manifest || rc=1
 	# 阶段门禁对构建产物测。macOS 上用 /bin/bash 跑，确认 hook 在系统自带的 bash 3.2 下也能用。
 	if python3 "$ROOT/tests/managed-export.py" >"$WORK/managed-export" 2>&1; then
-		say "✓ managed 只读导出协议测试通过（4 项）"
+		say "✓ managed 导出协议测试通过（调查包 + ticket 包）"
 	else
 		say "✗ managed 只读导出协议测试失败："
 		cat "$WORK/managed-export"
