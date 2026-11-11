@@ -15,9 +15,19 @@ from pathlib import Path
 ROUTE_PATH = Path("src/flow/skills/route/SKILL.md")
 STAGES_PATH = Path("src/flow/skills/route/stages.md")
 EXECUTE_PATH = Path("src/managed/investigate.md")
+PLAN_PATH = Path("src/managed/plan.md")
 MUST_STOP_PATH = Path("src/flow/skills/route/must-stop.md")
 TOOL_POLICY_PATH = Path("src/flow/skills/route/tool-policy.json")
 TICKET_STAGES = ("execute", "verify", "review", "land")
+TICKET_SIZES = ("XS", "S")
+ROUTE_SIZES = ("XS", "S", "M", "L", "XL")
+ROUTE_GRAPH_LIMITS = {
+    "XS": (1, 1),
+    "S": (1, 1),
+    "M": (1, 3),
+    "L": (2, 12),
+    "XL": (2, 20),
+}
 TICKET_STAGE_PROVIDERS = {
     "execute": "flow:execute",
     "verify": "pstack:principle-prove-it-works",
@@ -182,6 +192,65 @@ def parse_must_stop(text: str) -> list[dict[str, str]]:
     return actions
 
 
+def parse_route_rules(route_text: str) -> list[dict[str, object]]:
+    """从 jstack route 的 size 表提取五档规模；阶段路径由固定 ticket 安全门给出。"""
+    rules: dict[str, dict[str, object]] = {}
+    in_sizes = False
+    header_seen = False
+    for raw in route_text.splitlines():
+        line = raw.strip()
+        if line.startswith("## "):
+            if in_sizes and header_seen:
+                break
+            in_sizes = line == "## 2. Size the task and pick the stage path"
+            continue
+        if not in_sizes or not line.startswith("|"):
+            if in_sizes and header_seen and line:
+                break
+            continue
+        cells = tuple(cell.strip() for cell in line.strip("|").split("|"))
+        if not header_seen:
+            if cells != ("Size", "Signals", "Stage path"):
+                raise ExportError("route size 表头必须是：Size | Signals | Stage path")
+            header_seen = True
+            continue
+        if all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells):
+            continue
+        if len(cells) != 3:
+            raise ExportError("route size 表行列数不匹配")
+        label, signals, path = cells
+        sizes: tuple[str, ...]
+        if label == "XS / S":
+            sizes = ("XS", "S")
+        elif label.startswith("M,"):
+            sizes = ("M",)
+        elif label in ROUTE_SIZES:
+            sizes = (label,)
+        elif label == "Question":
+            continue
+        else:
+            raise ExportError(f"route size 表含未知规模：{label}")
+        if not path:
+            raise ExportError(f"route size {label} 缺少 stage path")
+        for size in sizes:
+            if size in rules:
+                if label.startswith("M,"):
+                    continue
+                raise ExportError(f"route size 重复定义：{size}")
+            low, high = ROUTE_GRAPH_LIMITS[size]
+            rules[size] = {
+                "size": size,
+                "stage_path": list(TICKET_STAGES),
+                "min_tickets": low,
+                "max_tickets": high,
+                "description": f"{signals}；{path}"[:2000],
+            }
+    missing = [size for size in ROUTE_SIZES if size not in rules]
+    if missing:
+        raise ExportError("route size 表缺少规模：" + ",".join(missing))
+    return [rules[size] for size in ROUTE_SIZES]
+
+
 def build_tool_policy(
     root: Path, stages: dict[str, dict[str, object]]
 ) -> tuple[dict[str, object], dict[str, object]]:
@@ -255,7 +324,7 @@ def export_ticket(
         not ticket_description.strip() or len(ticket_description) > 20000
     ):
         raise ExportError("ticket description 必须为 1..20000 字符")
-    if size not in ("XS", "S"):
+    if size not in TICKET_SIZES:
         raise ExportError("ticket size 只接受 XS 或 S")
     if completion_target not in ("branch_ready", "pr_ready"):
         raise ExportError("completion target 只接受 branch_ready 或 pr_ready")
@@ -326,13 +395,93 @@ def export_ticket(
     return package
 
 
+def export_route(root: Path, completion_target: str) -> dict[str, object]:
+    """导出 jstack 的五档路线、阶段模板与规划说明，供 Keel 接纳 ticket 图。"""
+    root = root.resolve(strict=True)
+    if completion_target not in ("branch_ready", "pr_ready"):
+        raise ExportError("completion target 只接受 branch_ready 或 pr_ready")
+
+    route, route_manifest = read_source(root, ROUTE_PATH)
+    stages_text, stages_manifest = read_source(root, STAGES_PATH)
+    plan, plan_manifest = read_source(root, PLAN_PATH)
+    must_stop_text, must_stop_manifest = read_source(root, MUST_STOP_PATH)
+    stage_table = parse_stage_table(stages_text)
+    must_stop_actions = parse_must_stop(must_stop_text)
+    tool_policy, policy_manifest = build_tool_policy(root, stage_table)
+    route_rules = parse_route_rules(route)
+
+    archive = stage_table.get("archive")
+    if archive is None:
+        raise ExportError("Stages 表缺少 archive 阶段")
+    archive_gate = archive.get("gate")
+    if not isinstance(archive_gate, str) or not archive_gate.strip():
+        raise ExportError("archive 阶段缺少 gate")
+
+    stage_templates: list[dict[str, object]] = []
+    sources = [
+        route_manifest,
+        stages_manifest,
+        plan_manifest,
+        must_stop_manifest,
+        policy_manifest,
+    ]
+    for stage in TICKET_STAGES:
+        row = stage_table.get(stage)
+        if row is None:
+            raise ExportError(f"Stages 表缺少 ticket 阶段：{stage}")
+        provider = TICKET_STAGE_PROVIDERS[stage]
+        if provider not in row["providers"]:
+            raise ExportError(f"阶段 {stage} 没有声明 provider {provider}")
+        provider_path = TICKET_PROVIDER_PATHS[provider]
+        content, manifest = read_source(root, provider_path)
+        sources.append(manifest)
+        stage_templates.append(
+            {
+                "stage": stage,
+                "provider": provider,
+                "provider_path": provider_path.as_posix(),
+                "gate": row["gate"],
+                "tool_profile": row["tool_profile"],
+                "instructions": content,
+                "content_digest": digest_text(content),
+            }
+        )
+
+    package: dict[str, object] = {
+        "protocol_version": "1.0",
+        "workflow_id": "jstack",
+        "mode": "route",
+        "source_commit": source_commit(root),
+        "completion_target": completion_target,
+        "route_rules": route_rules,
+        "stage_templates": stage_templates,
+        "instructions": {
+            "route": route,
+            "stages": stages_text,
+            "plan": plan,
+            "must_stop": must_stop_text,
+        },
+        "tool_policy": tool_policy,
+        "must_stop": {
+            "content": must_stop_text,
+            "actions": must_stop_actions,
+            "content_digest": digest_text(must_stop_text),
+        },
+        "archive_gate": archive_gate,
+        "sources": sources,
+    }
+    package["content_digest"] = digest_payload(package)
+    return package
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="导出 jstack managed 工作流包 JSON")
     parser.add_argument("--root", type=Path, help="jstack 仓库根目录；默认使用本脚本所属仓库")
+    parser.add_argument("--route", action="store_true", help="导出 XS/S/M/L/XL 路线包")
     parser.add_argument("--ticket-id", help="导出 XS/S 单 ticket 工程包")
     parser.add_argument("--ticket-title", help="ticket 标题；缺省使用 ticket id")
     parser.add_argument("--ticket-description", help="ticket 正文；可选，最多 20000 字符")
-    parser.add_argument("--size", choices=("XS", "S"), default="S", help="ticket 规模")
+    parser.add_argument("--size", choices=TICKET_SIZES, help="ticket 规模；缺省 S")
     parser.add_argument(
         "--completion-target",
         choices=("branch_ready", "pr_ready"),
@@ -342,7 +491,17 @@ def main(argv: list[str] | None = None) -> int:
 
     root = args.root if args.root is not None else Path(__file__).resolve().parent.parent
     try:
-        if args.ticket_id is None:
+        if args.route:
+            if args.ticket_id is not None:
+                raise ExportError("--route 不能与 --ticket-id 一起使用")
+            if args.ticket_title is not None:
+                raise ExportError("--ticket-title 只能与 --ticket-id 一起使用")
+            if args.ticket_description is not None:
+                raise ExportError("--ticket-description 只能与 --ticket-id 一起使用")
+            if args.size is not None:
+                raise ExportError("--route 不能与 --size 一起使用")
+            payload = export_route(root, args.completion_target or "pr_ready")
+        elif args.ticket_id is None:
             if args.ticket_title is not None:
                 raise ExportError("--ticket-title 只能与 --ticket-id 一起使用")
             if args.ticket_description is not None:
@@ -356,7 +515,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.ticket_id,
                 args.ticket_title or args.ticket_id,
                 args.ticket_description,
-                args.size,
+                args.size or "S",
                 args.completion_target or "branch_ready",
             )
     except (ExportError, OSError) as exc:

@@ -33,7 +33,8 @@
 #   ./jstack models apply [--dry-run] [--yes]      写入四个 harness 的模型规则；--dry-run 只打印
 #   ./jstack models status                         premium 今日 token 用量与预算
 #   ./jstack doctor [--json] [--no-fail] [--repo <dir>]  只读列出各 harness × 作用域的安装、版本、来源与 lock 状态
-#   ./jstack managed-export [--root <dir>]           导出只读调查协议包给 Keel；不改既有交互工作流
+#   ./jstack managed-export [--root <dir>] [--route] [--ticket-id ID ...]
+#                                                     导出只读调查、XS/S/M/L/XL 路线或单 ticket 包给 Keel
 #   ./jstack tools export [--root <dir>] [--pretty]   导出阶段→工具 profile、profiles、harness 映射和内容摘要
 #   ./jstack tools resolve --stage <阶段>|--role <profile> --harness pi|claude-code
 #                          --inventory <JSON> [--allow-shell-fallback]
@@ -2258,7 +2259,7 @@ cmd_check() {
 	check_codex_manifest || rc=1
 	# 阶段门禁对构建产物测。macOS 上用 /bin/bash 跑，确认 hook 在系统自带的 bash 3.2 下也能用。
 	if python3 "$ROOT/tests/managed-export.py" >"$WORK/managed-export" 2>&1; then
-		say "✓ managed 导出协议测试通过（调查包 + ticket 包）"
+		say "✓ managed 导出协议测试通过（调查包 + ticket 包 + route 包）"
 	else
 		say "✗ managed 只读导出协议测试失败："
 		cat "$WORK/managed-export"
