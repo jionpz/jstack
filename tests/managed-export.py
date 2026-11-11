@@ -16,6 +16,7 @@ SCRIPT = REPO / "scripts/managed-export.py"
 ROUTE = "src/flow/skills/route/SKILL.md"
 STAGES = "src/flow/skills/route/stages.md"
 EXECUTE = "src/managed/investigate.md"
+PLAN = "src/managed/plan.md"
 MUST_STOP = "src/flow/skills/route/must-stop.md"
 TOOL_POLICY = "src/flow/skills/route/tool-policy.json"
 PROVIDERS = {
@@ -36,6 +37,7 @@ class ManagedExportTests(unittest.TestCase):
         (root / ROUTE).write_text("# route\n| Question | investigation | execute only |\n", encoding="utf-8")
         (root / STAGES).write_text("| Stage |\n| execute |\n", encoding="utf-8")
         (root / EXECUTE).write_text("只读调查。\n", encoding="utf-8")
+        (root / PLAN).write_text("输出 ticket 图。\n", encoding="utf-8")
         return root
 
     def ticket_fixture(self, base: Path) -> Path:
@@ -47,7 +49,22 @@ class ManagedExportTests(unittest.TestCase):
             "| execute | change | none | `flow:execute` | `developer` |\n"
             "| verify | evidence | evidence required | `pstack:principle-prove-it-works` | `verifier` |\n"
             "| review | findings | no open findings | `flow:review` | `reviewer` |\n"
-            "| land | commit | no must-stop | `pstack:poteto-mode/playbooks/opening-a-pr.md` | `releaser` |\n",
+            "| land | commit | no must-stop | `pstack:poteto-mode/playbooks/opening-a-pr.md` | `releaser` |\n"
+            "| archive | closed | evidence | `flow:archive` | `archivist` |\n",
+            encoding="utf-8",
+        )
+        (root / ROUTE).write_text(
+            "# route\n\n"
+            "| Question | investigation | execute only |\n\n"
+            "## 2. Size the task and pick the stage path\n\n"
+            "| Size | Signals | Stage path |\n"
+            "|---|---|---|\n"
+            "| XS / S | one file | execute, verify, land, archive |\n"
+            "| M, clear | one module | execute, verify, review, land, archive |\n"
+            "| M, ambiguous | two readings | clarify, execute, verify, review, land, archive |\n"
+            "| L | several features | clarify, plan, execute, verify, review, land, archive |\n"
+            "| XL | many sessions | plan with wayfinder, L for each cleared area |\n"
+            "| Question | why | execute only |\n",
             encoding="utf-8",
         )
         (root / MUST_STOP).write_text(
@@ -78,6 +95,11 @@ class ManagedExportTests(unittest.TestCase):
                 },
                 "releaser": {
                     "role": "releaser",
+                    "capabilities": ["read", "bash"],
+                    "optional_capabilities": [],
+                },
+                "archivist": {
+                    "role": "archivist",
                     "capabilities": ["read", "bash"],
                     "optional_capabilities": [],
                 },
@@ -386,6 +408,257 @@ class ManagedExportTests(unittest.TestCase):
             )
             self.assertNotEqual(bad_size.returncode, 0)
             self.assertEqual(bad_size.stdout, "")
+
+    def test_route_exports_five_sizes_templates_and_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.ticket_fixture(Path(directory))
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(root / "scripts/managed-export.py"),
+                    "--root",
+                    str(root),
+                    "--route",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["mode"], "route")
+            self.assertEqual(payload["completion_target"], "pr_ready")
+            self.assertEqual(
+                [rule["size"] for rule in payload["route_rules"]],
+                ["XS", "S", "M", "L", "XL"],
+            )
+            self.assertEqual(
+                [rule["stage_path"] for rule in payload["route_rules"]],
+                [["execute", "verify", "review", "land"]] * 5,
+            )
+            self.assertEqual(
+                [rule["min_tickets"] for rule in payload["route_rules"]],
+                [1, 1, 1, 2, 2],
+            )
+            self.assertEqual(
+                [rule["max_tickets"] for rule in payload["route_rules"]],
+                [1, 1, 3, 12, 20],
+            )
+            self.assertEqual(
+                [stage["stage"] for stage in payload["stage_templates"]],
+                ["execute", "verify", "review", "land"],
+            )
+            self.assertEqual(payload["instructions"]["plan"], "输出 ticket 图。\n")
+            self.assertEqual(payload["archive_gate"], "evidence")
+            self.assertEqual(len(payload["sources"]), 9)
+            self.assertEqual(
+                [source["path"] for source in payload["sources"]],
+                [
+                    ROUTE,
+                    STAGES,
+                    PLAN,
+                    MUST_STOP,
+                    TOOL_POLICY,
+                    PROVIDERS["execute"],
+                    PROVIDERS["verify"],
+                    PROVIDERS["review"],
+                    PROVIDERS["land"],
+                ],
+            )
+            for source in payload["sources"]:
+                content = (root / source["path"]).read_text(encoding="utf-8")
+                self.assertEqual(
+                    source["sha256"], hashlib.sha256(content.encode("utf-8")).hexdigest()
+                )
+                self.assertEqual(source["bytes"], len(content.encode("utf-8")))
+            body = {key: value for key, value in payload.items() if key != "content_digest"}
+            canonical = json.dumps(
+                body, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+            ).encode("utf-8")
+            self.assertEqual(payload["content_digest"], hashlib.sha256(canonical).hexdigest())
+
+    def test_route_source_and_archive_gate_changes_update_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.ticket_fixture(Path(directory))
+            command = [
+                sys.executable,
+                str(root / "scripts/managed-export.py"),
+                "--root",
+                str(root),
+                "--route",
+            ]
+            initial_run = subprocess.run(
+                command, text=True, capture_output=True, check=False
+            )
+            self.assertEqual(initial_run.returncode, 0, initial_run.stderr)
+            initial = json.loads(initial_run.stdout)
+
+            changed_plan = "先定依赖，再拆到 XS/S/M。\n"
+            (root / PLAN).write_text(changed_plan, encoding="utf-8")
+            changed_run = subprocess.run(
+                command, text=True, capture_output=True, check=False
+            )
+            self.assertEqual(changed_run.returncode, 0, changed_run.stderr)
+            changed = json.loads(changed_run.stdout)
+            self.assertEqual(changed["instructions"]["plan"], changed_plan)
+            self.assertNotEqual(initial["content_digest"], changed["content_digest"])
+            initial_plan = next(
+                source for source in initial["sources"] if source["path"] == PLAN
+            )
+            changed_plan_source = next(
+                source for source in changed["sources"] if source["path"] == PLAN
+            )
+            self.assertNotEqual(initial_plan["sha256"], changed_plan_source["sha256"])
+            self.assertEqual(
+                changed_plan_source["sha256"],
+                hashlib.sha256(changed_plan.encode("utf-8")).hexdigest(),
+            )
+
+            stages = (root / STAGES).read_text(encoding="utf-8")
+            (root / STAGES).write_text(
+                stages.replace(
+                    "| archive | closed | evidence |",
+                    "| archive | closed | archive evidence |",
+                ),
+                encoding="utf-8",
+            )
+            gate_run = subprocess.run(
+                command, text=True, capture_output=True, check=False
+            )
+            self.assertEqual(gate_run.returncode, 0, gate_run.stderr)
+            gate_changed = json.loads(gate_run.stdout)
+            self.assertEqual(gate_changed["archive_gate"], "archive evidence")
+            self.assertNotEqual(changed["content_digest"], gate_changed["content_digest"])
+
+    def test_route_requires_plan_archive_and_all_sizes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.ticket_fixture(Path(directory))
+            (root / PLAN).unlink()
+            missing_plan = subprocess.run(
+                [
+                    sys.executable,
+                    str(root / "scripts/managed-export.py"),
+                    "--root",
+                    str(root),
+                    "--route",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(missing_plan.returncode, 0)
+            self.assertEqual(missing_plan.stdout, "")
+            self.assertIn(PLAN, missing_plan.stderr)
+
+            outside = root.parent / "outside-plan.md"
+            outside.write_text("伪造来源\n", encoding="utf-8")
+            (root / PLAN).symlink_to(outside)
+            forged_plan = subprocess.run(
+                [
+                    sys.executable,
+                    str(root / "scripts/managed-export.py"),
+                    "--root",
+                    str(root),
+                    "--route",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(forged_plan.returncode, 0)
+            self.assertEqual(forged_plan.stdout, "")
+            self.assertIn("越出仓库根目录", forged_plan.stderr)
+
+            (root / PLAN).unlink()
+            (root / PLAN).write_text("输出 ticket 图。\n", encoding="utf-8")
+            route = (root / ROUTE).read_text(encoding="utf-8")
+            (root / ROUTE).write_text(
+                route.replace("| XL | many sessions | plan with wayfinder, L for each cleared area |\n", ""),
+                encoding="utf-8",
+            )
+            missing_size = subprocess.run(
+                [
+                    sys.executable,
+                    str(root / "scripts/managed-export.py"),
+                    "--root",
+                    str(root),
+                    "--route",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(missing_size.returncode, 0)
+            self.assertIn("XL", missing_size.stderr)
+
+            (root / ROUTE).write_text(route, encoding="utf-8")
+            stages = (root / STAGES).read_text(encoding="utf-8")
+            (root / STAGES).write_text(
+                stages.replace(
+                    "| archive | closed | evidence | `flow:archive` | `archivist` |",
+                    "| archive | closed |  | `flow:archive` | `archivist` |",
+                ),
+                encoding="utf-8",
+            )
+            missing_gate = subprocess.run(
+                [
+                    sys.executable,
+                    str(root / "scripts/managed-export.py"),
+                    "--root",
+                    str(root),
+                    "--route",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(missing_gate.returncode, 0)
+            self.assertEqual(missing_gate.stdout, "")
+            self.assertIn("archive 阶段缺少 gate", missing_gate.stderr)
+
+            (root / STAGES).write_text(stages, encoding="utf-8")
+            (root / STAGES).write_text(
+                stages.replace(
+                    "| archive | closed | evidence | `flow:archive` | `archivist` |\n", ""
+                ),
+                encoding="utf-8",
+            )
+            missing_archive = subprocess.run(
+                [
+                    sys.executable,
+                    str(root / "scripts/managed-export.py"),
+                    "--root",
+                    str(root),
+                    "--route",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(missing_archive.returncode, 0)
+            self.assertIn("archive", missing_archive.stderr)
+
+    def test_route_rejects_ticket_only_options(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.ticket_fixture(Path(directory))
+            for option in (["--ticket-id", "JT-101"], ["--size", "S"]):
+                with self.subTest(option=option[0]):
+                    result = subprocess.run(
+                        [
+                            sys.executable,
+                            str(root / "scripts/managed-export.py"),
+                            "--root",
+                            str(root),
+                            "--route",
+                            *option,
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=False,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(result.stdout, "")
+                    self.assertIn("--route", result.stderr)
 
     def test_ticket_digest_changes_when_stage_content_changes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

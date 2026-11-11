@@ -203,7 +203,9 @@ Cursor 的本地插件加载器只接受 `~/.cursor/plugins/local` 内的符号�
 
 ## 分工
 
-Keel 的首个后台接入切片可通过 `./jstack managed-export` 导出 Question 只读路线；当前仅支持调查和天问影子建议，接口与限制见 [managed 调查协议](docs/managed.md)。完整工程路线和委托审批仍待接入。
+Keel 可通过 `./jstack managed-export` 导出 Question 只读调查、XS/S 单 ticket 或
+XS/S/M/L/XL route 图。route 包提供规划约束、依赖图说明和固定工作流定义，真实多
+ticket 执行仍由 Keel 验收；接口与限制见 [managed 工作流包](docs/managed.md)。
 
 工作流由 [`src/flow/skills/route/stages.md`](src/flow/skills/route/stages.md) 定义成固定阶段：size、clarify、plan、execute、verify、review、land、archive。每个阶段写明产出、门禁和当前提供者（ADR-0002）。`flow:route` 先分级，再按大小选出要走的阶段，逐个交给提供者，不需要你选命令：
 
