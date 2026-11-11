@@ -238,7 +238,13 @@ def export_investigation(root: Path) -> dict[str, object]:
     }
 
 
-def export_ticket(root: Path, ticket_id: str, ticket_title: str, size: str) -> dict[str, object]:
+def export_ticket(
+    root: Path,
+    ticket_id: str,
+    ticket_title: str,
+    size: str,
+    completion_target: str = "branch_ready",
+) -> dict[str, object]:
     root = root.resolve(strict=True)
     if not ticket_id.strip() or len(ticket_id) > 200:
         raise ExportError("ticket id 必须为 1..200 字符")
@@ -246,6 +252,8 @@ def export_ticket(root: Path, ticket_id: str, ticket_title: str, size: str) -> d
         raise ExportError("ticket title 必须为 1..1000 字符")
     if size not in ("XS", "S"):
         raise ExportError("ticket size 只接受 XS 或 S")
+    if completion_target not in ("branch_ready", "pr_ready"):
+        raise ExportError("completion target 只接受 branch_ready 或 pr_ready")
 
     route, route_manifest = read_source(root, ROUTE_PATH)
     stages_text, stages_manifest = read_source(root, STAGES_PATH)
@@ -302,7 +310,7 @@ def export_ticket(root: Path, ticket_id: str, ticket_title: str, size: str) -> d
             "actions": must_stop_actions,
             "content_digest": digest_text(must_stop_text),
         },
-        "completion_target": "branch_ready",
+        "completion_target": completion_target,
         "sources": sources,
     }
     package["content_digest"] = digest_payload(package)
@@ -315,6 +323,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ticket-id", help="导出 XS/S 单 ticket 工程包")
     parser.add_argument("--ticket-title", help="ticket 标题；缺省使用 ticket id")
     parser.add_argument("--size", choices=("XS", "S"), default="S", help="ticket 规模")
+    parser.add_argument(
+        "--completion-target",
+        choices=("branch_ready", "pr_ready"),
+        help="单 ticket 完成目标；缺省 branch_ready，managed 自动交付用 pr_ready",
+    )
     args = parser.parse_args(argv)
 
     root = args.root if args.root is not None else Path(__file__).resolve().parent.parent
@@ -322,6 +335,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.ticket_id is None:
             if args.ticket_title is not None:
                 raise ExportError("--ticket-title 只能与 --ticket-id 一起使用")
+            if args.completion_target is not None:
+                raise ExportError("--completion-target 只能与 --ticket-id 一起使用")
             payload = export_investigation(root)
         else:
             payload = export_ticket(
@@ -329,6 +344,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.ticket_id,
                 args.ticket_title or args.ticket_id,
                 args.size,
+                args.completion_target or "branch_ready",
             )
     except (ExportError, OSError) as exc:
         print(f"managed-export: 错误：{exc}", file=sys.stderr)
