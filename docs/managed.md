@@ -10,6 +10,8 @@
 ./jstack managed-export --ticket-id JT-101 --ticket-title "修复登录回跳" \
   > /tmp/jstack-ticket.json
 ./jstack managed-export --ticket-id JT-101 --ticket-title "修复登录回跳" \
+  --ticket-description "复现步骤、验收标准与边界条件" > /tmp/jstack-ticket.json
+./jstack managed-export --ticket-id JT-101 --ticket-title "修复登录回跳" \
   --completion-target pr_ready > /tmp/jstack-ticket-pr-ready.json
 ```
 
@@ -50,6 +52,9 @@ tool profile 不存在或来源内容变化都会拒绝导出或改变摘要。
 push、PR 或 CI；`pr_ready` 表示后续 Keel 网关必须创建真实 PR 并等待准确 head
 SHA 的必需 check 通过。
 
+`--ticket-description` 可选携带 1..20000 字符的 ticket 正文，缺省不写入
+`ticket.description`，兼容既有包。
+
 验证：`python3 tests/managed-export.py` 覆盖调查包、ticket 四阶段、完整来源清单、
-`branch_ready` / `pr_ready` 两种完成目标、摘要稳定性、缺 provider/缺 profile/
-非法 size 与内容变化。
+可选 ticket 正文、`branch_ready` / `pr_ready` 两种完成目标、摘要稳定性、缺
+provider/缺 profile/非法 size 与内容变化。
