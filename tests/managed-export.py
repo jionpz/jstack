@@ -213,6 +213,73 @@ class ManagedExportTests(unittest.TestCase):
                 )
                 self.assertEqual(source["bytes"], len(content.encode("utf-8")))
 
+    def test_ticket_exports_optional_description(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.ticket_fixture(Path(directory))
+            description = "新增 e2e 文档。\n\n验收：文件存在且内容固定。"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(root / "scripts/managed-export.py"),
+                    "--root",
+                    str(root),
+                    "--ticket-id",
+                    "JT-102",
+                    "--ticket-title",
+                    "single ticket",
+                    "--ticket-description",
+                    description,
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertEqual(
+                payload["ticket"],
+                {"id": "JT-102", "title": "single ticket", "description": description},
+            )
+
+    def test_ticket_description_requires_ticket_mode_and_nonempty_body(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.ticket_fixture(Path(directory))
+            no_ticket = subprocess.run(
+                [
+                    sys.executable,
+                    str(root / "scripts/managed-export.py"),
+                    "--root",
+                    str(root),
+                    "--ticket-description",
+                    "body",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(no_ticket.returncode, 0)
+            self.assertEqual(no_ticket.stdout, "")
+            self.assertIn("--ticket-description", no_ticket.stderr)
+
+            empty = subprocess.run(
+                [
+                    sys.executable,
+                    str(root / "scripts/managed-export.py"),
+                    "--root",
+                    str(root),
+                    "--ticket-id",
+                    "JT-102",
+                    "--ticket-description",
+                    "  \n",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(empty.returncode, 0)
+            self.assertEqual(empty.stdout, "")
+            self.assertIn("ticket description", empty.stderr)
+
     def test_ticket_exports_pr_ready_completion_target(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = self.ticket_fixture(Path(directory))

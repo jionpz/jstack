@@ -242,6 +242,7 @@ def export_ticket(
     root: Path,
     ticket_id: str,
     ticket_title: str,
+    ticket_description: str | None,
     size: str,
     completion_target: str = "branch_ready",
 ) -> dict[str, object]:
@@ -250,6 +251,10 @@ def export_ticket(
         raise ExportError("ticket id 必须为 1..200 字符")
     if not ticket_title.strip() or len(ticket_title) > 1000:
         raise ExportError("ticket title 必须为 1..1000 字符")
+    if ticket_description is not None and (
+        not ticket_description.strip() or len(ticket_description) > 20000
+    ):
+        raise ExportError("ticket description 必须为 1..20000 字符")
     if size not in ("XS", "S"):
         raise ExportError("ticket size 只接受 XS 或 S")
     if completion_target not in ("branch_ready", "pr_ready"):
@@ -291,12 +296,16 @@ def export_ticket(
             }
         )
 
+    ticket: dict[str, object] = {"id": ticket_id.strip(), "title": ticket_title.strip()}
+    if ticket_description is not None:
+        ticket["description"] = ticket_description.strip()
+
     package: dict[str, object] = {
         "protocol_version": "1.0",
         "workflow_id": "jstack",
         "mode": "ticket",
         "source_commit": source_commit(root),
-        "ticket": {"id": ticket_id.strip(), "title": ticket_title.strip()},
+        "ticket": ticket,
         "route": {"size": size, "stages": list(TICKET_STAGES)},
         "stages": stages,
         "instructions": {
@@ -322,6 +331,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", type=Path, help="jstack 仓库根目录；默认使用本脚本所属仓库")
     parser.add_argument("--ticket-id", help="导出 XS/S 单 ticket 工程包")
     parser.add_argument("--ticket-title", help="ticket 标题；缺省使用 ticket id")
+    parser.add_argument("--ticket-description", help="ticket 正文；可选，最多 20000 字符")
     parser.add_argument("--size", choices=("XS", "S"), default="S", help="ticket 规模")
     parser.add_argument(
         "--completion-target",
@@ -335,6 +345,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.ticket_id is None:
             if args.ticket_title is not None:
                 raise ExportError("--ticket-title 只能与 --ticket-id 一起使用")
+            if args.ticket_description is not None:
+                raise ExportError("--ticket-description 只能与 --ticket-id 一起使用")
             if args.completion_target is not None:
                 raise ExportError("--completion-target 只能与 --ticket-id 一起使用")
             payload = export_investigation(root)
@@ -343,6 +355,7 @@ def main(argv: list[str] | None = None) -> int:
                 root,
                 args.ticket_id,
                 args.ticket_title or args.ticket_id,
+                args.ticket_description,
                 args.size,
                 args.completion_target or "branch_ready",
             )
