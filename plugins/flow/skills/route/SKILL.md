@@ -109,5 +109,3 @@ Every adopted default and every queued question must appear; they are how the us
 - Never run clarify or plan for XS, S, or clear M work just to have a spec.
 - Never ask the user which command or workflow to run.
 - Never guess a provider's path. Every provider comes from stages.md through locate.sh.
-
-用于验证 CI 的临时改动：手改构建产物。
