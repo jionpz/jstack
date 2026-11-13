@@ -1,0 +1,65 @@
+name: check
+
+# 每个 PR 和 main 的每次提交都跑 ./jstack check。
+# 不跑 --smoke（要本机已装的 harness、模型和网络），不跑 ./jstack eval（调模型、消耗 token）。
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 jq
+        run: |
+          if command -v jq >/dev/null; then
+            jq --version
+          elif [ "$RUNNER_OS" = macOS ]; then
+            brew install jq
+          else
+            sudo apt-get update && sudo apt-get install -y jq
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: 安装 Claude Code CLI
+        # check 用它跑 claude plugin validate；这一步不需要登录，也不访问模型接口。
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: 在 macOS 上按 UTF-8 locale 运行
+        # 本机是 UTF-8；bash 3.2 的 $VAR 后跟中文标点的问题只在 UTF-8 locale 下出现。
+        if: runner.os == 'macOS'
+        run: echo 'LANG=en_US.UTF-8' >>"$GITHUB_ENV"
+
+      - name: 打印工具版本
+        run: |
+          /bin/bash --version | head -1
+          jq --version
+          python3 --version
+          node --version
+          rsync --version | head -1
+          claude --version
+
+      - run: ./jstack check
