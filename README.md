@@ -405,6 +405,17 @@ pstack 只同步 Claude Code 树；Cursor 版由 `build` 转换，不再单独�
 
 第 3、4、5 项专门查 adapter 管不到的地方：脚本和 frontmatter 都不经过模型，上游新引入的 Cursor 依赖在同步时就能发现；第 5 项查的是 spec 这种"只收一部分 skill"的插件有没有漏掉依赖。`claude plugin validate` 不查 frontmatter 键，也不查插件内部 skill 之间的调用关系，更不查 YAML 合法性，所以 `: ` 这种写法只能由第 4 项拦。全部通过才提交。
 
+### CI
+
+`.github/workflows/check.yml` 在每个 PR 和 `main` 的每次提交上跑 `./jstack check`，macOS 和 Ubuntu 各一个 job（`fail-fast: false`，两边都会跑完）。macOS job 用系统自带的 bash 3.2，并设成 `en_US.UTF-8`，复现本机最容易踩的 locale 坑。
+
+CI 只跑不耗 token 的部分：
+
+- 跑：上面第 1–18 项全部，包括 `claude plugin validate` 和 `./jstack eval --selftest`（自检不调模型）
+- 不跑：`--smoke`（要本机已安装的 Pi / OMP / Cursor / Codex，会启动模型）、`./jstack eval`（调模型，要网络和模型额度）
+
+workflow 里装了 `jq`、Python、Node 24 和当前的 Claude Code CLI（只给 `claude plugin validate` 用），不读任何密钥，也不访问模型接口。macOS job 的 Python 是 3.9，与开发机的系统 `python3` 一致；`ubuntu-latest`（26.04）没有 3.9 的构建，用 3.12。抬高最低支持版本时记得同步这里。
+
 ### 跨 harness smoke
 
 `check --smoke` 在静态检查之后，对**本机已安装**的 harness 各跑一遍 headless 链路；没安装的 harness 会打印跳过原因，不算失败。也可以单独运行：
