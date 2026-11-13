@@ -20,6 +20,9 @@ def skill_call($name): (.toolName | tostring | test("^(Skill|skill)$"))
   and ((.args.skill // .args.name // "" | tostring) == $name);
 def skill_bash($name): (.toolName | tostring | test("^bash$"; "i"))
   and ((.args.command // "" | tostring) | test("(^|/)" + $name + "/SKILL.md"));
+# flow 扩展用 jstack-gates 自定义消息把 Stop 门禁的理由发给模型，数它就是拦截次数。
+def stop_blocks: [ .[][] | .. | objects | select(.customType? == "jstack-gates")
+  | .content // empty | strings | select(contains("jstack verify 门禁")) ] | length;
 def round_error($i; $r):
   ($rcs[$i] // 0) as $rc
   | $r as $e
@@ -47,7 +50,8 @@ def round_error($i; $r):
     provider: (if ($provider // "") != "" then $provider else ($rounds[-1] | last_provider) end),
     thinking: (if ($thinking // "") != "" then $thinking else ($rounds[-1] | last_thinking) end),
     model: ($rounds[-1] | last_model),
-    task: $task, sample: $sample, pass: ($pass == 1), timed_out: ($timed_out == 1),
+    task: $task, sample: $sample, group: $group, gates: $gates,
+    pass: ($pass == 1), timed_out: ($timed_out == 1),
     rounds: ($rounds | length), nudges: $nudges,
     turns: (([ $rounds[] | [ .[] | select(.type == "turn_end") ] | length ] | add // 0) as $t
       | if $t == 0 then ([ $rounds[][] | select(.type == "message_end" and (.message.role // "") == "assistant") ] | length) else $t end),
@@ -58,6 +62,7 @@ def round_error($i; $r):
     route: any($tools[]; (. | skill_read("route")) or (. | skill_call("route")) or (. | skill_bash("route"))),
     poteto: any($tools[]; (. | skill_read("poteto-mode")) or (. | skill_call("poteto-mode")) or (. | skill_bash("poteto-mode"))),
     subagents: ([ $tools[] | select((.toolName | tostring) | test("^(Agent|Task|subagent)$"; "i")) ] | length),
+    stop_blocks: stop_blocks,
     error: (if $timed_out == 1 then null else
       first(range(0; $rounds | length) as $i | round_error($i; $rounds[$i])) // null end)
   }

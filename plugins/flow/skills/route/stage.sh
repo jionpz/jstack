@@ -18,7 +18,7 @@ usage() {
       stage.sh evidence <文本>           记录一条验证证据，写成 "<命令> -> <结果>"
       stage.sh default <文本>            记录一个替用户采用的默认决定，写成 "<决定> -> <理由>"
       stage.sh ask                       停下来问用户之前运行
-      stage.sh end                       任务结束，删掉记录
+      stage.sh end                       任务结束，删掉记录（路径含 verify 时没有证据不能收尾）
       stage.sh show                      打印当前记录
 EOF
 	exit 2
@@ -97,6 +97,19 @@ ask)
 	;;
 end)
 	[ $# -eq 0 ] || usage
+	# 和 Stop 门禁同一条规则：路径含 verify、已经进入 execute 或之后却没有证据时不能收尾。
+	# 否则模型只要运行 end 就能清掉状态，绕过 Stop 门禁，把"没证据就不算做完"变成一句空话。
+	if [ -f "$file" ]; then
+		path=$(jstack_get path "$file")
+		stage=$(jstack_get stage "$file")
+		if ! grep -q '^evidence ' "$file" &&
+			printf '%s\n' "$path" | tr ',' '\n' | awk -v s="$stage" '
+				!($0 in i) { i[$0] = NR }
+				END { exit !(("verify" in i) && ("execute" in i) && (s in i) && i[s] >= i["execute"]) }
+			'; then
+			die "还没有记录验证证据，不能收尾。在真实表面上运行检查，再用 stage.sh evidence \"<命令> -> <结果>\" 记录；只有停下来向用户提问时才运行 stage.sh ask（ask 不能代替验证）"
+		fi
+	fi
 	rm -f "$file"
 	echo "jstack: 已清除阶段记录"
 	;;

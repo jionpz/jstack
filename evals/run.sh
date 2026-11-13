@@ -2,12 +2,16 @@
 # jstack eval：用 claude -p 或 pi -p headless 跑 evals/tasks 里的固定任务，衡量工作流本身。
 #
 #   ./jstack eval [--harness claude|pi] [--provider P] [--thinking L] [--samples N] [--jobs N]
-#                 [--model M] [--max-nudges N] [--keep] [任务名...]
+#                 [--model M] [--max-nudges N] [--group workflow|control|both] [--keep] [任务名...]
 #   ./jstack eval list
 #   ./jstack eval --selftest [任务名...]   不调模型：初始状态 check 必须失败，参考解下必须通过
 #
 # 默认 --harness claude，保持旧行为和旧基线可读；--harness pi 必须显式 --model，单轮运行，
 # 因此 --max-nudges 只能是 0。--provider / --thinking 只用于 Pi。
+# 默认 --group both：每个任务跑两遍，工作流组和对照组并排。工作流组的样本仓库先做
+# ./jstack install --scope project，Claude Code 从 .claude/skills 读入口、从 .claude/settings.json
+# 跑 flow 的 prompt / guard / stop hooks，门禁真的生效；对照组去掉 seed 里指导走工作流的文件，
+# 不装插件、不开 hooks。--group workflow 或 control 只跑一组，用于调试。
 # 环境变量：JSTACK_EVAL_TASKS（任务目录）、JSTACK_EVAL_FIXTURE（种子项目）、
 # JSTACK_EVAL_TIMEOUT（每轮秒数，默认 1800）、JSTACK_EVAL_KILL_GRACE（超时后 TERM 到 KILL 的秒数，默认 10）、
 # JSTACK_PREMIUM_MODELS（premium 模型名正则）。测试还可以覆盖 JSTACK_EVAL_RESULTS、
@@ -27,9 +31,12 @@ RESULTS=${JSTACK_EVAL_RESULTS:-$ROOT/evals/results.jsonl}
 REPORTS=${JSTACK_EVAL_REPORTS:-$ROOT/evals/reports}
 SCRATCH=${JSTACK_EVAL_SCRATCH:-$ROOT/.scratch/evals}
 NUDGE='我现在不在电脑前，回答不了问题。需要决定的地方按你推荐的方案处理，把这件事做完。'
-# 关掉用户已装的 jstack 插件（改用仓库里的构建产物）和用户 hooks。
-SETTINGS='{"disableAllHooks":true,"enabledPlugins":{"pstack@jstack":false,"spec@jstack":false,"flow@jstack":false}}'
-SANDBOX= KEEP= HARNESS=claude MODEL= PROVIDER= THINKING= MAX_NUDGES=
+# 工作流组：关掉用户已装的 jstack marketplace 插件（样本仓库用的是项目级安装的 vendor 树），
+# 但保留项目 .claude/settings.json 里的 flow hooks，门禁才真的生效。
+SETTINGS='{"disableAllHooks":false,"enabledPlugins":{"pstack@jstack":false,"spec@jstack":false,"flow@jstack":false}}'
+# 对照组：不加载任何 jstack 入口，连用户自己的 hooks 也关掉，比较的基线只有模型本身。
+SETTINGS_CONTROL='{"disableAllHooks":true,"enabledPlugins":{"pstack@jstack":false,"spec@jstack":false,"flow@jstack":false}}'
+SANDBOX= KEEP= HARNESS=claude MODEL= PROVIDER= THINKING= MAX_NUDGES= GROUP=both
 
 # 输入：每轮一个数组（该轮 stream-json 的全部事件）。输出：一个样本的记录。
 read -r -d '' RECORD_JQ <<'JQ' || true
@@ -40,6 +47,15 @@ def tokens_of($re): [(.modelUsage // {}) | to_entries[] | select(.key | test($re
 def delta(f): reduce (.[] | select(. != null) | f) as $v ({prev: 0, sum: 0};
   {prev: $v, sum: (.sum + (if $v >= .prev then $v - .prev else $v end))}) | .sum;
 def is_skill($name): .name == "Skill" and ((.input.skill // "") | tostring | endswith($name));
+# Stop hook 拦下一次结束时，Claude Code 把理由作为一条 user 消息塞回会话，前缀固定。
+# 数它就是门禁真正拦住过几次；对照组和没有进入 execute 的样本应为 0。
+def stop_blocks: [.[][]
+  | select(.type == "user")
+  | (.message.content // empty)
+  | (if type == "array" then .[] else . end)
+  | select(type == "object" and .type == "text")
+  | .text | strings
+  | select(startswith("Stop hook feedback:"))] | length;
 
 . as $rounds
 | [$rounds[] | map(select(.type == "result")) | last] as $res
@@ -49,7 +65,8 @@ def is_skill($name): .name == "Skill" and ((.input.skill // "") | tostring | end
     run_id: $run_id, date: $date, commit: $commit,
     harness: "claude", provider: null, thinking: null,
     model: (first($rounds[][] | select(.type == "system" and .subtype == "init") | .model) // null),
-    task: $task, sample: $sample, pass: ($pass == 1), timed_out: ($timed_out == 1),
+    task: $task, sample: $sample, group: $group, gates: $gates,
+    pass: ($pass == 1), timed_out: ($timed_out == 1),
     rounds: ($rounds | length), nudges: $nudges,
     turns: ([$res[] | select(. != null) | .num_turns // 0] | add // 0),
     wall_s: $wall,
@@ -60,6 +77,7 @@ def is_skill($name): .name == "Skill" and ((.input.skill // "") | tostring | end
     poteto: any($tools[]; is_skill("poteto-mode")
       or (.name == "Read" and ((.input.file_path // "") | tostring | endswith("poteto-mode/SKILL.md")))),
     subagents: ([$tools[] | select(.name == "Agent" or .name == "Task")] | length),
+    stop_blocks: stop_blocks,
     error: (if $timed_out == 1 then null else
       first(range(0; $res | length) as $i | $res[$i] as $r
         | if $r == null then "第 \($i + 1) 轮没有 result 事件（退出码 \($rcs[$i])）"
@@ -75,29 +93,35 @@ def r1: . * 10 | round / 10;
 def avg(f): (map(f) | add) / length | r1;
 def frac(f): "\(map(select(f)) | length)/\(length)";
 def sumf(f): (map(f) | map(select(. != null)) | if length == 0 then "未知" else add end);
-def row($name): "| \($name) | \(frac(.pass)) | \(avg(.nudges)) | \(avg(.turns)) | \(avg(.wall_s)) | \(sumf(.tokens)) | \(sumf(.premium_tokens)) | \(frac(.route)) | \(frac(.poteto)) | \(avg(.subagents)) |";
+# 旧记录没有 group：按老约定，任务名以 -vanilla 结尾的是对照组。
+def grp: (.group // (if (.task | endswith("-vanilla")) then "control" else "workflow" end));
+def gname: if (.[0] | grp) == "workflow" then "工作流" else "对照" end;
+def gates: ([.[].gates // "off"] | unique | join(","));
+def row($name): "| \($name) | \(gname) | \(frac(.pass)) | \(avg(.nudges)) | \(avg(.turns)) | \(avg(.wall_s)) | \(sumf(.tokens)) | \(sumf(.premium_tokens)) | \(frac(.route)) | \(frac(.poteto)) | \(avg(.subagents)) | \(sumf(.stop_blocks // 0)) | \(gates) |";
 
 . as $all
 | ([$all[].model | select(. != null)] | unique | join(", ")) as $models
 | ([$all[].harness // "claude"] | unique | join(", ")) as $harnesses
 | ([$all[] | .provider // empty] | unique | join(", ")) as $providers
 | ([$all[] | .thinking // empty] | unique | join(", ")) as $thinkings
-| [$all[] | select(.error != null) | "\(.task) #\(.sample)：\(.error)"] as $errors
+| ([$all[] | grp] | unique | join(", ")) as $groups
+| [$all[] | select(.error != null) | "\(.task) [\(.sample)]：\(.error)"] as $errors
 | ["## \($run_id)", "",
    "- commit: `\($commit)`",
    "- harness: \($harnesses)",
    "- provider: \(if $providers == "" then "—" else $providers end)",
    "- thinking: \(if $thinkings == "" then "—" else $thinkings end)",
    "- model: \(if $models == "" then "未知" else $models end)",
-   "- 样本: \($all | length)（每个任务 \($samples) 个）",
+   "- 组: \($groups)",
+   "- 样本: \($all | length)（每个任务 \($samples) 个 × \([$all[] | grp] | unique | length) 组）",
    "- max-nudges: \($max_nudges)"]
   + (if $harnesses == "pi" then ["- 说明: Pi 单轮运行，nudges 固定 0；不要直接拿它和 claude 的打断次数比较"] else [] end)
   + (if $errors == [] then [] else ["- 出错样本: " + ($errors | join("；"))] end)
   + ["",
-     "| 任务 | 通过 | 平均打断 | 平均 turns | 平均耗时 (s) | tokens | premium tokens | route | poteto | 平均子 agent |",
-     "|---|---|---|---|---|---|---|---|---|---|"]
-  + ($all | group_by(.task) | map(row(.[0].task)))
-  + [$all | row("**合计**")]
+     "| 任务 | 组 | 通过 | 平均打断 | 平均 turns | 平均耗时 (s) | tokens | premium tokens | route | poteto | 平均子 agent | Stop 拦截 | 门禁 |",
+     "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+  + ($all | sort_by(.task, (if grp == "workflow" then 0 else 1 end)) | group_by([.task, grp]) | map(row(.[0].task)))
+  + ($all | sort_by(grp) | group_by(grp) | map(row("**合计**")))
 | join("\n")
 JQ
 
@@ -154,14 +178,38 @@ pick_tasks() {
 	[ -n "${TASKS// /}" ] || die "$TASKS_DIR 下没有任务"
 }
 
+# 把当前工作区的构建产物按 `./jstack install --scope project` 装进样本仓库：入口 skill 在
+# .claude/skills，flow 的 prompt / guard / stop hooks 在 .claude/settings.json（命令指向 .jstack/vendor）。
+# 安装产物写进 .git/info/exclude，既不进初始提交，也不出现在样本的 diff.patch 里。
+install_project_sample() {
+	local work=$1 log
+	log=$(dirname "$work")/install.log
+	"$ROOT/jstack" install --scope project --repo "$work" >"$log" 2>&1 || {
+		say "  ✗ 项目级安装失败，日志在 $log"
+		tail -5 "$log" | sed 's/^/    /'
+		return 1
+	}
+	printf '/.jstack/\n/.claude/\n' >>"$work/.git/info/exclude"
+}
+
 # 按题目契约准备工作目录：fixture、seed、git init 后提交一次。打印工作目录路径。
+# 第二个参数是组：workflow 装项目级产物（门禁生效）并带完整 seed；control 去掉 seed 里指导
+# 走工作流的说明文件（题目本身要的坏代码、仓库约定保留）；plain 什么都不装，自检用。
 prepare_workdir() {
-	local task=$1 work
+	local task=$1 mode=${2:-plain} work f
 	work="$(mktemp -d "$SANDBOX/XXXXXXXX")/tasknotes"
 	mkdir -p "$work"
 	cp -R "$FIXTURE/." "$work/"
-	[ ! -d "$TASKS_DIR/$task/seed" ] || cp -R "$TASKS_DIR/$task/seed/." "$work/"
+	if [ -d "$TASKS_DIR/$task/seed" ]; then
+		cp -R "$TASKS_DIR/$task/seed/." "$work/"
+		if [ "$mode" = control ]; then
+			for f in AGENTS.override.md AGENTS.md CLAUDE.md; do rm -f "$work/$f"; done
+		fi
+	fi
 	git -C "$work" -c init.defaultBranch=main init -q || return 1
+	if [ "$mode" = workflow ] && [ "$HARNESS" = claude ]; then
+		install_project_sample "$work" || return 1
+	fi
 	git -C "$work" add -A || return 1
 	git -C "$work" -c user.name=tasknotes -c user.email=tasknotes@localhost -c commit.gpgsign=false \
 		-c core.hooksPath=/dev/null commit -qm 'initial commit' || return 1
@@ -248,27 +296,45 @@ round_ok_fn() {
 
 # 记录生成失败时也要留下一条可读记录，不能让样本静默消失。
 record_fallback() {
-	local file=$1 task=$2 sample=$3 rounds=$4 pass=$5 timed_out=$6 nudges=$7 wall=$8 error=$9
+	local file=$1 task=$2 sample=$3 rounds=$4 pass=$5 timed_out=$6 nudges=$7 wall=$8 error=$9 group=${10} gates=${11}
 	jq -cn --arg run_id "$RUN_ID" --arg date "$RUN_DATE" --arg commit "$COMMIT" --arg task "$task" \
 		--arg harness "$HARNESS" --arg provider "$PROVIDER" --arg thinking "$THINKING" --arg model "$MODEL" \
+		--arg group "$group" --arg gates "$gates" \
 		--argjson sample "$sample" --argjson rounds "$rounds" --argjson pass "$pass" --argjson timed_out "$timed_out" \
 		--argjson nudges "$nudges" --argjson wall "$wall" --arg error "$error" \
 		'{run_id: $run_id, date: $date, commit: $commit, harness: $harness,
 		  provider: (if $provider == "" then null else $provider end),
 		  thinking: (if $thinking == "" then null else $thinking end),
 		  model: (if $model == "" then null else $model end),
-		  task: $task, sample: $sample, pass: ($pass == 1), timed_out: ($timed_out == 1), rounds: $rounds,
+		  task: $task, sample: $sample, group: $group, gates: $gates,
+		  pass: ($pass == 1), timed_out: ($timed_out == 1), rounds: $rounds,
 		  nudges: $nudges, turns: 0, wall_s: $wall, tokens: null, premium_tokens: null, cost_usd: null,
-		  route: false, poteto: false, subagents: 0, error: $error}' >"$file"
+		  route: false, poteto: false, subagents: 0, stop_blocks: 0, error: $error}' >"$file"
+}
+
+# 门禁来源，写进记录的 gates 字段：
+#   project    Claude Code 从项目级安装的 .claude/settings.json 跑 flow hooks
+#   extension  Pi 用 -e 显式加载 flow 扩展（Pi 的项目级入口要信任，eval 里不打开）
+#   off        对照组，不加载任何 jstack 入口
+gates_for() {
+	if [ "$1" != workflow ]; then
+		printf 'off\n'
+	elif [ "$HARNESS" = pi ]; then
+		printf 'extension\n'
+	else
+		printf 'project\n'
+	fi
 }
 
 # 一个样本：第一轮发 prompt；Claude check 不通过就 --resume 催促，最多 MAX_NUDGES 次。
 # Pi 单轮（MAX_NUDGES 固定 0），记录写到 record.json；只有 check 通过、退出码 0、且本轮干净结束时才算通过。
+# 第三个参数是组：workflow 或 control。
 run_sample() {
-	local task=$1 n=$2 dir="$RUN_DIR/$1-$2" work base start round=1 nudges=0 pass=0 timed_out=0 sid msg rcs= rc=0 state_dir=
+	local task=$1 n=$2 group=$3 gates dir="$RUN_DIR/$1-$2-$3" work base start round=1 nudges=0 pass=0 timed_out=0 sid msg rcs= rc=0 state_dir=
 	local ctx= check_ok=0 round_ok=0 f pi_args claude_args record_ok=0
+	gates=$(gates_for "$group")
 	mkdir -p "$dir"
-	work=$(prepare_workdir "$task") || { say "✗ $task #${n}：准备工作目录失败"; return 1; }
+	work=$(prepare_workdir "$task" "$group") || { say "✗ $task [$group] #${n}：准备工作目录失败"; return 1; }
 	state_dir=$(dirname "$work")/gates
 	base=$(git -C "$work" rev-parse HEAD)
 	msg=$(cat "$TASKS_DIR/$task/prompt.md")
@@ -276,13 +342,15 @@ run_sample() {
 		if [ -f "$work/$f" ]; then ctx="$work/$f"; break; fi
 	done
 	start=$(date +%s)
-	say "→ $task #$n 开始"
+	say "→ $task [$group] #$n 开始"
 	while :; do
 		rc=0
 		if [ "$HARNESS" = pi ]; then
-			pi_args=(-p --mode json --no-session --no-mcp --no-extensions --no-skills --no-prompt-templates --no-context-files --no-approve
-				-e "$ROOT/plugins/flow/extensions/pi.ts"
-				--skill "$ROOT/plugins/pstack/skills" --skill "$ROOT/plugins/spec/skills" --skill "$ROOT/plugins/flow/skills")
+			pi_args=(-p --mode json --no-session --no-mcp --no-extensions --no-skills --no-prompt-templates --no-context-files --no-approve)
+			if [ "$group" = workflow ]; then
+				pi_args+=(-e "$ROOT/plugins/flow/extensions/pi.ts"
+					--skill "$ROOT/plugins/pstack/skills" --skill "$ROOT/plugins/spec/skills" --skill "$ROOT/plugins/flow/skills")
+			fi
 			[ -z "$PROVIDER" ] || pi_args+=(--provider "$PROVIDER")
 			pi_args+=(--model "$MODEL")
 			[ -z "$THINKING" ] || pi_args+=(--thinking "$THINKING")
@@ -290,8 +358,13 @@ run_sample() {
 			pi_args+=(-- "$msg")
 			run_agent "$work" "$dir/round-$round.jsonl" "$dir/round-$round.err" "$dir/timed-out" "$state_dir" pi "${pi_args[@]}" || rc=$?
 		else
-			claude_args=(--output-format stream-json --verbose --permission-mode bypassPermissions --strict-mcp-config --settings "$SETTINGS"
-				--plugin-dir "$ROOT/plugins/pstack" --plugin-dir "$ROOT/plugins/spec" --plugin-dir "$ROOT/plugins/flow")
+			# 工作流组不传 --plugin-dir：入口 skill 和 hooks 都来自样本仓库里的项目级安装。
+			if [ "$group" = workflow ]; then
+				claude_args=(--settings "$SETTINGS")
+			else
+				claude_args=(--settings "$SETTINGS_CONTROL")
+			fi
+			claude_args+=(--output-format stream-json --verbose --permission-mode bypassPermissions --strict-mcp-config)
 			[ -z "$MODEL" ] || claude_args+=(--model "$MODEL")
 			if [ -z "$sid" ]; then
 				claude_args=(-p "$msg" "${claude_args[@]}")
@@ -322,7 +395,7 @@ run_sample() {
 	done
 	(git -C "$work" add -A && git -C "$work" diff --cached --binary "$base") >"$dir/diff.patch" 2>/dev/null || true
 	if [ -n "$KEEP" ]; then
-		say "  $task #$n 的工作目录保留在 $work"
+		say "  $task [$group] #$n 的工作目录保留在 $work（门禁状态在 $state_dir）"
 	else
 		case $work in
 		"$SANDBOX"/*) rm -rf "$(dirname "$work")" ;;
@@ -337,6 +410,7 @@ run_sample() {
 	} >"$dir/rounds.jsonl" 2>"$dir/rounds.err" || true
 	if [ "$HARNESS" = pi ]; then
 		if jq -cs --arg run_id "$RUN_ID" --arg date "$RUN_DATE" --arg commit "$COMMIT" --arg task "$task" \
+			--arg group "$group" --arg gates "$gates" \
 			--argjson sample "$n" --argjson pass "$pass" --argjson timed_out "$timed_out" \
 			--argjson nudges "$nudges" --argjson wall "$(($(date +%s) - start))" \
 			--argjson rcs "[$rcs]" --arg premium "$PREMIUM" --arg harness "$HARNESS" --arg provider "$PROVIDER" --arg thinking "$THINKING" \
@@ -345,6 +419,7 @@ run_sample() {
 		fi
 	else
 		if jq -cs --arg run_id "$RUN_ID" --arg date "$RUN_DATE" --arg commit "$COMMIT" --arg task "$task" \
+			--arg group "$group" --arg gates "$gates" \
 			--argjson sample "$n" --argjson pass "$pass" --argjson timed_out "$timed_out" \
 			--argjson nudges "$nudges" --argjson wall "$(($(date +%s) - start))" \
 			--argjson rcs "[$rcs]" --arg premium "$PREMIUM" --arg harness "$HARNESS" --arg provider "$PROVIDER" --arg thinking "$THINKING" \
@@ -353,15 +428,15 @@ run_sample() {
 		fi
 	fi
 	if [ "$record_ok" != 1 ]; then
-		say "  $task #$n 的记录解析失败，写回退记录；原始事件在 $dir/rounds.jsonl"
-		record_fallback "$dir/record.json" "$task" "$n" "$round" 0 "$timed_out" "$nudges" "$(($(date +%s) - start))" "记录解析失败，见 rounds.jsonl"
+		say "  $task [$group] #$n 的记录解析失败，写回退记录；原始事件在 $dir/rounds.jsonl"
+		record_fallback "$dir/record.json" "$task" "$n" "$round" 0 "$timed_out" "$nudges" "$(($(date +%s) - start))" "记录解析失败，见 rounds.jsonl" "$group" "$gates"
 	fi
-	say "$([ "$pass" = 1 ] && echo ✓ || echo ✗) $task #${n}：$([ "$pass" = 1 ] && echo 通过 || echo 未通过)，$round 轮，催促 $nudges 次，$(jq -r .wall_s "$dir/record.json") 秒$([ "$timed_out" = 1 ] && echo "，超时")"
+	say "$([ "$pass" = 1 ] && echo ✓ || echo ✗) $task [$group] #${n}：$([ "$pass" = 1 ] && echo 通过 || echo 未通过)，$round 轮，催促 $nudges 次，门禁拦截 $(jq -r '.stop_blocks // 0' "$dir/record.json") 次，$(jq -r .wall_s "$dir/record.json") 秒$([ "$timed_out" = 1 ] && echo "，超时")"
 }
 
 cmd_run() {
-	local samples=1 jobs=1 t n i=0 pids=() records report section max_nudges_set=0
-	HARNESS=claude MODEL= MAX_NUDGES= PROVIDER= THINKING= KEEP=
+	local samples=1 jobs=1 t n g i=0 pids=() records report section max_nudges_set=0 groups=
+	HARNESS=claude MODEL= MAX_NUDGES= PROVIDER= THINKING= KEEP= GROUP=both
 	while [ $# -gt 0 ]; do
 		case $1 in
 		--harness) HARNESS=${2:-}; shift 2 || die "--harness 后面要跟 claude 或 pi" ;;
@@ -371,6 +446,7 @@ cmd_run() {
 		--jobs) jobs=${2:-}; shift 2 || die "--jobs 后面要跟数字" ;;
 		--model) MODEL=${2:-}; shift 2 || die "--model 后面要跟模型名" ;;
 		--max-nudges) MAX_NUDGES=${2:-}; max_nudges_set=1; shift 2 || die "--max-nudges 后面要跟数字" ;;
+		--group) GROUP=${2:-}; shift 2 || die "--group 后面要跟 workflow、control 或 both" ;;
 		--keep) KEEP=1; shift ;;
 		-h | --help) usage; exit 0 ;;
 		-*) die "未知参数：$1" ;;
@@ -380,6 +456,11 @@ cmd_run() {
 	case $HARNESS in
 	claude | pi) ;;
 	*) die "--harness 只能是 claude 或 pi（收到 ${HARNESS}）" ;;
+	esac
+	case $GROUP in
+	both) groups="workflow control" ;;
+	workflow | control) groups=$GROUP ;;
+	*) die "--group 只能是 workflow、control 或 both（收到 ${GROUP}）" ;;
 	esac
 	if [ "$HARNESS" = claude ]; then
 		[ -z "$PROVIDER" ] || die "--provider 只用于 --harness pi"
@@ -436,15 +517,17 @@ cmd_run() {
 	RUN_DIR="$SCRATCH/$RUN_ID"
 	mkdir -p "$RUN_DIR" "$(dirname "$RESULTS")" "$REPORTS"
 	make_sandbox
-	say "评测 ${RUN_ID}：harness ${HARNESS}，任务 $(echo $TASKS)，每个 $samples 个样本，并发 ${jobs}，max-nudges ${MAX_NUDGES}，原始材料在 ${RUN_DIR}"
+	say "评测 ${RUN_ID}：harness ${HARNESS}，任务 $(echo $TASKS)，组 ${groups}，每组 $samples 个样本，并发 ${jobs}，max-nudges ${MAX_NUDGES}，原始材料在 ${RUN_DIR}"
 
-	# 每个样本写自己的 record.json，全部结束后按任务和样本顺序合并，避免并发写同一文件。
+	# 每个样本写自己的 record.json，全部结束后按任务、组、样本顺序合并，避免并发写同一文件。
 	for t in $TASKS; do
-		for n in $(seq 1 "$samples"); do
-			[ "$i" -lt "$jobs" ] || wait "${pids[$((i - jobs))]}" || true
-			run_sample "$t" "$n" &
-			pids[i]=$!
-			i=$((i + 1))
+		for g in $groups; do
+			for n in $(seq 1 "$samples"); do
+				[ "$i" -lt "$jobs" ] || wait "${pids[$((i - jobs))]}" || true
+				run_sample "$t" "$n" "$g" &
+				pids[i]=$!
+				i=$((i + 1))
+			done
 		done
 	done
 	wait || true
@@ -452,15 +535,17 @@ cmd_run() {
 	records="$RUN_DIR/records.jsonl"
 	: >"$records"
 	for t in $TASKS; do
-		for n in $(seq 1 "$samples"); do
-			if [ -s "$RUN_DIR/$t-$n/record.json" ]; then
-				cat "$RUN_DIR/$t-$n/record.json" >>"$records"
-			else
-				say "✗ $t #$n 没有产生记录，写回退记录；原始日志在 $RUN_DIR/$t-$n"
-				mkdir -p "$RUN_DIR/$t-$n"
-				record_fallback "$RUN_DIR/$t-$n/record.json" "$t" "$n" 1 0 0 0 0 "样本没有产生记录，见原始日志"
-				cat "$RUN_DIR/$t-$n/record.json" >>"$records"
-			fi
+		for g in $groups; do
+			for n in $(seq 1 "$samples"); do
+				if [ -s "$RUN_DIR/$t-$n-$g/record.json" ]; then
+					cat "$RUN_DIR/$t-$n-$g/record.json" >>"$records"
+				else
+					say "✗ $t [$g] #$n 没有产生记录，写回退记录；原始日志在 $RUN_DIR/$t-$n-$g"
+					mkdir -p "$RUN_DIR/$t-$n-$g"
+					record_fallback "$RUN_DIR/$t-$n-$g/record.json" "$t" "$n" 1 0 0 0 0 "样本没有产生记录，见原始日志" "$g" "$(gates_for "$g")"
+					cat "$RUN_DIR/$t-$n-$g/record.json" >>"$records"
+				fi
+			done
 		done
 	done
 	[ -s "$records" ] || die "没有任何样本产生记录"

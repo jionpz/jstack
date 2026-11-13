@@ -79,8 +79,18 @@ cat >"$T/claude.tpl" <<'SH'
 #!/usr/bin/env bash
 out='@OUT@'
 printf '%s\n' "$@" >"$out/claude-args.txt"
+if [ -f .claude/settings.json ] && grep -q '\.jstack/vendor/plugins/flow' .claude/settings.json &&
+	[ -L .claude/skills/route ] && [ -d .jstack/vendor/plugins/flow ]; then
+	printf 'project\n' >"$out/claude-install.txt"
+else
+	printf 'none\n' >"$out/claude-install.txt"
+fi
 printf '%s\n' '{"type":"system","subtype":"init","model":"mock-claude"}'
 printf '%s\n' '{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"text","text":"done"},{"type":"tool_use","name":"Skill","input":{"skill":"route"}}]}}'
+# 只有装了项目级 hooks 的样本才会收到 Stop 门禁的拦回消息。
+if [ -f .claude/settings.json ]; then
+	printf '%s\n' '{"type":"user","message":{"content":[{"type":"text","text":"Stop hook feedback:\njstack verify 门禁：当前阶段 execute，还没有记录验证证据"}]}}'
+fi
 printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"s","num_turns":1,"modelUsage":{"mock-claude":{"inputTokens":3,"outputTokens":2}},"total_cost_usd":0.1}'
 SH
 
@@ -129,7 +139,7 @@ timeout_clean() { jq -e '.pass == false and .timed_out == true' "$1" >/dev/null 
 legacy_readable() { head -1 "$1" | jq -e 'has("task") and ((.harness // "claude") == "claude")' >/dev/null; }
 
 write_pi ok "$OUT/pi-argv"
-run_ok pi-argv --harness pi --provider mock-provider --model mock-model --thinking high --keep t-one
+run_ok pi-argv --harness pi --provider mock-provider --model mock-model --thinking high --group workflow --keep t-one
 A="$OUT/pi-argv/pi-args.txt"
 R="$OUT/pi-argv/results.jsonl"
 t "Pi argv：-p 和 json 模式" grep -qx -- -p "$A"
@@ -143,26 +153,32 @@ t "Pi argv：显式传入 AGENTS" check_context "$A" "$OUT/pi-argv/pi-context.tx
 t "Pi argv：prompt 在最后" check_prompt_last "$A"
 t "Pi 记录：harness/provider/thinking" jq -e '.harness == "pi" and .provider == "mock-provider" and .thinking == "high" and .pass == true' "$R"
 t "Pi 记录：usage 和 route" jq -e '.tokens == 12 and .premium_tokens == 0 and .cost_usd == 0.5 and .route == true and .turns == 1' "$R"
+t "Pi 记录：工作流组和门禁来源" jq -e '.group == "workflow" and .gates == "extension" and .stop_blocks == 0' "$R"
 
 write_pi no_usage "$OUT/pi-usage"
-run_ok pi-usage --harness pi --model mock-model --keep t-one
+run_ok pi-usage --harness pi --model mock-model --group workflow --keep t-one
 t "Pi 缺 usage 时为 null 而不是 0" jq -e '.tokens == null and .premium_tokens == null and .cost_usd == null and .pass == true' "$OUT/pi-usage/results.jsonl"
 
 write_pi no_end "$OUT/pi-no-end"
-run_ok pi-no-end --harness pi --model mock-model --keep t-one
+run_ok pi-no-end --harness pi --model mock-model --group workflow --keep t-one
 t "Pi 缺 agent_end 不假绿" jq -e '.pass == false and (.error | contains("agent_end"))' "$OUT/pi-no-end/results.jsonl"
 
 write_pi error "$OUT/pi-error"
-run_ok pi-error --harness pi --model mock-model --keep t-one
+run_ok pi-error --harness pi --model mock-model --group workflow --keep t-one
 t "Pi 助手报错不假绿" jq -e '.pass == false and (.error | contains("boom"))' "$OUT/pi-error/results.jsonl"
 
 write_pi exit "$OUT/pi-exit"
-run_ok pi-exit --harness pi --model mock-model --keep t-one
+run_ok pi-exit --harness pi --model mock-model --group workflow --keep t-one
 t "Pi 非零退出不假绿" jq -e '.pass == false and (.error | contains("退出码 1"))' "$OUT/pi-exit/results.jsonl"
 
 write_pi timeout "$OUT/pi-timeout"
-JSTACK_EVAL_TIMEOUT=1 JSTACK_EVAL_KILL_GRACE=1 run_eval pi-timeout --harness pi --model mock-model --keep t-one || true
+JSTACK_EVAL_TIMEOUT=1 JSTACK_EVAL_KILL_GRACE=1 run_eval pi-timeout --harness pi --model mock-model --group workflow --keep t-one || true
 t "Pi 超时标记且不留子进程" timeout_clean "$OUT/pi-timeout/results.jsonl" "$OUT/pi-timeout/child.pid"
+
+write_pi ok "$OUT/pi-control"
+run_ok pi-control --harness pi --model mock-model --group control --keep t-one
+t "Pi 对照组：不加载 flow 扩展和 skill" bash -c '! grep -qx -- -e "$1" && ! grep -qx -- --skill "$1"' _ "$OUT/pi-control/pi-args.txt"
+t "Pi 对照组：记录标记门禁关闭" jq -e '.group == "control" and .gates == "off"' "$OUT/pi-control/results.jsonl"
 
 run_eval bad-harness --harness omp --model m >/dev/null 2>&1
 t "未知 harness 拒绝运行" test "$?" -ne 0
@@ -176,8 +192,21 @@ run_eval bad-provider --harness claude --provider x --model m >/dev/null 2>&1
 t "Claude 拒绝 --provider" grep -q '只用于 --harness pi' "$OUT/bad-provider/run.log"
 
 write_claude "$OUT/claude-default"
-run_ok claude-default --model mock-claude --keep t-one
+run_ok claude-default --group workflow --model mock-claude --keep t-one
 t "Claude 默认 harness 保持可用" jq -e '.harness == "claude" and .pass == true and .route == true' "$OUT/claude-default/results.jsonl"
+t "Claude 工作流组：样本仓库装的是项目级产物" grep -qx project "$OUT/claude-default/claude-install.txt"
+t "Claude 工作流组：不再用 --plugin-dir 加载插件" bash -c '! grep -qx -- --plugin-dir "$1"' _ "$OUT/claude-default/claude-args.txt"
+t "Claude 工作流组：开 hooks 的 settings" grep -q '"disableAllHooks":false' "$OUT/claude-default/claude-args.txt"
+t "Claude 记录：工作流组和门禁来源、Stop 拦截次数" jq -e '.group == "workflow" and .gates == "project" and .stop_blocks == 1' "$OUT/claude-default/results.jsonl"
 t "旧记录仍可读且 harness 默认为 claude" legacy_readable "$ROOT/evals/results.jsonl"
+
+write_claude "$OUT/claude-control"
+run_ok claude-control --group control --model mock-claude --keep t-one
+t "Claude 对照组：没有项目级安装产物" grep -qx none "$OUT/claude-control/claude-install.txt"
+t "Claude 对照组：关掉全部 hooks" grep -q '"disableAllHooks":true' "$OUT/claude-control/claude-args.txt"
+t "Claude 对照组：记录标记门禁关闭" jq -e '.group == "control" and .gates == "off" and .stop_blocks == 0' "$OUT/claude-control/results.jsonl"
+
+run_eval bad-group --model mock-claude --group vanilla >/dev/null 2>&1
+t "未知组拒绝运行" grep -q 'group 只能是' "$OUT/bad-group/run.log"
 
 [ "$fails" -eq 0 ]

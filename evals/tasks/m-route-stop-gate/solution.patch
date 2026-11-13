@@ -1,0 +1,26 @@
+diff --git a/src/cli.js b/src/cli.js
+index 3a370b6..8f03911 100644
+--- a/src/cli.js
++++ b/src/cli.js
+@@ -5,7 +5,8 @@ const USAGE = `Usage:
+   tasknotes add <title> [--due YYYY-MM-DD]
+   tasknotes list
+   tasknotes done <id>
+-  tasknotes rm <id>`;
++  tasknotes rm <id>
++  tasknotes clear`;
+ 
+ function formatTask(task) {
+   const box = task.done ? '[x]' : '[ ]';
+@@ -62,6 +63,11 @@ function run(command, args) {
+       console.log(`Completed ${id}`);
+       return;
+     }
++    case 'clear': {
++      store.save(file, []);
++      console.log(`Removed ${tasks.length} task${tasks.length === 1 ? '' : 's'}`);
++      return;
++    }
+     case 'rm': {
+       const id = parseId(args[0]);
+       store.save(file, removeTask(tasks, id));
