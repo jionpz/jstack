@@ -414,7 +414,7 @@ CI 只跑不耗 token 的部分：
 - 跑：上面第 1–18 项全部，包括 `claude plugin validate` 和 `./jstack eval --selftest`（自检不调模型）
 - 不跑：`--smoke`（要本机已安装的 Pi / OMP / Cursor / Codex，会启动模型）、`./jstack eval`（调模型，要网络和模型额度）
 
-workflow 里装了 `jq`、Python 3.9、Node 24 和当前的 Claude Code CLI（只给 `claude plugin validate` 用），不读任何密钥，也不访问模型接口。Python 版本与开发机的系统 `python3` 一致；抬高最低支持版本时记得同步这里。
+workflow 里装了 `jq`、Python、Node 24 和当前的 Claude Code CLI（只给 `claude plugin validate` 用），不读任何密钥，也不访问模型接口。macOS job 的 Python 是 3.9，与开发机的系统 `python3` 一致；`ubuntu-latest`（26.04）没有 3.9 的构建，用 3.12。抬高最低支持版本时记得同步这里。
 
 ### 跨 harness smoke
 

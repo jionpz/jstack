@@ -22,9 +22,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest]
+        include:
+          # macOS 用 3.9：与开发机的系统 python3 一致。
+          # ubuntu-latest（26.04）没有 3.9 的 setup-python 构建，用 3.12。
+          - os: macos-latest
+            python: '3.9'
+          - os: ubuntu-latest
+            python: '3.12'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 安装 jq
         run: |
@@ -36,11 +42,11 @@ jobs:
             sudo apt-get update && sudo apt-get install -y jq
           fi
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
-          python-version: '3.9'
+          python-version: ${{ matrix.python }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
 
