@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# eval runner 的无模型测试：用假的 pi / claude 只验证 argv、事件解析、失败判定和进程组清理。
+# eval runner 的无模型测试：用假的 pi / claude 只验证 argv、事件解析、失败判定、进程组清理和样本隔离。
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
 T=$(mktemp -d)
@@ -17,12 +17,17 @@ FIX="$T/fixture"
 TASKS="$T/tasks"
 OUT="$T/out"
 TMP="$T/tmp"
-mkdir -p "$BIN" "$FIX" "$TASKS/t-one" "$OUT" "$TMP"
+mkdir -p "$BIN" "$FIX" "$TASKS/t-one" "$TASKS/t-multi" "$OUT" "$TMP"
 printf 'fixture context marker\n' >"$FIX/AGENTS.md"
 printf 'do the thing\n' >"$TASKS/t-one/prompt.md"
 cat >"$TASKS/t-one/check.sh" <<'SH'
 #!/usr/bin/env bash
 grep -qx 'done' "$ANSWER_FILE"
+SH
+printf 'answer it\n' >"$TASKS/t-multi/prompt.md"
+cat >"$TASKS/t-multi/check.sh" <<'SH'
+#!/usr/bin/env bash
+grep -qx 'first line' "$ANSWER_FILE" && grep -qx 'second line' "$ANSWER_FILE"
 SH
 fails=0
 t() {
@@ -78,7 +83,16 @@ SH
 cat >"$T/claude.tpl" <<'SH'
 #!/usr/bin/env bash
 out='@OUT@'
+mode='@MODE@'
 printf '%s\n' "$@" >"$out/claude-args.txt"
+printf '%s\n' "${CLAUDE_CONFIG_DIR:-}" >"$out/claude-config-dir.txt"
+printf '%s\n' "${GH_CONFIG_DIR:-}" >"$out/claude-gh-config.txt"
+printf '%s\n' "$(command -v gbrain)" >"$out/claude-gbrain.txt"
+if [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ -f "$CLAUDE_CONFIG_DIR/settings.json" ]; then
+	printf '%s\n' "$(jq -r 'has("hooks")' "$CLAUDE_CONFIG_DIR/settings.json" 2>/dev/null)" >"$out/claude-user-hooks.txt"
+else
+	printf 'missing\n' >"$out/claude-user-hooks.txt"
+fi
 if [ -f .claude/settings.json ] && grep -q '\.jstack/vendor/plugins/flow' .claude/settings.json &&
 	[ -L .claude/skills/route ] && [ -d .jstack/vendor/plugins/flow ]; then
 	printf 'project\n' >"$out/claude-install.txt"
@@ -91,7 +105,11 @@ printf '%s\n' '{"type":"assistant","parent_tool_use_id":null,"message":{"content
 if [ -f .claude/settings.json ]; then
 	printf '%s\n' '{"type":"user","message":{"content":[{"type":"text","text":"Stop hook feedback:\njstack verify 门禁：当前阶段 execute，还没有记录验证证据"}]}}'
 fi
-printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"s","num_turns":1,"modelUsage":{"mock-claude":{"inputTokens":3,"outputTokens":2}},"total_cost_usd":0.1}'
+if [ "$mode" = multi ]; then
+	printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"first line\nsecond line","session_id":"s","num_turns":1,"modelUsage":{"mock-claude":{"inputTokens":3,"outputTokens":2}},"total_cost_usd":0.1}'
+else
+	printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"s","num_turns":1,"modelUsage":{"mock-claude":{"inputTokens":3,"outputTokens":2}},"total_cost_usd":0.1}'
+fi
 SH
 
 write_pi() {
@@ -99,7 +117,8 @@ write_pi() {
 	chmod +x "$BIN/pi"
 }
 write_claude() {
-	sed -e "s|@OUT@|$1|g" "$T/claude.tpl" >"$BIN/claude"
+	local mode=${2:-ok}
+	sed -e "s|@OUT@|$1|g" -e "s|@MODE@|$mode|g" "$T/claude.tpl" >"$BIN/claude"
 	chmod +x "$BIN/claude"
 }
 run_eval() {
@@ -199,12 +218,22 @@ t "Claude 工作流组：不再用 --plugin-dir 加载插件" bash -c '! grep -q
 t "Claude 工作流组：开 hooks 的 settings" grep -q '"disableAllHooks":false' "$OUT/claude-default/claude-args.txt"
 t "Claude 记录：工作流组和门禁来源、Stop 拦截次数" jq -e '.group == "workflow" and .gates == "project" and .stop_blocks == 1' "$OUT/claude-default/results.jsonl"
 t "旧记录仍可读且 harness 默认为 claude" legacy_readable "$ROOT/evals/results.jsonl"
+t "样本环境：gbrain 指向沙箱占位并拒绝执行" bash -c 'p=$(cat "$1"); [ -n "$p" ] && [ -x "$p" ] && ! "$p" >/dev/null 2>&1 && "$p" 2>&1 | grep -q "沙箱里不可用"' _ "$OUT/claude-default/claude-gbrain.txt"
+t "样本环境：gh 配置目录在沙箱里且为空" bash -c 'd=$(cat "$1"); [ -n "$d" ] && [ -d "$d" ] && [ -z "$(ls -A "$d")" ]' _ "$OUT/claude-default/claude-gh-config.txt"
+t "样本环境：工作流组不加载用户级 hooks" bash -c '[ "$(cat "$1")" = false ]' _ "$OUT/claude-default/claude-user-hooks.txt"
+t "样本环境：CLAUDE_CONFIG_DIR 在沙箱里" bash -c 'd=$(cat "$1"); [ -n "$d" ] && [ "$d" != "$HOME/.claude" ] && [ -d "$d" ]' _ "$OUT/claude-default/claude-config-dir.txt"
 
 write_claude "$OUT/claude-control"
 run_ok claude-control --group control --model mock-claude --keep t-one
 t "Claude 对照组：没有项目级安装产物" grep -qx none "$OUT/claude-control/claude-install.txt"
 t "Claude 对照组：关掉全部 hooks" grep -q '"disableAllHooks":true' "$OUT/claude-control/claude-args.txt"
 t "Claude 对照组：记录标记门禁关闭" jq -e '.group == "control" and .gates == "off" and .stop_blocks == 0' "$OUT/claude-control/results.jsonl"
+t "样本环境：对照组同样不加载用户级 hooks" bash -c '[ "$(cat "$1")" = false ]' _ "$OUT/claude-control/claude-user-hooks.txt"
+
+write_claude "$OUT/claude-answer" multi
+run_ok claude-answer --group control --model mock-claude --keep t-multi
+t "Claude 答案取整个 result：第一行还在" grep -qx 'first line' "$OUT"/claude-answer/scratch/*/t-multi-1-control/answer-1.txt
+t "Claude 答案取整个 result：最后一行还在" grep -qx 'second line' "$OUT"/claude-answer/scratch/*/t-multi-1-control/answer-1.txt
 
 run_eval bad-group --model mock-claude --group vanilla >/dev/null 2>&1
 t "未知组拒绝运行" grep -q 'group 只能是' "$OUT/bad-group/run.log"

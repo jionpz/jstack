@@ -37,6 +37,8 @@ SETTINGS='{"disableAllHooks":false,"enabledPlugins":{"pstack@jstack":false,"spec
 # 对照组：不加载任何 jstack 入口，连用户自己的 hooks 也关掉，比较的基线只有模型本身。
 SETTINGS_CONTROL='{"disableAllHooks":true,"enabledPlugins":{"pstack@jstack":false,"spec@jstack":false,"flow@jstack":false}}'
 SANDBOX= KEEP= HARNESS=claude MODEL= PROVIDER= THINKING= MAX_NUDGES= GROUP=both
+# 每个样本额外传给 agent 的环境（见 isolate_sample）：沙箱里的 PATH、GH_CONFIG_DIR、CLAUDE_CONFIG_DIR。
+SAMPLE_ENV=()
 
 # 输入：每轮一个数组（该轮 stream-json 的全部事件）。输出：一个样本的记录。
 read -r -d '' RECORD_JQ <<'JQ' || true
@@ -229,6 +231,7 @@ run_agent() {
 	shift 5
 	local env_args=(HOME="$HOME" USER="${USER:-$(id -un)}" PATH="$PATH" LANG="${LANG:-en_US.UTF-8}"
 		TMPDIR="${TMPDIR:-/tmp}" SHELL=/bin/zsh JSTACK_STATE_DIR="$state")
+	env_args+=("${SAMPLE_ENV[@]}")
 	[ -z "${LC_ALL:-}" ] || env_args+=(LC_ALL="$LC_ALL")
 	case $- in *m*) had_m=1 ;; esac
 	set -m
@@ -263,13 +266,14 @@ run_agent() {
 	return $rc
 }
 
-# Pi 的答案在最后一条非空助手文本里；Claude 的答案在 result 事件里。
+# Pi 的答案在最后一条非空助手文本里；Claude 的答案在最后一个 result 事件的全文里。
+# 不能对 jq 的输出接 tail -1：那取的是答案文本的最后一行，不是最后一个 result 事件。
 extract_answer() {
 	case $HARNESS in
 	pi) jq -Rrs 'split("\n") | map(fromjson? | select(.type == "message_end" and .message.role == "assistant") | .message.content
 		| if type == "string" then . else ([.[]? | select(.type? == "text") | .text // ""] | join("\n")) end)
 		| map(select(length > 0)) | last // ""' "$1" ;;
-	*) jq -Rr 'fromjson? | select(.type=="result") | .result // "" | tostring' "$1" | tail -1 ;;
+	*) jq -Rrs 'split("\n") | map(fromjson? | select(.type == "result")) | last | .result // "" | tostring' "$1" ;;
 	esac
 }
 
@@ -326,6 +330,26 @@ gates_for() {
 	fi
 }
 
+# 样本隔离（issue #83）：样本只能动自己的沙箱，两组只差装没装 jstack。
+# - PATH 最前面放一个占位的 gbrain；写回失败时 archive 按既有降级把页面内容打印出来；
+# - GH_CONFIG_DIR 指向空目录，gh 没有登录态，建不了真实 issue；
+# - CLAUDE_CONFIG_DIR 只放用户 settings 里的网关 env：用户级 hooks、用户 CLAUDE.md 和用户插件都不加载，
+#   工作流组仍然有样本仓库自己的项目级 flow hooks。HOME 保持真实，换掉会报 Not logged in。
+isolate_sample() {
+	local aux=$1
+	mkdir -p "$aux/bin" "$aux/gh" "$aux/claude-config"
+	cat >"$aux/bin/gbrain" <<'SH'
+#!/bin/sh
+echo "gbrain: jstack eval 沙箱里不可用" >&2
+exit 1
+SH
+	chmod +x "$aux/bin/gbrain"
+	if ! jq '{env: (.env // {})}' "$HOME/.claude/settings.json" >"$aux/claude-config/settings.json" 2>/dev/null; then
+		printf '{}\n' >"$aux/claude-config/settings.json"
+	fi
+	SAMPLE_ENV=(PATH="$aux/bin:$PATH" GH_CONFIG_DIR="$aux/gh" CLAUDE_CONFIG_DIR="$aux/claude-config")
+}
+
 # 一个样本：第一轮发 prompt；Claude check 不通过就 --resume 催促，最多 MAX_NUDGES 次。
 # Pi 单轮（MAX_NUDGES 固定 0），记录写到 record.json；只有 check 通过、退出码 0、且本轮干净结束时才算通过。
 # 第三个参数是组：workflow 或 control。
@@ -336,6 +360,7 @@ run_sample() {
 	mkdir -p "$dir"
 	work=$(prepare_workdir "$task" "$group") || { say "✗ $task [$group] #${n}：准备工作目录失败"; return 1; }
 	state_dir=$(dirname "$work")/gates
+	isolate_sample "$(dirname "$work")"
 	base=$(git -C "$work" rev-parse HEAD)
 	msg=$(cat "$TASKS_DIR/$task/prompt.md")
 	for f in AGENTS.override.md AGENTS.md CLAUDE.md; do

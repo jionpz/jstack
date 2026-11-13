@@ -496,14 +496,15 @@ Claude 的 `--resume` 之后，`result` 事件里的 `modelUsage` 和 `total_cos
 隔离方式：
 
 - `env -i` 只传 `HOME`、`USER`、`PATH`、`LANG`、`LC_ALL`、`TMPDIR`、`SHELL`，再额外传 `JSTACK_STATE_DIR` 把 flow 门禁状态写进样本工作目录同级（不在工作目录里，不污染 diff）。不这样做的话，claude 会继承宿主（桌面 App、外层 Claude 会话）的变量，报 "Not logged in"
+- 每个样本另有三个沙箱环境（issue #83）：`PATH` 最前面放一个占位的 `gbrain`，只打印"评测沙箱里不可用"并以非零退出（archive 的写回本来就有写失败则打印页面内容的降级）；`GH_CONFIG_DIR` 指向沙箱里的空目录，`gh` 没有登录态，建不了真实 issue；`CLAUDE_CONFIG_DIR` 指向沙箱目录，里面只放用户 `~/.claude/settings.json` 的 `env` 段（模型网关和登录态），用户级 hooks、用户 `CLAUDE.md` / `rules/`、用户 skills 和插件都不加载。`HOME` 保持真实，换掉会报 "Not logged in"
 - Claude 工作流组：样本仓库先做 `./jstack install --scope project --repo <样本仓库>`，产物是当前工作区的构建（`plugins/` 经 `install` 复制进 `.jstack/vendor/`），不是用户已装的版本。入口 skill 从 `.claude/skills` 加载，没有插件前缀；flow 的 `prompt.sh` / `guard.sh` / `stop.sh` 由 `.claude/settings.json` 触发，`JSTACK_STATE_DIR` 指向样本工作目录同级的 `gates/`，所以 Stop 门禁真的会拦住"没记证据就结束"的样本
 - Claude 工作流组：`--settings` 里把已安装的 `pstack@jstack`、`spec@jstack`、`flow@jstack` 关掉，避免和样本仓库的项目级安装重复加载；自己的 hooks 保持开启
-- Claude 对照组：不做项目级安装，`--settings` 里 `disableAllHooks: true` 并关掉三个已装插件，只有模型和题目。对照组和工作流组唯一的差别就是这套工作流
+- Claude 对照组：不做项目级安装，`--settings` 里 `disableAllHooks: true` 并关掉三个已装插件，只有模型和题目。两组都不跑用户级 hooks（`CLAUDE_CONFIG_DIR` 是沙箱），工作流组只多出样本仓库自己的项目级 flow hooks；两组唯一的差别就是这套工作流
 - Pi 工作流组：`-e` 显式加载 flow 扩展（门禁来自扩展，记录里 `gates` 是 `extension`），三个 `--skill` 加载构建产物；Pi 的项目级入口要求信任项目，eval 里不打开，所以 Pi 不走项目级安装。对照组既不加扩展也不加 skill
-- Claude：`--strict-mcp-config` 不加载任何 MCP，被测 agent 写不进 gbrain 这类用户记忆
+- Claude：`--strict-mcp-config` 不加载任何 MCP；`gbrain` 走 PATH 占位，`gh` 走空配置目录
 - Pi：一律带 `pi -p --mode json --no-session --no-mcp --no-extensions --no-skills --no-prompt-templates --no-context-files --no-approve`。`--no-*` 挡住用户已装的扩展、skills、prompt templates 和发现的 AGENTS/CLAUDE；`--no-approve` 不信任项目 `.pi` 配置和资源。工作流组的扩展（`-e plugins/flow/extensions/pi.ts`，hooks 仍然从 `plugins/flow/hooks/` 跑）和三个 `--skill` 目录由 runner 显式加上
 - Pi：样本仓库里的任务上下文（`AGENTS.override.md`、`AGENTS.md` 或 `CLAUDE.md`）由 runner 用 `--append-system-prompt <文件>` 显式传入，不会把用户级 AGENTS/CLAUDE 带进来。`--no-session` 不写会话文件，`PI_SESSION_FILE` 为空
-- 没有隔离的部分：Claude 的用户级 `~/.claude/CLAUDE.md` 和 `~/.claude/rules/`（包括 `/pstack:setup-pstack` 写的模型角色表）、其他已安装的插件、用户 skills 仍然会加载；会话记录写进 `~/.claude/projects/`。Pi 的用户级 `SYSTEM.md` / `APPEND_SYSTEM.md` 不在 `--no-context-files` 的关闭范围。基线要在同一台机器、同一套用户配置下对比
+- 没有隔离的部分：`HOME` 是真实的，样本仍能读本机文件系统、访问网络；`gbrain` 只是 PATH 上的占位，用绝对路径调用真实的二进制仍能跑（这次基线里没观察到）；`git push`、ssh 这类通道没有加约束（样本仓库没有 remote，也没观察到）。Pi 的用户级 `SYSTEM.md` / `APPEND_SYSTEM.md` 不在 `--no-context-files` 的关闭范围。基线要在同一台机器、同一套用户配置下对比
 
 产物：
 
