@@ -1,0 +1,60 @@
+{
+  "name": "jstack",
+  "owner": {
+    "name": "jionpz"
+  },
+  "metadata": {
+    "description": "jionpz 的 AI 工程工作流：pstack 负责执行（cursor/plugins 官方 Claude Code 版），spec 负责需求澄清和任务拆解（Matt Pocock skills 精选），flow 把两者接成一条流程。pstack 和 spec 都锁定上游提交，另加 jstack 补丁。"
+  },
+  "plugins": [
+    {
+      "name": "pstack",
+      "source": "./plugins/pstack",
+      "description": "Lauren Tan (poteto) 的 pstack：先吃透再动手，写更少但更高质量的代码。来源 cursor/plugins，版本见 upstream/pstack.lock.json。",
+      "author": {
+        "name": "Lauren Tan"
+      },
+      "homepage": "https://github.com/cursor/plugins/tree/main/pstack",
+      "license": "MIT",
+      "keywords": [
+        "pstack",
+        "poteto-mode",
+        "workflow",
+        "subagents"
+      ]
+    },
+    {
+      "name": "spec",
+      "source": "./plugins/spec",
+      "description": "Matt Pocock 的需求澄清和任务拆解 skills：grill-with-docs、to-spec、to-tickets、wayfinder、handoff。产出的 spec 和 tickets 交给 /pstack:poteto-mode 执行。来源 mattpocock/skills，版本见 upstream/spec.lock.json。",
+      "author": {
+        "name": "Matt Pocock",
+        "url": "https://www.aihero.dev"
+      },
+      "homepage": "https://github.com/mattpocock/skills",
+      "license": "MIT",
+      "keywords": [
+        "spec",
+        "requirements",
+        "grilling",
+        "tickets",
+        "planning"
+      ]
+    },
+    {
+      "name": "flow",
+      "source": "./plugins/flow",
+      "description": "jstack 的衔接层：工程任务进来时自动分级，按大小把 spec（澄清、拆解）和 pstack（执行）接起来，只在约定的检查点问人。",
+      "author": {
+        "name": "jionpz"
+      },
+      "license": "MIT",
+      "keywords": [
+        "workflow",
+        "router",
+        "pstack",
+        "spec"
+      ]
+    }
+  ]
+}

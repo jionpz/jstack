@@ -1,0 +1,121 @@
+{
+  "version": 1,
+  "jstack": {
+    "version": "0.1.0",
+    "commit": "1be223a"
+  },
+  "vendor": {
+    "tree": "65c099578705fc4f3e58ba7e08e15c7f8827a0295752aae9cf82298a80a62c69"
+  },
+  "upstream": {
+    "pstack": "8ecfb19f844b67a4bc7af7f66c366d57bc7b6d2b",
+    "spec": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d"
+  },
+  "plugins": {
+    "pstack": {
+      "version": "0.15.36+jstack.bb0bbe8"
+    },
+    "spec": {
+      "version": "1.3.2+jstack.93e1737"
+    },
+    "flow": {
+      "version": "0.1.0+jstack.5b2b65c"
+    }
+  },
+  "recommended": {
+    "pi": {
+      "source": "npm:@tintinweb/pi-subagents@0.23.2",
+      "version": "0.23.2",
+      "scope": "project",
+      "config": ".pi/settings.json"
+    }
+  },
+  "harnesses": {
+    "claude-code": {
+      "scope": "project",
+      "records": [
+        ".claude/skills/poteto-mode",
+        ".claude/skills/grill-with-docs",
+        ".claude/skills/to-spec",
+        ".claude/skills/to-tickets",
+        ".claude/skills/wayfinder",
+        ".claude/skills/handoff",
+        ".claude/skills/setup-matt-pocock-skills",
+        ".claude/skills/route",
+        ".claude/skills/archive",
+        ".claude/agents/poteto-agent.md",
+        ".claude/agents/comment-sicko.md",
+        ".claude/settings.json"
+      ]
+    },
+    "pi": {
+      "scope": "project",
+      "records": [
+        ".agents/skills/poteto-mode",
+        ".agents/skills/grill-with-docs",
+        ".agents/skills/to-spec",
+        ".agents/skills/to-tickets",
+        ".agents/skills/wayfinder",
+        ".agents/skills/handoff",
+        ".agents/skills/setup-matt-pocock-skills",
+        ".agents/skills/route",
+        ".agents/skills/archive",
+        ".pi/extensions/jstack-flow-gates.ts",
+        ".pi/settings.json",
+        ".agents/agents/poteto-agent.md",
+        ".agents/agents/comment-sicko.md"
+      ]
+    },
+    "omp": {
+      "scope": "project",
+      "records": [
+        ".agents/skills/poteto-mode",
+        ".agents/skills/grill-with-docs",
+        ".agents/skills/to-spec",
+        ".agents/skills/to-tickets",
+        ".agents/skills/wayfinder",
+        ".agents/skills/handoff",
+        ".agents/skills/setup-matt-pocock-skills",
+        ".agents/skills/route",
+        ".agents/skills/archive",
+        ".omp/extensions/jstack-flow-gates.ts",
+        ".omp/agents/poteto-agent.md",
+        ".omp/agents/comment-sicko.md"
+      ]
+    },
+    "cursor": {
+      "scope": "project",
+      "records": [
+        ".agents/skills/poteto-mode",
+        ".agents/skills/grill-with-docs",
+        ".agents/skills/to-spec",
+        ".agents/skills/to-tickets",
+        ".agents/skills/wayfinder",
+        ".agents/skills/handoff",
+        ".agents/skills/setup-matt-pocock-skills",
+        ".agents/skills/route",
+        ".agents/skills/archive",
+        ".cursor/hooks.json",
+        ".cursor/agents/poteto-agent.md",
+        ".cursor/agents/comment-sicko.md"
+      ]
+    },
+    "codex": {
+      "scope": "project",
+      "records": [
+        ".agents/skills/poteto-mode",
+        ".agents/skills/grill-with-docs",
+        ".agents/skills/to-spec",
+        ".agents/skills/to-tickets",
+        ".agents/skills/wayfinder",
+        ".agents/skills/handoff",
+        ".agents/skills/setup-matt-pocock-skills",
+        ".agents/skills/route",
+        ".agents/skills/archive",
+        ".codex/agents/poteto-agent.toml",
+        ".codex/agents/comment-sicko.toml",
+        ".codex/hooks.json"
+      ]
+    }
+  }
+}
