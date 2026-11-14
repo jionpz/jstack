@@ -204,6 +204,12 @@ stage start verify,land >/dev/null
 t "stop.sh 在路径不含 execute 时放行" silent hook stop "$(stop_in)"
 stage end >/dev/null
 t "stage.sh end 删掉状态文件" test ! -e "$STATE"
+stage start execute,verify >/dev/null
+t "stage.sh end 路径含 verify 且没有证据时拒绝收尾" not stage end
+t "stage.sh end 拒绝后状态还在" state_is 'path execute,verify' 'stage execute'
+stage evidence './run-tests -> 12 passed' >/dev/null
+t "stage.sh end 有证据时收尾" stage end
+t "stage.sh end 收尾后状态文件已删除" test ! -e "$STATE"
 t "stage.sh show 没有状态时打印 none" prints none stage show
 t "stop.sh 没有状态时放行" silent hook stop "$(stop_in)"
 t "prompt.sh 没有状态时不输出" silent hook prompt "$(prompt_in)"
@@ -219,6 +225,7 @@ stage enter verify >/dev/null
 stage enter execute >/dev/null
 t "stage.sh 再次进入 execute 时保留默认决定" state_is 'path execute,verify' 'stage execute' 'default 按标题排序 -> 任务只要求排序'
 t "prompt.sh 注入已采用的默认决定" prompt_defaults
+stage evidence 'npm test -> 12 passed' >/dev/null
 stage end >/dev/null
 
 for mode in jq nojq; do
@@ -292,6 +299,7 @@ if command -v jq >/dev/null; then
 		printf "%s\n" "$out" | grep -qF "验证命令=./scripts/verify.sh" &&
 		printf "%s\n" "$out" | grep -qF "must-stop 追加=1 条"' \
 		_ "$REPO" "$(repo_prompt_in)" "$BASH" "$H/prompt.sh"
+	repo_stage evidence './scripts/verify.sh -> ok' >/dev/null
 	repo_stage end >/dev/null
 fi
 BAD="$T/badrepo"
