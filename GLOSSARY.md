@@ -36,6 +36,14 @@ _Avoid_: blocker, approval
 The short end-of-task summary readable on a phone: goal, changes, evidence, defaults applied, and what needs the user.
 _Avoid_: recap, log
 
+**PR-ready**:
+Where the flow stops on its own: the PR is open, verify and review passed, and CI is green on the verified head; merging is the user's click.
+_Avoid_: finished, shipped
+
+**done**:
+The PR is merged and the after-merge archive (tickets closed, worktrees cleaned) has run.
+_Avoid_: PR-ready, complete
+
 **task ledger**:
 The tracker, the single place where tickets, dependencies, and status live.
 _Avoid_: task list, todo
