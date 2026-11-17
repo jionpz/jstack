@@ -20,6 +20,8 @@ usage() {
       stage.sh ask                       停下来问用户之前运行
       stage.sh end                       任务结束，删掉记录（路径含 verify 时没有证据不能收尾）
       stage.sh show                      打印当前记录
+      stage.sh pending [<PR URL> <文本>]  记一条合并后归档待补（PR 还没合）；不带参数时列出本仓库的待补
+      stage.sh settled <PR URL>          合并后归档做完，删掉这条待补
 EOF
 	exit 2
 }
@@ -32,6 +34,8 @@ if [ -z "$sid" ]; then
 fi
 file=$(jstack_state_file "$sid") || { echo "jstack: 会话 id ${sid} 不能用作文件名，阶段门禁不生效"; exit 0; }
 dir=$(dirname "$file")
+
+pending=$(jstack_pending_file)
 
 need_state() { [ -f "$file" ] || die "还没有阶段记录，先运行 stage.sh start <阶段>,<阶段>,..."; }
 
@@ -61,6 +65,11 @@ start)
 	# Workloop 没有 Stop hook：状态照记，但不能让人以为门禁在执行。
 	if [ "$sid" = "${WORKLOOP_SESSION_ID:-}" ]; then
 		echo "jstack: Workloop 没有 Stop hook，门禁未强制。结束前自己运行 stage.sh show 核对证据，并在收尾摘要的门禁一行写明“本会话阶段门禁未强制（Workloop）”"
+	fi
+	# 之前停在 PR-ready 的任务：PR 合并后的归档要在这里补上。
+	if [ -s "$pending" ]; then
+		echo "jstack: 本仓库有 $(grep -c . "$pending") 条合并后归档待补。逐条查 PR 状态：已合并就按 archive 的“合并后”一段做完并运行 stage.sh settled <PR URL>；没合并就留着，不要自己合并"
+		sed 's/^/  /' "$pending"
 	fi
 	;;
 enter)
@@ -116,6 +125,24 @@ end)
 show)
 	[ $# -eq 0 ] || usage
 	if [ -f "$file" ]; then cat "$file"; else echo none; fi
+	;;
+pending)
+	if [ $# -eq 0 ]; then
+		if [ -s "$pending" ]; then cat "$pending"; else echo none; fi
+	else
+		text=$(printf '%s' "$*" | tr '\r\n' '  ' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+		[ -n "$text" ] || die "待补不能为空，写成 \"<PR URL> <还剩什么>\""
+		mkdir -p "$(dirname "$pending")"
+		{ [ ! -f "$pending" ] || awk -v u="${text%% *}" '$1 != u' "$pending"; printf '%s\n' "$text"; } | jstack_replace "$pending"
+		echo "jstack: 已记录合并后归档待补：${text}"
+	fi
+	;;
+settled)
+	[ $# -eq 1 ] && [ -n "$1" ] || usage
+	[ -s "$pending" ] && awk -v u="$1" '$1 == u { f = 1 } END { exit !f }' "$pending" || die "待补清单里没有 $1"
+	awk -v u="$1" '$1 != u' "$pending" | jstack_replace "$pending"
+	[ -s "$pending" ] || rm -f "$pending"
+	echo "jstack: 已清掉待补：$1"
 	;;
 *) usage ;;
 esac

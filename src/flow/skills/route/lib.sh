@@ -2,6 +2,7 @@
 # 状态文件是 <状态目录>/<会话 id>，纯文本，每行一条：
 #   path <逗号分隔的阶段>    stage <当前阶段>    evidence <文本>（可多行）
 #   default <文本>（替用户采用的默认决定）    ask（存在即等人）
+# 合并后归档的待补清单是 <状态目录的上一级>/pending/<仓库 key>，每行 "<PR URL> <还剩什么>"，按仓库存、跨会话。
 # JSTACK_NO_JQ 非空时当作没有 jq，只用于测试 sed 退路。
 
 jstack_state_dir() {
@@ -14,6 +15,13 @@ jstack_state_file() {
 	'' | . | .. | *[!A-Za-z0-9._-]*) return 1 ;;
 	esac
 	printf '%s/%s\n' "$(jstack_state_dir)" "$1"
+}
+
+# 合并后归档待补清单的路径。key 取 git 公共目录（同一仓库的各个 worktree 共用一份），不在 git 仓库里时取当前目录。
+jstack_pending_file() {
+	local d=${JSTACK_REPO:-$PWD} root
+	root=$(git -C "$d" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || root=$d
+	printf '%s/pending/%s\n' "$(dirname "$(jstack_state_dir)")" "$(printf '%s' "$root" | cksum | cut -d' ' -f1)"
 }
 
 # 状态文件里键 $1 的第一个值。

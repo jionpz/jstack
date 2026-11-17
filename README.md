@@ -229,7 +229,9 @@ route 只在证据定不了、而且做错代价高的决策上停下来问你�
 3. **拆解**（L、XL）：拆解本身没有高风险分歧时不再要签字，直接发布；只有顺序或范围以后难改、测试接缝证据定不了、或命中必须停清单时，才把测试接缝和 ticket 拆分放在同一条消息里请你确认。
 4. **一轮问完**：等待回答的 ticket 在 tracker 上打 `needs-human` 标签后挂起，不依赖它的 ticket 继续推进；攒着的问题合并成一轮，逐个编号、带推荐答案。答完去掉标签。通知渠道是可替换的提供者：在 Paseo 里就推给手机，否则靠标签，下次会话看得到。
 
-收尾摘要固定五段：目标、改了什么、验证证据、采用的默认决定、需要你处理的事（外加门禁未生效时的说明），控制在一手机屏内。业务仓库的 `CLAUDE.md` 或 `.claude/rules/` 里定义了不同的分级、spec 位置或门禁时，以仓库为准。
+流程自己走到的终点是 PR-ready（PR 已开、验证和审查通过、CI 绿），合并由你来点（ADR-0007）：只有你当前这条消息点名某个 PR 时才合并，且只合那一个；`gh pr merge` 一类命令在必须停清单里，guard 会先问。CI 红回到 execute，不算打断你。archive 分两段：合并前写文档、gbrain 和教训；合并后关 ticket、清 worktree，PR 没合时用 `stage.sh pending` 记成待补，下一次 `stage.sh start` 会列出来补上。
+
+收尾摘要固定六段：目标、状态（PR-ready / done / 未完成）、改了什么、验证证据、采用的默认决定、需要你处理的事（外加门禁未生效时的说明），控制在一手机屏内。业务仓库的 `CLAUDE.md` 或 `.claude/rules/` 里定义了不同的分级、spec 位置或门禁时，以仓库为准。
 
 `disable-model-invocation: true` 的 skill（pstack 57 个、spec 6 个：5 个入口加 setup）不能被模型用 Skill 工具调用，Claude Code 会直接拒绝，提示 "reserved for explicit user invocation"。route 用随附的 `locate.sh` 找到这些提供者文件的路径，然后直接读取并照着做，这也是 pstack 内部 skill 之间互相路由的方式。`locate.sh` 不写死 skill 名，而是读同目录 `stages.md` 的 Providers 列：换掉某个阶段的提供者只改表里那一格。它支持本地 marketplace、Claude Code 的 GitHub 缓存、OMP 缓存、Cursor 本地插件、Pi package、Codex marketplace 缓存和入口软链七种安装布局，入口 skill 以软链暴露时按物理路径解析；任一提供者找不到就点名并以非 0 退出。
 
@@ -269,7 +271,7 @@ flow 插件自带三个门禁（Claude Code 的 `src/flow/hooks/hooks.json`，Cu
 - **验证门禁（Stop，`stop.sh`）**：路径含 verify、已经进入 execute 或之后的阶段、却一条验证证据都没记录时，拦下这次结束，让 agent 先验证并用 `stage.sh evidence` 记录。agent 运行过 `stage.sh ask` 且这一轮的回复里确实向你提了问题、或者这一轮本身就是被 Stop hook 拦回来的，都放行。每次进入 execute 会清掉之前的证据，L 路径的下一张 ticket 要重新验证。
 - **红线守卫（Claude Code 的 PreToolUse / Cursor 的 beforeShellExecution / Pi、OMP 的 bash `tool_call`，只看 shell 命令，`guard.sh`）**：命令在 `;`、`&&`、`||`、`|`、换行处切段，任一段命中 `must-stop.md` 的 patterns 就让 harness 先问你，原因写明命中的是哪条必须停事项。它不看阶段状态，对所有会话生效，包括没走 route 的会话。
 
-route 用同目录的 `stage.sh` 记录阶段（`start`、`enter`、`evidence`、`default`、`ask`、`end`、`show`）。状态按会话存成纯文本 `${JSTACK_STATE_DIR:-${XDG_STATE_HOME:-~/.local/state}/jstack/sessions}/<会话 id>`，`start` 时顺带删掉 7 天没动过的旧记录。会话 id 依次取 `JSTACK_SESSION_ID`（OMP 扩展写入）、`PI_SESSION_ID`（Pi）、`CLAUDE_CODE_SESSION_ID`、`CURSOR_CONVERSATION_ID`、`CODEX_SESSION_ID`；都没有的 harness 里 `stage.sh` 只打印一行说明，不做任何事。
+route 用同目录的 `stage.sh` 记录阶段（`start`、`enter`、`evidence`、`default`、`ask`、`end`、`show`），另有 `pending` / `settled` 记合并后归档的待补（按仓库存在 `jstack/pending/` 下，各 worktree 共用，跨会话）。状态按会话存成纯文本 `${JSTACK_STATE_DIR:-${XDG_STATE_HOME:-~/.local/state}/jstack/sessions}/<会话 id>`，`start` 时顺带删掉 7 天没动过的旧记录。会话 id 依次取 `JSTACK_SESSION_ID`（OMP 扩展写入）、`PI_SESSION_ID`（Pi）、`CLAUDE_CODE_SESSION_ID`、`CURSOR_CONVERSATION_ID`、`CODEX_SESSION_ID`；都没有的 harness 里 `stage.sh` 只打印一行说明，不做任何事。
 
 Cursor 的 hook 是它自己的事件和协议，不复用 Claude 的 `hooks.json`：`beforeShellExecution` 对应 guard（`permission: ask` 会弹出确认），`beforeSubmitPrompt` 对应阶段提示（输出 `additional_context`），`stop` 对应验证门禁（输出 `followup_message`）。Cursor 的 `stop` 输入没有最后一条回复，所以标了 `ask` 时只能直接放行，无法像 Claude 那样核对回复里是否真的提了问题；`stop` 的 `loop_limit` 设为 3，避免反复拦住同一轮。`./jstack install-cursor` 现在会复制完整插件树，Cursor 加载器按 `.cursor-plugin/plugin.json` 的 `hooks` 字段只加载 `hooks.cursor.json`。项目级安装同样会写 `.cursor/hooks.json`，命令指向 `.jstack/vendor`。
 
