@@ -18,4 +18,6 @@ land 的产出只写到“开了 PR”，之后的 CI、合并没有阶段也没
 - 待补只在下一次走 route 时被提醒；不走 route 的会话看不到。不为此加常驻进程或轮询（无人值守归 Keel）。
 - “CI 红不报成完成”是 skill 规则，没有脚本去查 CI：脚本查 CI 要联网，也绑死某一个 forge。
 - guard 只看得到 shell 命令。桌面端的 auto-merge 工具、网页上的合并按钮它看不到，靠规则约束。
+- pstack 的 shipping playbook 写着“合并最低的未合并 PR”（`origin pr merge` / `gh pr merge`）。那是上游正文，不打补丁；route 的规则优先，guard 对这两条命令都会先问人。
+- guard 不知道用户有没有点名：用户点名合并时 Claude Code 仍会弹一次确认；Cursor 的 preToolUse 和 Codex 只能 deny，在那里合并要用户自己执行命令。
 - 等运行日志能证明通过独立验证和 premium 裁决的 PR 合并后没出过问题，再考虑对 XS、S 放开自动合并；放开之前要再问一次用户。
