@@ -420,7 +420,7 @@ run_sample() {
 	done
 	(git -C "$work" add -A && git -C "$work" diff --cached --binary "$base") >"$dir/diff.patch" 2>/dev/null || true
 	if [ -n "$KEEP" ]; then
-		say "  $task [$group] #$n 的工作目录保留在 $work（门禁状态在 $state_dir）"
+		say "  $task [$group] #$n 的工作目录保留在 ${work}（门禁状态在 ${state_dir}）"
 	else
 		case $work in
 		"$SANDBOX"/*) rm -rf "$(dirname "$work")" ;;

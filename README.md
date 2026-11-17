@@ -394,16 +394,17 @@ pstack 只同步 Claude Code 树；Cursor 版由 `build` 转换，不再单独�
 6. spec/flow 的 Cursor manifest 是否和 Claude manifest 同名、同版本、同样的 skill 列表
 7. `plugins/pstack-cursor` 是否等于 `plugins/pstack` 的转换结果；`patches/pstack-cursor/rules.tsv` 的每条规则是否都命中差异，转换是否只改动规则覆盖的文件（skills/ 24 个、agents/ 1 个）；manifest、logo、`is_background` 和 worktree-audit 的 Cursor 路径是否齐全
 8. 根目录 `package.json` 是否把三个插件的 skills 和 flow 的门禁扩展（`pi.extensions`）都暴露给 Pi
-9. `stages.md` 里的每个提供者是否在七种布局下都找得到：用 `plugins/` 产物在临时的假 HOME 里复制出本地 marketplace、Claude GitHub 缓存、OMP 缓存、Cursor 本地插件、Pi npm 包、Codex 缓存（`$CODEX_HOME/plugins/cache/jstack/<插件>/<版本>`，版本去掉 `+` 后面的构建元数据），再加一种入口软链（`<tmp>/.agents/skills/route` 指向仓库里的 flow skill），从各自的 flow 副本运行 `locate.sh`，路径必须落在该布局自己的树里；再把一个提供者换成 `spec:no-such-skill`，`locate.sh` 必须失败并点名它
-10. `claude plugin validate` 是否通过（marketplace 和全部插件）
-11. 评测任务自检（`./jstack eval --selftest`）：每个任务的 check 在初始状态下失败、在参考解下通过
-12. flow 的 `stage.sh` 和三个 hook（`tests/flow-hooks.sh`）：对 `plugins/flow` 产物喂 JSON、断言输出和状态文件，Claude Code 和 Cursor 两种输入/输出协议都测，会话 id 的四级回退（`JSTACK_SESSION_ID`、`PI_SESSION_ID`、`CLAUDE_CODE_SESSION_ID`、`CURSOR_CONVERSATION_ID`）也测，有 jq 和没有 jq 两种路径也都测；macOS 上用 `/bin/bash`（3.2）运行
-13. 模型分层命令（`./jstack models`）：在临时 HOME 里跑 init、set、apply、status，核对四个 harness 的规则文件、Pi/OMP 标记块合并与首次确认、旧配置迁移备份、roles 覆盖、settings.json 的模型 env 和原有键、备份幂等、`--dry-run` 不落盘、预算降级，以及今日 token 统计
-14. 仓库级配置（`<repo>/.jstack/config.json`，ADR-0006）：当前仓库有配置时校验字段与 `stages_file`；在临时仓库里验证 `stage.sh` 按 `stages_file` 收/拒阶段、`guard.sh` 合并 `must_stop` 并在 reason 里标明“仓库追加”、`prompt.sh` 注入配置，坏 JSON、禁用键、缺 `execute` 都要报出来
-15. `./jstack doctor`：临时 HOME 构造 Claude user/project、Pi package、OMP 缓存、Cursor 本地插件、Codex 缓存、vendor 和 lock 七种来源，核对表格与 `--json` 的值；篡改 lock 版本或源目录版本后必须报漂移并返回非 0，`--no-fail` 只警告
-16. 项目级安装（`./jstack install --all --scope project`）：在临时仓库和假 HOME 里核对 vendor、9 个入口链接、Claude agents 与 hooks、Cursor hooks、Codex 的 `.codex/agents/*.toml` 与 `.codex/hooks.json`（三条绝对路径、PreToolUse 匹配 Bash）、lock 的版本、树哈希与 `recommended.pi`；三路 `locate.sh` 都要找全阶段表提供者，重复运行不改产物，`--dry-run` 不落盘，改 vendor 文件、删入口、删 `.pi/settings.json`、`.cursor/hooks.json`、`.codex/hooks.json` 或 `.codex/agents` 后 `doctor` 必须失败
-17. 工具配置（`tests/tool-policy.py`）：阶段 profile 引用变化反映在导出、重复导出 digest 稳定、digest 可由标准 JSON 复算、重复字段/未知能力/未知 profile 被拒绝、Pi 与 Claude Code 的原生名选择、缺必需工具拒绝、shell fallback 需显式接受、缺可选工具不伪装成可用
-18. Pi 推荐包（`tests/pi-recommended.py`）：缺包时安装固定 source、第二次跳过、项目作用域不复用用户作用域、已装的较新版本保留并报告、`--dry-run` 不安装不写文件、安装时禁用 lifecycle scripts、provider/models/auth 配置不变
+9. shell 脚本里有没有 `$VAR` 紧跟中文标点的写法（`jstack`、`src/flow/**/*.sh`、`patches/**/*.sh`、`tests/*.sh`、`evals/*.sh`、`scripts/*.sh`，只扫代码行）：bash 3.2 在 UTF-8 locale 下会把标点的首字节算进变量名，报 `unbound variable`，而开发机的 locale 常常扫不到，所以静态拦
+10. `stages.md` 里的每个提供者是否在七种布局下都找得到：用 `plugins/` 产物在临时的假 HOME 里复制出本地 marketplace、Claude GitHub 缓存、OMP 缓存、Cursor 本地插件、Pi npm 包、Codex 缓存（`$CODEX_HOME/plugins/cache/jstack/<插件>/<版本>`，版本去掉 `+` 后面的构建元数据），再加一种入口软链（`<tmp>/.agents/skills/route` 指向仓库里的 flow skill），从各自的 flow 副本运行 `locate.sh`，路径必须落在该布局自己的树里；再把一个提供者换成 `spec:no-such-skill`，`locate.sh` 必须失败并点名它
+11. `claude plugin validate` 是否通过（marketplace 和全部插件）
+12. 评测任务自检（`./jstack eval --selftest`）：每个任务的 check 在初始状态下失败、在参考解下通过
+13. flow 的 `stage.sh` 和三个 hook（`tests/flow-hooks.sh`）：对 `plugins/flow` 产物喂 JSON、断言输出和状态文件，Claude Code 和 Cursor 两种输入/输出协议都测，会话 id 的四级回退（`JSTACK_SESSION_ID`、`PI_SESSION_ID`、`CLAUDE_CODE_SESSION_ID`、`CURSOR_CONVERSATION_ID`）也测，有 jq 和没有 jq 两种路径也都测；macOS 上用 `/bin/bash`（3.2）运行
+14. 模型分层命令（`./jstack models`）：在临时 HOME 里跑 init、set、apply、status，核对四个 harness 的规则文件、Pi/OMP 标记块合并与首次确认、旧配置迁移备份、roles 覆盖、settings.json 的模型 env 和原有键、备份幂等、`--dry-run` 不落盘、预算降级，以及今日 token 统计
+15. 仓库级配置（`<repo>/.jstack/config.json`，ADR-0006）：当前仓库有配置时校验字段与 `stages_file`；在临时仓库里验证 `stage.sh` 按 `stages_file` 收/拒阶段、`guard.sh` 合并 `must_stop` 并在 reason 里标明“仓库追加”、`prompt.sh` 注入配置，坏 JSON、禁用键、缺 `execute` 都要报出来
+16. `./jstack doctor`：临时 HOME 构造 Claude user/project、Pi package、OMP 缓存、Cursor 本地插件、Codex 缓存、vendor 和 lock 七种来源，核对表格与 `--json` 的值；篡改 lock 版本或源目录版本后必须报漂移并返回非 0，`--no-fail` 只警告
+17. 项目级安装（`./jstack install --all --scope project`）：在临时仓库和假 HOME 里核对 vendor、9 个入口链接、Claude agents 与 hooks、Cursor hooks、Codex 的 `.codex/agents/*.toml` 与 `.codex/hooks.json`（三条绝对路径、PreToolUse 匹配 Bash）、lock 的版本、树哈希与 `recommended.pi`；三路 `locate.sh` 都要找全阶段表提供者，重复运行不改产物，`--dry-run` 不落盘，改 vendor 文件、删入口、删 `.pi/settings.json`、`.cursor/hooks.json`、`.codex/hooks.json` 或 `.codex/agents` 后 `doctor` 必须失败
+18. 工具配置（`tests/tool-policy.py`）：阶段 profile 引用变化反映在导出、重复导出 digest 稳定、digest 可由标准 JSON 复算、重复字段/未知能力/未知 profile 被拒绝、Pi 与 Claude Code 的原生名选择、缺必需工具拒绝、shell fallback 需显式接受、缺可选工具不伪装成可用
+19. Pi 推荐包（`tests/pi-recommended.py`）：缺包时安装固定 source、第二次跳过、项目作用域不复用用户作用域、已装的较新版本保留并报告、`--dry-run` 不安装不写文件、安装时禁用 lifecycle scripts、provider/models/auth 配置不变
 
 第 3、4、5 项专门查 adapter 管不到的地方：脚本和 frontmatter 都不经过模型，上游新引入的 Cursor 依赖在同步时就能发现；第 5 项查的是 spec 这种"只收一部分 skill"的插件有没有漏掉依赖。`claude plugin validate` 不查 frontmatter 键，也不查插件内部 skill 之间的调用关系，更不查 YAML 合法性，所以 `: ` 这种写法只能由第 4 项拦。全部通过才提交。
 
