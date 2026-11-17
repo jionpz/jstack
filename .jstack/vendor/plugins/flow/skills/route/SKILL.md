@@ -1,6 +1,6 @@
 ---
 name: route
-description: Entry point for software engineering work in a code repository. Use at the start of any task that would change code or answer a question about it, such as a feature, bug fix, refactor, migration, or investigation. It sizes the task and walks it through the jstack stages (clarify, plan, execute, verify, review, land, archive), handing each stage to its provider. Skip it for non-engineering requests, and skip it when the user has already invoked a pstack or spec entry skill directly.
+description: Entry point for software engineering work in a code repository. Use at the start of any task that would change code or answer a question about it, such as a feature, bug fix, refactor, migration, or investigation. It sizes the task and walks it through the jstack stages (clarify, plan, investigate, execute, verify, review, land, archive), handing each stage to its provider. Skip it for non-engineering requests, and skip it when the user has already invoked a pstack or spec entry skill directly.
 argument-hint: "<task description>"
 ---
 
