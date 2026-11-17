@@ -9,6 +9,7 @@ The single list of actions that always need the user, at any size and under any 
 | Recursive forced delete (`rm -rf` and its variants) | `rm-rf` |
 | Force push (`--force`, `-f`, `--force-with-lease`, a `+` refspec) | `force-push` |
 | Any `sudo` | `sudo` |
+| Merging a pull request, or turning on auto-merge, unless the user's current message names that PR | `pr-merge` |
 | Deleting or overwriting production configuration, deploys, production data | - |
 | Irreversible data operations, including data deletion | - |
 | Messages to customers or other outside parties | - |
@@ -31,4 +32,7 @@ rm-rf	(^|[[:space:]/])rm[[:space:]](.*[[:space:]])?(-f|--force)[[:space:]](.*[[:
 force-push	(^|[[:space:]/])git[[:space:]](.*[[:space:]])?push[[:space:]](.*[[:space:]])?(--force|--force-with-lease|-[[:alnum:]]*f[[:alnum:]]*)(=[^[:space:]]*)?([[:space:]]|$)
 force-push	(^|[[:space:]/])git[[:space:]](.*[[:space:]])?push[[:space:]](.*[[:space:]])?\+[^[:space:]]+
 sudo	(^|[[:space:]/])sudo([[:space:]]|$)
+pr-merge	(^|[[:space:]/])(gh|origin)[[:space:]](.*[[:space:]])?pr[[:space:]]+merge([[:space:]]|$)
+pr-merge	(^|[[:space:]/])glab[[:space:]](.*[[:space:]])?mr[[:space:]]+merge([[:space:]]|$)
+pr-merge	(^|[[:space:]/])gh[[:space:]](.*[[:space:]])?api[[:space:]].*pulls/[0-9]+/merge([[:space:]]|$)
 ```

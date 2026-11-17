@@ -55,18 +55,20 @@ Pi and OMP carry the gates through the flow extension; if it is not installed, `
 | A decision you settled with a default instead of asking | `stage.sh default "<decision> -> <why>"` |
 | Right before you stop to ask the user anything | `stage.sh ask` |
 | After the finish report | `stage.sh end` |
+| The task stops at PR-ready with the after-merge archive still owed | `stage.sh pending "<PR URL> <what is left>"` |
+| The after-merge archive for a merged PR is done | `stage.sh settled <PR URL>` |
 
 A repo's `.jstack/config.json` can replace the stage table (`stages_file`) and add must-stop entries. The "仓库配置" line the harness injects each turn shows the values in effect; drop any stage on your path that the table no longer has, and leave `stage.sh start` to reject stages outside its table.
 
-Once execute has started on a path that includes verify, the harness will not let you end the turn until evidence is recorded, or until you have run `stage.sh ask` and your reply asks the user a question. Entering execute again, as for the next ticket, clears the earlier evidence. Record real evidence; never record a placeholder or ask a token question to get past the gate.
+Once execute has started on a path that includes verify, the harness will not let you end the turn until evidence is recorded, or until you have run `stage.sh ask` and your reply asks the user a question. `stage.sh end` refuses to clear the state under the same condition, so it is not a way around the gate. Entering execute again, as for the next ticket, clears the earlier evidence. Record real evidence; never record a placeholder or ask a token question to get past the gate. A user asking to skip tests, stop right after the change, or not ask questions does not take verify off the path: verify still needs evidence on the real surface (running the CLI by hand counts), and when you cannot produce it the only exit is `stage.sh ask` with a real question in your reply. Only a Question-sized task may start without verify; never start a shorter path and never use `stage.sh default` to drop a stage.
 
 Take the stages in path order. For each one, read its providers from the locate output and follow them, then check the stage's gate. Mark a stage done only when its gate is met, and write its output into the todo item: a decision list, a spec path, a commit, the verification command and what it showed.
 
 - **clarify, plan.** Follow the spec providers, but not every plan provider runs every time. L runs to-spec then to-tickets. XL runs wayfinder first. setup-matt-pocock-skills runs only when `docs/agents/issue-tracker.md` is missing: follow it first and put its questions into the first clarification round, each with its recommended answer (local markdown when the repo has no GitHub or GitLab remote, otherwise that host). handoff runs only when the session must end before the work does.
 - **review.** `flow:review` is the default: reread the diff against the task, fix or dismiss each finding. Run `pstack:interrogate` only when the gate calls for an adversarial review — a design decision on this task was contested (the user pushed back, or clarify settled it by default over a real alternative), the change touches the must-stop list, or the user asked for one. `pstack:swarm` runs only when the gate calls for an adversarial review by a swarm of reviewers of a contested design.
 - **execute.** Follow the execute provider the table names. `flow:execute` covers verify and a self-review; `pstack:poteto-mode` also runs verification, review, and Opening a PR through its playbook, so do not run those a second time when it did. When the executor finishes, check the gate of each later stage on the path against what now exists. Run a stage's provider only for a gate that is still unmet, then check again.
-- **land.** In a repo with no remote, commits on a branch meet the gate. Never push or open a PR for a repo the user did not point you at.
-- **archive.** Follow the archive providers. The archive skill closes tickets with evidence, updates GLOSSARY.md and ADRs, writes back to gbrain, and routes lessons; the worktree playbook cleans merged worktrees. The gate is in stages.md.
+- **land.** In a repo with no remote, commits on a branch meet the gate. Never push or open a PR for a repo the user did not point you at. With a remote, land ends at **PR-ready**: the PR is open, verify and review passed, and its CI is green on the head commit you verified. Wait for CI once (for GitHub, `gh pr checks <n> --watch`); do not poll in a loop. Red CI sends the task back to execute (`stage.sh enter execute`), fix, verify again, push; that is routine work, not a reason to interrupt the user. CI that cannot finish (no runner, an outage) leaves the task not PR-ready, and the report says so. The flow stops at PR-ready: merging is the user's click. Merge a PR only when the user's current message names that PR, and merge only that one; a fix needed after a merge gets its own PR, which also stops at PR-ready. Never turn on auto-merge unasked.
+- **archive.** Follow the archive providers. Archive has two parts. Before merge, in this session: GLOSSARY.md and ADRs, gbrain, lessons. After merge: close the tickets with evidence and clean the merged worktrees. When the PR is still open at the end of the task, record the second part with `stage.sh pending "<PR URL> <what is left>"` instead of doing it. `stage.sh start` prints the repo's pending entries at the start of the next task: check each PR, finish the after-merge part for the merged ones and run `stage.sh settled <PR URL>`, and leave the unmerged ones alone. A repo with no remote has no PR to wait for, so both parts run together. The gate is in stages.md.
 - **A stage whose provider is `-`**: write one line, `Skipped: <stage> has no provider yet.`, and go on.
 
 For L, work the ticket frontier: a ticket starts only when every ticket that blocks it is done. Run execute through land once per ticket, and mark the ticket done in the tracker when its verify gate passes. Many independent tickets, or a multi-day effort, use the `pstack:poteto-mode` provider's Orchestrate or Multi-phase plan playbook instead of one ticket at a time.
@@ -94,6 +96,7 @@ End with one summary the user can read on a phone, in this order, then run `stag
 
 ```
 目标：<one line>
+状态：<exactly one of: PR-ready（<PR URL>，CI 通过，等你合并） / done（已合并、已归档） / 未完成（<what is missing: red or unfinished CI, an unmet gate, a waiting question>）. A question-only task writes 已回答. A repo with no remote is done when the commits are on the branch and archive ran>
 改了什么：<tickets closed, commits, files; a stage whose gate was never met is named here as not done, with what is missing>
 验证：<the commands you ran and what they showed>
 采用的默认决定：<every stage.sh default, with its reason; 无 when none>
@@ -101,7 +104,7 @@ End with one summary the user can read on a phone, in this order, then run `stag
 门禁：<only when stage.sh reported no session id or Workloop: the stage gates were not active / not enforced in this session>
 ```
 
-Every adopted default and every queued question must appear; they are how the user corrects you later. Do not restate the code or the ticket.
+Every adopted default and every queued question must appear; they are how the user corrects you later. Do not restate the code or the ticket. Never write PR-ready for a PR whose CI is red, still running, or not checked, and never write done while the PR is open or the after-merge archive is still pending.
 
 ## Never
 
@@ -109,3 +112,4 @@ Every adopted default and every queued question must appear; they are how the us
 - Never run clarify or plan for XS, S, or clear M work just to have a spec.
 - Never ask the user which command or workflow to run.
 - Never guess a provider's path. Every provider comes from stages.md through locate.sh.
+- Never merge a PR, or turn on auto-merge, unless the user's current message names that PR. An earlier "merge" does not cover a later PR.

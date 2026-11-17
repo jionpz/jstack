@@ -21,8 +21,10 @@
 #                                                  --smoke 额外跑已安装 harness 的 headless smoke（需要模型和网络）
 #   ./jstack smoke [pi|omp|cursor|all]             跑 Pi/OMP/Cursor 的 headless smoke；Cursor 只做加载器和 route 检查
 #                                                  每条 headless 命令限时 JSTACK_SMOKE_TIMEOUT 秒（默认 600），超时先 TERM，10 秒后 KILL
-#   ./jstack eval [--samples N] [--jobs N] [--model M] [--max-nudges N] [--keep] [任务名...]
+#   ./jstack eval [--samples N] [--jobs N] [--model M] [--max-nudges N]
+#                  [--group workflow|control|both] [--keep] [任务名...]
 #                                                  用 claude -p 跑 evals/tasks 的固定任务，衡量工作流本身（需要模型和网络）；
+#                                                  默认每组都跑：工作流组用项目级安装（门禁生效），对照组什么都不加载；
 #                                                  结果追加到 evals/results.jsonl 和 evals/reports/<日期>.md
 #   ./jstack eval list | --selftest [任务名...]    列出任务；不调模型地校验每个任务的 check（check 也会跑）
 #   ./jstack models [show]                         显示模型分层配置和 apply 会写哪些文件

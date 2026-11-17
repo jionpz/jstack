@@ -229,7 +229,9 @@ route 只在证据定不了、而且做错代价高的决策上停下来问你�
 3. **拆解**（L、XL）：拆解本身没有高风险分歧时不再要签字，直接发布；只有顺序或范围以后难改、测试接缝证据定不了、或命中必须停清单时，才把测试接缝和 ticket 拆分放在同一条消息里请你确认。
 4. **一轮问完**：等待回答的 ticket 在 tracker 上打 `needs-human` 标签后挂起，不依赖它的 ticket 继续推进；攒着的问题合并成一轮，逐个编号、带推荐答案。答完去掉标签。通知渠道是可替换的提供者：在 Paseo 里就推给手机，否则靠标签，下次会话看得到。
 
-收尾摘要固定五段：目标、改了什么、验证证据、采用的默认决定、需要你处理的事（外加门禁未生效时的说明），控制在一手机屏内。业务仓库的 `CLAUDE.md` 或 `.claude/rules/` 里定义了不同的分级、spec 位置或门禁时，以仓库为准。
+流程自己走到的终点是 PR-ready（PR 已开、验证和审查通过、CI 绿），合并由你来点（ADR-0007）：只有你当前这条消息点名某个 PR 时才合并，且只合那一个；`gh pr merge` 一类命令在必须停清单里，guard 会先问。CI 红回到 execute，不算打断你。archive 分两段：合并前写文档、gbrain 和教训；合并后关 ticket、清 worktree，PR 没合时用 `stage.sh pending` 记成待补，下一次 `stage.sh start` 会列出来补上。
+
+收尾摘要固定六段：目标、状态（PR-ready / done / 未完成）、改了什么、验证证据、采用的默认决定、需要你处理的事（外加门禁未生效时的说明），控制在一手机屏内。业务仓库的 `CLAUDE.md` 或 `.claude/rules/` 里定义了不同的分级、spec 位置或门禁时，以仓库为准。
 
 `disable-model-invocation: true` 的 skill（pstack 57 个、spec 6 个：5 个入口加 setup）不能被模型用 Skill 工具调用，Claude Code 会直接拒绝，提示 "reserved for explicit user invocation"。route 用随附的 `locate.sh` 找到这些提供者文件的路径，然后直接读取并照着做，这也是 pstack 内部 skill 之间互相路由的方式。`locate.sh` 不写死 skill 名，而是读同目录 `stages.md` 的 Providers 列：换掉某个阶段的提供者只改表里那一格。它支持本地 marketplace、Claude Code 的 GitHub 缓存、OMP 缓存、Cursor 本地插件、Pi package、Codex marketplace 缓存和入口软链七种安装布局，入口 skill 以软链暴露时按物理路径解析；任一提供者找不到就点名并以非 0 退出。
 
@@ -269,7 +271,7 @@ flow 插件自带三个门禁（Claude Code 的 `src/flow/hooks/hooks.json`，Cu
 - **验证门禁（Stop，`stop.sh`）**：路径含 verify、已经进入 execute 或之后的阶段、却一条验证证据都没记录时，拦下这次结束，让 agent 先验证并用 `stage.sh evidence` 记录。agent 运行过 `stage.sh ask` 且这一轮的回复里确实向你提了问题、或者这一轮本身就是被 Stop hook 拦回来的，都放行。每次进入 execute 会清掉之前的证据，L 路径的下一张 ticket 要重新验证。
 - **红线守卫（Claude Code 的 PreToolUse / Cursor 的 beforeShellExecution / Pi、OMP 的 bash `tool_call`，只看 shell 命令，`guard.sh`）**：命令在 `;`、`&&`、`||`、`|`、换行处切段，任一段命中 `must-stop.md` 的 patterns 就让 harness 先问你，原因写明命中的是哪条必须停事项。它不看阶段状态，对所有会话生效，包括没走 route 的会话。
 
-route 用同目录的 `stage.sh` 记录阶段（`start`、`enter`、`evidence`、`default`、`ask`、`end`、`show`）。状态按会话存成纯文本 `${JSTACK_STATE_DIR:-${XDG_STATE_HOME:-~/.local/state}/jstack/sessions}/<会话 id>`，`start` 时顺带删掉 7 天没动过的旧记录。会话 id 依次取 `JSTACK_SESSION_ID`（OMP 扩展写入）、`PI_SESSION_ID`（Pi）、`CLAUDE_CODE_SESSION_ID`、`CURSOR_CONVERSATION_ID`、`CODEX_SESSION_ID`；都没有的 harness 里 `stage.sh` 只打印一行说明，不做任何事。
+route 用同目录的 `stage.sh` 记录阶段（`start`、`enter`、`evidence`、`default`、`ask`、`end`、`show`），另有 `pending` / `settled` 记合并后归档的待补（按仓库存在 `jstack/pending/` 下，各 worktree 共用，跨会话）。状态按会话存成纯文本 `${JSTACK_STATE_DIR:-${XDG_STATE_HOME:-~/.local/state}/jstack/sessions}/<会话 id>`，`start` 时顺带删掉 7 天没动过的旧记录。会话 id 依次取 `JSTACK_SESSION_ID`（OMP 扩展写入）、`PI_SESSION_ID`（Pi）、`CLAUDE_CODE_SESSION_ID`、`CURSOR_CONVERSATION_ID`、`CODEX_SESSION_ID`；都没有的 harness 里 `stage.sh` 只打印一行说明，不做任何事。
 
 Cursor 的 hook 是它自己的事件和协议，不复用 Claude 的 `hooks.json`：`beforeShellExecution` 对应 guard（`permission: ask` 会弹出确认），`beforeSubmitPrompt` 对应阶段提示（输出 `additional_context`），`stop` 对应验证门禁（输出 `followup_message`）。Cursor 的 `stop` 输入没有最后一条回复，所以标了 `ask` 时只能直接放行，无法像 Claude 那样核对回复里是否真的提了问题；`stop` 的 `loop_limit` 设为 3，避免反复拦住同一轮。`./jstack install-cursor` 现在会复制完整插件树，Cursor 加载器按 `.cursor-plugin/plugin.json` 的 `hooks` 字段只加载 `hooks.cursor.json`。项目级安装同样会写 `.cursor/hooks.json`，命令指向 `.jstack/vendor`。
 
@@ -405,6 +407,17 @@ pstack 只同步 Claude Code 树；Cursor 版由 `build` 转换，不再单独�
 
 第 3、4、5 项专门查 adapter 管不到的地方：脚本和 frontmatter 都不经过模型，上游新引入的 Cursor 依赖在同步时就能发现；第 5 项查的是 spec 这种"只收一部分 skill"的插件有没有漏掉依赖。`claude plugin validate` 不查 frontmatter 键，也不查插件内部 skill 之间的调用关系，更不查 YAML 合法性，所以 `: ` 这种写法只能由第 4 项拦。全部通过才提交。
 
+### CI
+
+`.github/workflows/check.yml` 在每个 PR 和 `main` 的每次提交上跑 `./jstack check`，macOS 和 Ubuntu 各一个 job（`fail-fast: false`，两边都会跑完）。macOS job 用系统自带的 bash 3.2，并设成 `en_US.UTF-8`，复现本机最容易踩的 locale 坑。
+
+CI 只跑不耗 token 的部分：
+
+- 跑：上面第 1–18 项全部，包括 `claude plugin validate` 和 `./jstack eval --selftest`（自检不调模型）
+- 不跑：`--smoke`（要本机已安装的 Pi / OMP / Cursor / Codex，会启动模型）、`./jstack eval`（调模型，要网络和模型额度）
+
+workflow 里装了 `jq`、Python、Node 24 和当前的 Claude Code CLI（只给 `claude plugin validate` 用），不读任何密钥，也不访问模型接口。macOS job 的 Python 是 3.9，与开发机的系统 `python3` 一致；`ubuntu-latest`（26.04）没有 3.9 的构建，用 3.12。抬高最低支持版本时记得同步这里。
+
 ### 跨 harness smoke
 
 `check --smoke` 在静态检查之后，对**本机已安装**的 harness 各跑一遍 headless 链路；没安装的 harness 会打印跳过原因，不算失败。也可以单独运行：
@@ -440,20 +453,20 @@ git diff --no-index --src-prefix= --dst-prefix= a/<路径> b/<路径> > patches/
 
 ## 评测
 
-`./jstack eval` 衡量工作流本身。它把一批固定任务交给 headless 的 harness（默认 Claude Code，也可以选 Pi），后者加载仓库里的 pstack、spec、flow，再看三件事：做成了没有、要人插手几次、花了多少。smoke 只证明调用链跑得通。改了工作流以后是变好还是变差，要靠评测回答。
+`./jstack eval` 衡量工作流本身。它把一批固定任务交给 headless 的 harness（默认 Claude Code，也可以选 Pi），每道题跑两组：**工作流组**用项目级安装的产物把 jstack 完整接上（入口 skill、阶段提示、guard 和 Stop 门禁都生效），**对照组**什么都不加载，只有模型和题目。两组并排，看的是走工作流比不走好多少：做成了没有、要人插手几次、花了多少。smoke 只证明调用链跑得通。改了工作流以后是变好还是变差，要靠评测回答。
 
-每个任务在 `evals/tasks/<名字>/` 下，包括 `prompt.md`（原样作为第一条用户消息）、`check.sh`（判定是否完成）、`solution.patch` 或 `answer.md`（参考解），以及可选的 `seed/`。每个样本都有自己的工作目录 `<临时目录>/<随机>/tasknotes`：先复制 `evals/fixture/`，再叠加 `seed/`，然后 `git init` 并提交一次。路径里不出现 eval、test 这类词，被测 agent 不知道自己在被评测。`seed/CLAUDE.md` 可以让样本仓库按 jstack 的方式从 `flow:route` 开始；check 仍只看功能，route / poteto 是否触发由记录里的对应列给出。同一份 seed 在 Pi 下原样传入；seed 里如果写的是 Claude 的 `/flow:route`，Pi 不会自动改写成 `/skill:route`，跨 harness 比较 route 触发率时要把这个差异算进去。
+每个任务在 `evals/tasks/<名字>/` 下，包括 `prompt.md`（原样作为第一条用户消息）、`check.sh`（判定是否完成）、`solution.patch` 或 `answer.md`（参考解），以及可选的 `seed/`。每个样本都有自己的工作目录 `<临时目录>/<随机>/tasknotes`：先复制 `evals/fixture/`，再叠加 `seed/`，工作流组接着跑 `./jstack install --scope project --repo <样本仓库>`，然后 `git init` 并提交一次。安装产物（`.jstack/`、`.claude/`）写进 `.git/info/exclude`，不进初始提交，也不进样本的 `diff.patch`。路径里不出现 eval、test 这类词，被测 agent 不知道自己在被评测。`seed/CLAUDE.md` 让样本仓库按 jstack 的方式从 `route` skill 开始；check 仍只看功能，route / poteto 是否触发、Stop 门禁拦了几次由记录里的对应字段给出。对照组保留题目本身需要的种子文件（坏代码、仓库约定），只去掉指导走工作流的 `CLAUDE.md` / `AGENTS.md`。`m-route-stop-gate` 是专门构造的门禁探针样本：seed 的仓库约定要求每次代码改动都带 verify，prompt 让 agent 实现 `tasknotes clear`、改完直接停，并明说这次就是看 Stop 门禁会不会拦下没有证据的结束；被拦回来后再按提示在临时目录跑 CLI、记录证据收尾。它的 `stop_blocks` 大于 0 就说明门禁真的挡了；`stage.sh end` 在同样条件下也拒绝清掉状态，否则模型只要跑一次 end 就能绕过 Stop 门禁。同一份 seed 在 Pi 下原样传入；seed 里写的是 `route`，Claude Code 用 `/route`、Pi 和 OMP 用 `/skill:route`。
 
 ```bash
 ./jstack eval list                           # 列出任务
 ./jstack eval --selftest                     # 不调模型：初始状态 check 必须失败，参考解下必须通过（check 也跑这一项）
-./jstack eval                                # 全部任务，各 1 个样本（Claude Code）
-./jstack eval --samples 3 --jobs 3           # 每个任务 3 个样本，3 个并发
-./jstack eval --model <模型> --max-nudges 1 --keep xs-empty-message
+./jstack eval                                # 全部任务 × 两组，各 1 个样本（Claude Code）
+./jstack eval --samples 3 --jobs 3           # 每个任务每组 3 个样本，3 个并发
+./jstack eval --group workflow --model <模型> --max-nudges 1 --keep xs-empty-message
 ./jstack eval --harness pi --provider <provider> --model <模型> --thinking high --samples 3 --jobs 3
 ```
 
-不传 `--harness` 时是 `claude`，旧命令和旧基线保持不变。Claude 不传 `--model` 时，runner 从用户级配置 `~/.jstack/config.json`（还没迁移时退回旧 `~/.config/jstack/models.json`）的 `models.claude-code.bulk[0]` 取默认，启动时打印用的是哪个模型；读不到就拒绝运行，不会跟随 Claude Code 的默认模型跑到 premium。Pi 必须显式传 `--model`，`--provider` 和 `--thinking` 也只对 Pi 生效；runner 不读用户配置，也不猜 Pi 的默认模型。`--thinking` 取 `off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`。每次运行的 `RUN_ID` 带随机后缀，同一秒启动的两次评测不会共用目录和报告区段。
+不传 `--harness` 时是 `claude`，旧命令照常可用；样本仓库改成项目级安装、对照组常设之后，2026-11-13 之前的基线不能直接比，要用新跑的一份。Claude 不传 `--model` 时，runner 从用户级配置 `~/.jstack/config.json`（还没迁移时退回旧 `~/.config/jstack/models.json`）的 `models.claude-code.bulk[0]` 取默认，启动时打印用的是哪个模型；读不到就拒绝运行，不会跟随 Claude Code 的默认模型跑到 premium。Pi 必须显式传 `--model`，`--provider` 和 `--thinking` 也只对 Pi 生效；runner 不读用户配置，也不猜 Pi 的默认模型。`--thinking` 取 `off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`。每次运行的 `RUN_ID` 带随机后缀，同一秒启动的两次评测不会共用目录和报告区段。`--group` 默认 `both`，即每个任务跑工作流组和对照组各一遍；`--group workflow` 或 `control` 只跑一组，用于调试，不能当作完整评测的基线。
 
 Pi 评测前先 `./jstack build`，runner 会核对 flow 扩展和三个 skill 目录的构建产物。provider 名以 `pi --list-models` 的结果为准；没有 `--provider` 时由 Pi 自己解析模型。
 
@@ -464,6 +477,9 @@ Pi 评测前先 `./jstack build`，runner 会核对 flow 扩展和三个 skill �
 | 字段 | 含义 |
 |---|---|
 | `harness` / `provider` / `thinking` | 跑评测的 harness；Pi 的 provider 和推理等级。旧记录没有 `harness` 时按 `claude` 处理 |
+| `group` | `workflow`（项目级安装，走 jstack）或 `control`（不加载任何 jstack 入口）。旧记录没有这个字段：任务名以 `-vanilla` 结尾的按 `control` 处理，其余按 `workflow` |
+| `gates` | 门禁从哪来：`project`（Claude Code 的项目级 hooks）、`extension`（Pi 的 flow 扩展）、`off`（对照组）。旧记录按 `off` 处理，因为它们当时关掉了全部 hooks |
+| `stop_blocks` | Stop 门禁拦下"没记证据就想结束"的次数。Claude Code 把拦回的理由作为 `Stop hook feedback:` 消息写回会话；Pi 数扩展发出的 `jstack-gates` 消息。对照组应为 0 |
 | `pass` | 最终 check 是否通过，同时要求本轮退出码为 0、有干净的结束事件、助手没有报错 |
 | `nudges` | **打断次数**，等于实际发出的催促次数。agent 每停下一次（提问、等确认，或自认为做完但 check 不通过）就会被催一次，对应真实使用中人要回来插手一次。0 表示一次做完。Pi 固定为 0 |
 | `rounds` | 跑了几轮 agent，Claude 等于 `nudges + 1`；Pi 为 1 |
@@ -482,20 +498,23 @@ Claude 的 `--resume` 之后，`result` 事件里的 `modelUsage` 和 `total_cos
 隔离方式：
 
 - `env -i` 只传 `HOME`、`USER`、`PATH`、`LANG`、`LC_ALL`、`TMPDIR`、`SHELL`，再额外传 `JSTACK_STATE_DIR` 把 flow 门禁状态写进样本工作目录同级（不在工作目录里，不污染 diff）。不这样做的话，claude 会继承宿主（桌面 App、外层 Claude 会话）的变量，报 "Not logged in"
-- Claude：`--plugin-dir` 从仓库的 `plugins/` 加载三个插件，同时在 `--settings` 里关掉已安装的 `pstack@jstack`、`spec@jstack`、`flow@jstack`。测的是当前工作区，不是已安装版本
-- Claude：`disableAllHooks: true` 关掉全部 hooks。issue #12 给 flow 加自带的 hook 时，要改成只关用户 hooks，否则评测量不到那个 hook
-- Claude：`--strict-mcp-config` 不加载任何 MCP，被测 agent 写不进 gbrain 这类用户记忆
-- Pi：调用 `pi -p --mode json --no-session --no-mcp --no-extensions --no-skills --no-prompt-templates --no-context-files --no-approve`，再用 `-e plugins/flow/extensions/pi.ts` 显式加载当前构建的 flow 扩展（它的 hooks 仍然从 `plugins/flow/hooks/` 跑），用三个 `--skill` 显式加载 `plugins/pstack/skills`、`plugins/spec/skills`、`plugins/flow/skills`。`--no-*` 挡住用户已装的扩展、skills、prompt templates 和发现的 AGENTS/CLAUDE；`--no-approve` 不信任项目 `.pi` 配置和资源
+- 每个样本另有三个沙箱环境（issue #83）：`PATH` 最前面放一个占位的 `gbrain`，只打印"评测沙箱里不可用"并以非零退出（archive 的写回本来就有写失败则打印页面内容的降级）；`GH_CONFIG_DIR` 指向沙箱里的空目录，`gh` 没有登录态，建不了真实 issue；`CLAUDE_CONFIG_DIR` 指向沙箱目录，里面只放用户 `~/.claude/settings.json` 的 `env` 段（模型网关和登录态），用户级 hooks、用户 `CLAUDE.md` / `rules/`、用户 skills 和插件都不加载。`HOME` 保持真实，换掉会报 "Not logged in"
+- Claude 工作流组：样本仓库先做 `./jstack install --scope project --repo <样本仓库>`，产物是当前工作区的构建（`plugins/` 经 `install` 复制进 `.jstack/vendor/`），不是用户已装的版本。入口 skill 从 `.claude/skills` 加载，没有插件前缀；flow 的 `prompt.sh` / `guard.sh` / `stop.sh` 由 `.claude/settings.json` 触发，`JSTACK_STATE_DIR` 指向样本工作目录同级的 `gates/`，所以 Stop 门禁真的会拦住"没记证据就结束"的样本
+- Claude 工作流组：`--settings` 里把已安装的 `pstack@jstack`、`spec@jstack`、`flow@jstack` 关掉，避免和样本仓库的项目级安装重复加载；自己的 hooks 保持开启
+- Claude 对照组：不做项目级安装，`--settings` 里 `disableAllHooks: true` 并关掉三个已装插件，只有模型和题目。两组都不跑用户级 hooks（`CLAUDE_CONFIG_DIR` 是沙箱），工作流组只多出样本仓库自己的项目级 flow hooks；两组唯一的差别就是这套工作流
+- Pi 工作流组：`-e` 显式加载 flow 扩展（门禁来自扩展，记录里 `gates` 是 `extension`），三个 `--skill` 加载构建产物；Pi 的项目级入口要求信任项目，eval 里不打开，所以 Pi 不走项目级安装。对照组既不加扩展也不加 skill
+- Claude：`--strict-mcp-config` 不加载任何 MCP；`gbrain` 走 PATH 占位，`gh` 走空配置目录
+- Pi：一律带 `pi -p --mode json --no-session --no-mcp --no-extensions --no-skills --no-prompt-templates --no-context-files --no-approve`。`--no-*` 挡住用户已装的扩展、skills、prompt templates 和发现的 AGENTS/CLAUDE；`--no-approve` 不信任项目 `.pi` 配置和资源。工作流组的扩展（`-e plugins/flow/extensions/pi.ts`，hooks 仍然从 `plugins/flow/hooks/` 跑）和三个 `--skill` 目录由 runner 显式加上
 - Pi：样本仓库里的任务上下文（`AGENTS.override.md`、`AGENTS.md` 或 `CLAUDE.md`）由 runner 用 `--append-system-prompt <文件>` 显式传入，不会把用户级 AGENTS/CLAUDE 带进来。`--no-session` 不写会话文件，`PI_SESSION_FILE` 为空
-- 没有隔离的部分：Claude 的用户级 `~/.claude/CLAUDE.md` 和 `~/.claude/rules/`（包括 `/pstack:setup-pstack` 写的模型角色表）、其他已安装的插件、用户 skills 仍然会加载；会话记录写进 `~/.claude/projects/`。Pi 的用户级 `SYSTEM.md` / `APPEND_SYSTEM.md` 不在 `--no-context-files` 的关闭范围。基线要在同一台机器、同一套用户配置下对比
+- 没有隔离的部分：`HOME` 是真实的，样本仍能读本机文件系统、访问网络；`gbrain` 只是 PATH 上的占位，用绝对路径调用真实的二进制仍能跑（这次基线里没观察到）；`git push`、ssh 这类通道没有加约束（样本仓库没有 remote，也没观察到）。Pi 的用户级 `SYSTEM.md` / `APPEND_SYSTEM.md` 不在 `--no-context-files` 的关闭范围。基线要在同一台机器、同一套用户配置下对比
 
 产物：
 
 - `evals/results.jsonl`：每个样本一行，只追加，和代码一起提交，当作基线
-- `evals/reports/<日期>.md`：每次运行追加一节，包括 commit、harness、provider、thinking、model、样本数、max-nudges，以及按任务汇总的表。这一节同时打印到终端
-- `.scratch/evals/<run_id>/<任务>-<n>/`：原始材料，不提交。包括每轮的 `round-<k>.jsonl` 和 `.err`、`answer-<k>.txt`、`check-<k>.txt`、合并后的 `rounds.jsonl` 和 `rounds.err`、最终的 `diff.patch`、`record.json`；门禁状态在样本工作目录同级的 `gates/`，默认一起删。工作目录默认跑完就删，加 `--keep` 会保留并打印路径
+- `evals/reports/<日期>.md`：每次运行追加一节，包括 commit、harness、provider、thinking、model、组、样本数、max-nudges，以及按任务和组汇总的表；每道题有工作流组和对照组两行，另外每组一行合计。这一节同时打印到终端
+- `.scratch/evals/<run_id>/<任务>-<n>-<组>/`：原始材料，不提交。包括每轮的 `round-<k>.jsonl` 和 `.err`、`answer-<k>.txt`、`check-<k>.txt`、合并后的 `rounds.jsonl` 和 `rounds.err`、最终的 `diff.patch`、`record.json`；门禁状态在样本工作目录同级的 `gates/`，默认一起删。工作目录默认跑完就删，加 `--keep` 会保留并打印路径
 
-`tests/eval-pi.sh` 是 runner 的无模型测试：用假的 `pi` / `claude` 只验证 argv、事件解析、usage 缺失、错误 / 缺 `agent_end` / 超时判定和进程组清理。它不代表真实模型验收，目前也不挂在 `./jstack check` 里，需要手动跑 `bash tests/eval-pi.sh`；真实基线仍要跑上面的评测命令。
+`tests/eval-pi.sh` 是 runner 的无模型测试：用假的 `pi` / `claude` 只验证 argv、事件解析、usage 缺失、错误 / 缺 `agent_end` / 超时判定、进程组清理，以及两组各自的加载方式（工作流组装项目级产物并开 hooks，对照组什么都不加载）和 `stop_blocks` 计数。它不代表真实模型验收，目前也不挂在 `./jstack check` 里，需要手动跑 `bash tests/eval-pi.sh`；真实基线仍要跑上面的评测命令。
 
 下面这些改动必须先跑 `./jstack eval`，再和 `evals/results.jsonl` 里最近一次同模型的基线对比：
 
@@ -505,7 +524,7 @@ Claude 的 `--resume` 之后，`result` 事件里的 `modelUsage` 和 `total_cos
 - 改模型配置（模型角色表、默认模型、两层模型）
 - 改 hooks
 
-退化要么修掉，要么在提交说明里写明理由。单个样本的噪声很大，判断退化至少用 `--samples 3`。差距小于同一提交多次运行之间的波动时，不算退化。改了 `evals/` 本身（runner、任务、fixture）以后，旧基线就不能直接比了，要先重跑一份新基线。`harness`、`provider`、`thinking` 是记录里的分基线字段：同一次改动前后必须用同一组值；Pi 没有 Claude 的续跑，`nudges` 不要跨 harness 比较。
+退化要么修掉，要么在提交说明里写明理由。单个样本的噪声很大，判断退化至少用 `--samples 3`。差距小于同一提交多次运行之间的波动时，不算退化。改了 `evals/` 本身（runner、任务、fixture）以后，旧基线就不能直接比了，要先重跑一份新基线。`harness`、`provider`、`thinking`、`group` 是记录里的分基线字段：同一次改动前后必须用同一组值；完整评测默认两组都跑，用 `--group` 只跑一组的结果不能和完整基线比。Pi 没有 Claude 的续跑，`nudges` 不要跨 harness 比较。
 
 ## 推广到团队项目
 

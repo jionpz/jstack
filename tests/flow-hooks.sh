@@ -204,6 +204,12 @@ stage start verify,land >/dev/null
 t "stop.sh 在路径不含 execute 时放行" silent hook stop "$(stop_in)"
 stage end >/dev/null
 t "stage.sh end 删掉状态文件" test ! -e "$STATE"
+stage start execute,verify >/dev/null
+t "stage.sh end 路径含 verify 且没有证据时拒绝收尾" not stage end
+t "stage.sh end 拒绝后状态还在" state_is 'path execute,verify' 'stage execute'
+stage evidence './run-tests -> 12 passed' >/dev/null
+t "stage.sh end 有证据时收尾" stage end
+t "stage.sh end 收尾后状态文件已删除" test ! -e "$STATE"
 t "stage.sh show 没有状态时打印 none" prints none stage show
 t "stop.sh 没有状态时放行" silent hook stop "$(stop_in)"
 t "prompt.sh 没有状态时不输出" silent hook prompt "$(prompt_in)"
@@ -219,7 +225,35 @@ stage enter verify >/dev/null
 stage enter execute >/dev/null
 t "stage.sh 再次进入 execute 时保留默认决定" state_is 'path execute,verify' 'stage execute' 'default 按标题排序 -> 任务只要求排序'
 t "prompt.sh 注入已采用的默认决定" prompt_defaults
+stage evidence 'npm test -> 12 passed' >/dev/null
 stage end >/dev/null
+
+# 合并后归档待补：按仓库存，跨会话；start 时列出来。
+PEND_REPO="$T/pend-repo"
+mkdir -p "$PEND_REPO" && git -C "$PEND_REPO" init -q
+pstage() { (cd "$PEND_REPO" && CLAUDE_CODE_SESSION_ID=${PSID:-$SID} "$BASH" "$ST" "$@"); }
+t "stage.sh pending 没有待补时打印 none" prints none pstage pending
+t "stage.sh pending 不需要阶段记录就能记" pstage pending https://example.test/o/r/pull/7 'closes #74,' worktree wt-a
+t "stage.sh pending 列出待补" prints 'https://example.test/o/r/pull/7 closes #74, worktree wt-a' pstage pending
+pstage pending https://example.test/o/r/pull/7 'closes #74' >/dev/null
+pstage pending https://example.test/o/r/pull/70 'closes #75' >/dev/null
+t "stage.sh pending 同一个 PR 只留最新一条" prints 'https://example.test/o/r/pull/7 closes #74
+https://example.test/o/r/pull/70 closes #75' pstage pending
+t "另一个会话 start 时列出待补" sh -c '
+	out=$(cd "$1" && CLAUDE_CODE_SESSION_ID=other-session-9 "$2" "$3" start execute,verify)
+	printf "%s" "$out" | grep -qF "2 条合并后归档待补" && printf "%s" "$out" | grep -qF "pull/7 closes #74" &&
+		printf "%s" "$out" | grep -qF "不要自己合并"' _ "$PEND_REPO" "$BASH" "$ST"
+t "别的仓库看不到这份待补" sh -c '
+	mkdir -p "$1" && git -C "$1" init -q && cd "$1" &&
+		[ "$(CLAUDE_CODE_SESSION_ID=other-session-9 "$2" "$3" pending)" = none ]' _ "$T/pend-other" "$BASH" "$ST"
+t "stage.sh settled 拒绝清单里没有的 PR" not pstage settled https://example.test/o/r/pull/9
+t "stage.sh settled 只删点名的那条" pstage settled https://example.test/o/r/pull/7
+t "stage.sh settled 之后剩另一条" prints 'https://example.test/o/r/pull/70 closes #75' pstage pending
+pstage settled https://example.test/o/r/pull/70 >/dev/null
+t "待补清完后 start 不再提示" sh -c '
+	out=$(cd "$1" && CLAUDE_CODE_SESSION_ID=other-session-9 "$2" "$3" start execute,verify)
+	! printf "%s" "$out" | grep -q 待补' _ "$PEND_REPO" "$BASH" "$ST"
+(cd "$PEND_REPO" && CLAUDE_CODE_SESSION_ID=other-session-9 "$BASH" "$ST" evidence x >/dev/null && CLAUDE_CODE_SESSION_ID=other-session-9 "$BASH" "$ST" end >/dev/null)
 
 for mode in jq nojq; do
 	if [ $mode = nojq ]; then export JSTACK_NO_JQ=1; else command -v jq >/dev/null || continue; fi
@@ -232,7 +266,12 @@ for mode in jq nojq; do
 	t "[$mode] guard.sh 问换行后的 sudo" asks 'echo ok
 sudo ls' 'Any `sudo`'
 	t "[$mode] guard.sh 报命令里最靠前的命中" asks 'sudo true; rm -rf x' 'Any `sudo`'
-	for c in 'rm -r x' 'rm -f x' 'git push origin main' 'git push --follow-tags' 'echo sudoku'; do
+	for c in 'gh pr merge 78 --squash' 'gh pr merge --auto' 'gh --repo o/r pr merge 78' 'cd repo && gh pr merge' 'origin pr merge 5' 'glab mr merge 12' 'gh api -X PUT repos/o/r/pulls/78/merge'; do
+		t "[$mode] guard.sh 问 $c" asks "$c" "Merging a pull request, or turning on auto-merge, unless the user's current message names that PR"
+	done
+	for c in 'rm -r x' 'rm -f x' 'git push origin main' 'git push --follow-tags' 'echo sudoku' \
+		'gh pr view 78 --json mergeCommit,mergedAt' 'gh pr create --title x' 'gh pr checks 78 --watch' 'gh pr list --state merged' \
+		'gh api repos/o/r/pulls/78/merge_status' 'git merge origin/main'; do
 		t "[$mode] guard.sh 放行 $c" silent hook guard "$(bash_input "$c")"
 	done
 	t "[$mode] guard.sh 放行非 Bash 工具" silent hook guard '{"session_id":"x","tool_name":"Write","tool_input":{"file_path":"/tmp/rm -rf x","content":"sudo ls"}}'
@@ -292,6 +331,7 @@ if command -v jq >/dev/null; then
 		printf "%s\n" "$out" | grep -qF "验证命令=./scripts/verify.sh" &&
 		printf "%s\n" "$out" | grep -qF "must-stop 追加=1 条"' \
 		_ "$REPO" "$(repo_prompt_in)" "$BASH" "$H/prompt.sh"
+	repo_stage evidence './scripts/verify.sh -> ok' >/dev/null
 	repo_stage end >/dev/null
 fi
 BAD="$T/badrepo"
