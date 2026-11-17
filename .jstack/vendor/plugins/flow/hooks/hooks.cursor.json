@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeShellExecution": [
+      { "command": "\"${CURSOR_PLUGIN_ROOT}\"/hooks/guard.sh", "timeout": 10 }
+    ],
+    "beforeSubmitPrompt": [
+      { "command": "\"${CURSOR_PLUGIN_ROOT}\"/hooks/prompt.sh", "timeout": 10 }
+    ],
+    "stop": [
+      { "command": "\"${CURSOR_PLUGIN_ROOT}\"/hooks/stop.sh", "timeout": 10, "loop_limit": 3 }
+    ]
+  }
+}
