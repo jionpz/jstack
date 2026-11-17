@@ -65,6 +65,7 @@ class ToolPolicyTests(unittest.TestCase):
                     "size": "router",
                     "clarify": "analyst",
                     "plan": "planner",
+                    "investigate": "investigator",
                     "execute": "developer",
                     "verify": "verifier",
                     "review": "reviewer",

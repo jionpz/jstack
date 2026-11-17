@@ -24,6 +24,8 @@ flow 的三个门禁（阶段提示、验证门禁、红线守卫）的判定逻
 
 三个门禁都只读状态文件、不调模型；状态文件的路径和格式见 `lib.sh`。
 
+提示 hook 每轮输出 `jstack 提示门禁注入：session=<id>`，尚未执行 `stage.sh start` 时也输出，供 agent 核对本会话确实收到过 harness 注入。看到源码中的字符串、配置存在或手动运行 hook 都不算收到注入；这个标记只证明提示 hook 运行，不能代替 Stop/guard 的实际拦截证据。
+
 ## 会话 id
 
 `stage.sh` 和 hooks 必须拿到同一个会话 id，才读写同一份状态。`lib.sh` 的 `jstack_hook_sid` 按以下顺序取：
@@ -55,13 +57,13 @@ flow 的三个门禁（阶段提示、验证门禁、红线守卫）的判定逻
 
 ## 收尾报告
 
-route 的收尾摘要（`src/flow/skills/route/SKILL.md` 第 5 节）的“门禁”一行要写明门禁是否生效：
+route 的收尾摘要（`src/flow/skills/route/SKILL.md` 第 5 节）始终包含“门禁”一行，分别记录提示注入和实际拦截证据：
 
 - `stage.sh` 打印“这个 harness 没有会话 id” → 摘要里写“本会话阶段门禁未生效（<harness>）”。
-- OMP 会话里没有当前作用域的 `jstack-flow-gates.ts`（`~/.omp/agent/extensions/` 用户级，或 `.omp/extensions/` 项目级）→ 同样视为未生效。
+- Pi 用户级通过 package manifest 加载扩展，没有 `jstack-flow-gates.ts` 入口；项目级入口在 `.pi/extensions/`。OMP 用户级入口在 `~/.omp/agent/extensions/`，项目级在 `.omp/extensions/`。入口缺失或未信任可能导致没有注入，最终以本会话实际收到的标记为准；配置文件存在或 shell 有会话 id 都不能证明门禁已加载。
 - Codex 会话里仓库没有 `.codex/hooks.json`（或 hooks 没被信任）→ 同样视为未生效。
 - Workloop 会话（`stage.sh start` 打印未强制提示）→ 写“本会话阶段门禁未强制（Workloop）”。
-- 其余情况不写这一行。
+- 收到本会话的注入标记 → 写“提示注入已观测”。Stop/guard 只有真正由 harness 执行过相应门禁时才写“已观测”，否则写“未验证”；提示标记不能证明另外两项已启用。
 
 ## 验证
 

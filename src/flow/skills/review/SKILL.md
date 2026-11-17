@@ -22,4 +22,4 @@ You review the change the execute stage made, in the main session. This is the r
 
 ## Do not fan out
 
-`pstack:interrogate` and `pstack:swarm` are this stage's conditional providers. Route runs them only when the review gate calls for an adversarial review of a contested design. Do not run them yourself, and do not spawn reviewers of your own.
+`pstack:interrogate` and `pstack:swarm` are conditional adversarial providers. Route may call `pstack:interrogate` when the design is contested, the task touches a must-stop item, or the user requests adversarial review. It may call `pstack:swarm` when the design is contested or the user requests multiple adversarial perspectives and a swarm is useful. `flow:review` is the default when a complete review conclusion and finding resolutions are not already recorded; do not repeat a review whose required output already exists. Do not call these providers yourself, and do not spawn reviewers of your own.

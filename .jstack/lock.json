@@ -2,10 +2,10 @@
   "version": 1,
   "jstack": {
     "version": "0.1.0",
-    "commit": "1a46e9e"
+    "commit": "96486d8"
   },
   "vendor": {
-    "tree": "1a603273ceeabda7ef4ef51cd854e01010e0100060293f0953ccdff6218464c7"
+    "tree": "375b8e69694a9fd7d4cbc51f8d58fd09a7e0883008f334f56c63afe2e9f1009a"
   },
   "upstream": {
     "pstack": "8ecfb19f844b67a4bc7af7f66c366d57bc7b6d2b",
@@ -19,7 +19,7 @@
       "version": "1.3.2+jstack.93e1737"
     },
     "flow": {
-      "version": "0.1.0+jstack.97ae133"
+      "version": "0.1.0+jstack.eda3397"
     }
   },
   "recommended": {

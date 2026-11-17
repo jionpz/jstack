@@ -24,5 +24,5 @@ jstack 是用户长期维护的整条 AI 开发工作流。flow 定义工作流�
 - 模型分层只由 `~/.jstack/config.json` 的 `models` 段决定（旧 `~/.config/jstack/models.json` 自动迁移并备份）。改模型选择用 `./jstack models set`，不要在 skill 或规则文件里写死模型；改 `apply` 生成的规则格式后跑 `./jstack check`（models 项会在临时 HOME 里核对四个 harness、标记块合并、首次确认、迁移备份、幂等、dry-run 和预算降级）。
 - 根目录 `package.json` 是 Pi package manifest，`pi.skills` 必须覆盖 `plugins/pstack/skills`、`plugins/spec/skills`、`plugins/flow/skills`，`pi.extensions` 必须指向 `./plugins/flow/extensions/pi.ts`；`./jstack check` 会核对。
 - 同步上游后，用 `git diff -- upstream/` 看上游改了什么。如果上游已经修好某个补丁对应的问题，就删掉那个补丁。
-- route 的阶段和每个阶段的提供者只写在 `src/flow/skills/route/stages.md`，`locate.sh` 从那张表读提供者，不写死 skill 名。上游改了 skill 名，或要换掉某个阶段的提供者，只改表里那一格；只有安装目录布局变了才改 locate.sh。`./jstack check` 会在六种安装布局下核对表里每个提供者都找得到。
+- route 的阶段和每个阶段的提供者只写在 `src/flow/skills/route/stages.md`，`locate.sh` 从那张表读提供者，不写死 skill 名。上游改了 skill 名，或要换掉某个阶段的提供者，只改表里那一格；只有安装目录布局变了才改 locate.sh。`./jstack check` 会在七种安装布局下核对表里每个提供者都找得到。
 - 插件名必须保持 `pstack`、`spec`、`flow`：Claude Code 的 skill 以插件名为命令前缀（`/pstack:<name>`、`/spec:<name>`），adapter 还把 agent 映射成 `pstack:poteto-agent`；Pi/OMP 用 `/skill:<name>`，Cursor 用 `/<name>`。改名会让这些引用全部失效。`pstack-cursor` 只是构建目录的 key，`plugins/pstack` 和 `plugins/pstack-cursor` 两个产物的 manifest 名字都必须是 `pstack`。
