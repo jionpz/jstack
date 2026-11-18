@@ -9,7 +9,7 @@ Codex 有可脚本化的 headless CLI，`./jstack smoke codex` 已经覆盖非�
 ./jstack install --all --scope project --repo <仓库>
 ```
 
-项目级安装写 `<仓库>/.codex/hooks.json`，三条命令指向 `<仓库>/.jstack/vendor/plugins/flow/hooks/`。Codex 不给项目 hooks 暴露 `PROJECT_DIR` 一类的变量，所以命令是绝对路径；仓库搬家后要重跑一次 install。
+项目级安装写 `<仓库>/.codex/hooks.json`。三条命令在运行时定位当前 checkout 的 Git 根，再执行 `.jstack/vendor/plugins/flow/hooks/` 下的脚本。提交入口和 vendor 后，从另一个路径的 clone 打开 Codex。
 
 在该仓库里启动交互式 `codex`。首次启动会提示 hooks 需要信任（列出 `.codex/hooks.json` 的三条），同意后 hooks 才执行。
 
@@ -34,4 +34,4 @@ smoke 断言：入口 skill 可见、`locate.sh` 找到阶段表的全部提供�
 
 - `codex --version`。
 - `<仓库>/.codex/hooks.json` 的内容，以及它是否已被信任（`~/.codex/config.toml` 的 `[hooks.state."…"]` 条目；不要贴 auth 段）。
-- 是否仓库搬家后没有重跑 install（绝对路径失效）。
+- hooks 命令是否找到当前 checkout 的 Git 根。旧绝对路径可以在维护端重跑项目级 install 生成新版本，再提交迁移。

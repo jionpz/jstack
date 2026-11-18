@@ -12,7 +12,7 @@ Claude Code 有 `--scope project`，其余 harness 只有用户级安装；四�
 ./jstack install --all --scope project [--repo <path>]
 ```
 
-`--all` 探测本机已装的 harness，逐个用其原生机制接入；`--scope user` 保留原语义。项目级安装的产物全部落在仓库内，可以提交、可以审计。
+项目级 `--all` 为 Claude Code、Pi、OMP、Cursor 和 Codex 生成入口。`--harnesses` 可追加指定 harness，已安装范围以 lock 为准。用户级 `--all` 按本机可用的 harness 安装。维护者提交 `.jstack/vendor/`、lock 和原生入口后，协作者可在另一个路径的 clone 使用工作流，原生项目与 hook 信任仍由各 harness 管理。
 
 ### 2. vendor 布局：插件树进仓库，只链入口
 
@@ -31,28 +31,31 @@ Claude Code 有 `--scope project`，其余 harness 只有用户级安装；四�
 - `vendor/plugins/` 保持完整的插件布局，不摊平 skill。路径解析、相对链接、adapter 引用都按插件目录原样工作。
 - 只把 9 个入口 skill 链到各 harness 的项目 skill 目录：flow 的 `route`、`archive`，pstack 的 `poteto-mode`，spec 的 `grill-with-docs`、`to-spec`、`to-tickets`、`wayfinder`、`handoff`、`setup-matt-pocock-skills`。其余 skill 由 `locate.sh` 按物理路径读取，不进入发现目录。
 - 发现目录按实测：Claude Code 用 `.claude/skills`；Pi、OMP、Codex 和 Cursor 共用 `.agents/skills`（Pi 和 OMP 按项目向上查找，Codex 项目根实测可读，Cursor 应用内置读取）。链接用相对路径，仓库搬走也有效。旧安装留在 `.cursor/skills` 的 jstack 软链会在 install 时清理；`.agents` 里已有的同名入口视为用户配置，install 保留并跳过，不覆盖。
-- Claude Code 不注册 marketplace：入口 skill 链进 `.claude/skills`，`poteto-agent`、`comment-sicko` 复制到 `.claude/agents`，flow 的三个 hook 写进项目 `.claude/settings.json`，命令用 `${CLAUDE_PROJECT_DIR}` 指向 vendor。
-- Cursor 项目级同样只链入口：flow 的三个 hook 写进项目 `.cursor/hooks.json`（Cursor 原生事件与输出协议），命令用 `${CURSOR_PROJECT_DIR}` 指向 vendor。
+- Claude Code 从 `.claude/skills` 加载入口，从 `.claude/agents` 加载两个 agent。flow 的三个 hook 写进项目 `.claude/settings.json`，命令用 `${CLAUDE_PROJECT_DIR}` 指向 vendor。
+- Cursor 的三个 hook 写进 `.cursor/hooks.json`，命令用 `${CURSOR_PROJECT_DIR}` 指向 vendor。原生接线和 Claude 兼容导入共存时，需要验证一次事件只执行一个 jstack 门禁。
+- Codex 的三个 hook 写进 `.codex/hooks.json`，从会话目录定位当前 checkout 的 Git 根，再找 vendor。
 
 ### 3. lock：安装可核查
 
-`<repo>/.jstack/lock.json` 记录让安装可复现所需的最小事实：
+`<repo>/.jstack/lock.json` 记录来源、校验值和入口归属。下面只展示一个入口：
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "jstack":  { "version": "0.1.0", "commit": "<jstack 仓库 commit>" },
-  "vendor":  { "tree": "<vendor 目录内容哈希（路径 + 内容）>" },
+  "vendor":  { "tree": "<内容哈希>", "integrity": "<包含路径、链接和执行权限的指纹>" },
   "upstream": { "pstack": "<commit>", "spec": "<commit>" },
   "plugins": { "pstack": { "version": "<版本>" }, "spec": { "version": "<版本>" }, "flow": { "version": "<版本>" } },
   "harnesses": {
-    "claude-code": { "scope": "project", "records": [".claude/skills/route", ".claude/agents/poteto-agent.md", "..."] },
-    "pi": { "scope": "project", "records": [".agents/skills/route", "..."] }
+    "claude-code": { "scope": "project", "records": [".claude/skills/route"] }
+  },
+  "managed": {
+    ".claude/skills/route": { "kind": "symlink", "target": "../../.jstack/vendor/plugins/flow/skills/route" }
   }
 }
 ```
 
-`./jstack doctor` 回答"每个 harness × 作用域装的是哪个版本、在哪里、来自哪棵树"，并核对 vendor 树哈希、插件版本和 lock 里记录的入口路径；不一致时报警。`install` 是唯一写 lock 的命令。
+`./jstack doctor` 核对 vendor 树哈希、插件版本和登记的原生接线。第二版 lock 记录链接目标、生成文件摘要和共享配置中的精确条目，供 `doctor` 和项目卸载核对。卸载前验证归属并保留用户管理的配置。初次从第一版 lock 升级时重跑项目级 install。
 
 ### 4. 两级配置，单一来源
 

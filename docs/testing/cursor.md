@@ -49,7 +49,7 @@ bash "$HOME/.cursor/plugins/local/flow/skills/route/locate.sh"
 8. **阶段提示**：让 route 进入某个阶段后，再发一条消息，回复的上下文里应出现「jstack 阶段门禁：当前阶段 …」。没有阶段记录时不应出现。
 9. **must-stop 确认**：让 agent 运行 `rm -rf build`（或 `git push --force`），Cursor 应弹出命令确认，提示里带 `jstack must-stop:`；取消后命令不执行。
 10. **Stop 门禁**：当前阶段在 execute 或 verify、没有记录任何 `stage.sh evidence`，让 agent 直接宣布完成；Cursor 应自动追加一条 `followup_message`，内容包含「jstack verify 门禁」并把 agent 拉回验证。记录一条证据后再让它结束，不应再被拦。
-11. **项目级安装的 hooks**：如果用 `./jstack install --all --scope project` 接入，检查仓库的 `.cursor/hooks.json` 里有三条 jstack 的 hook，命令指向 `.jstack/vendor/plugins/flow/hooks/`；重开 Cursor 后重复第 8–10 项。
+11. **项目级安装的 hooks**：提交 `./jstack install --all --scope project` 的产物，在另一个路径 clone 后打开 Cursor。保持第三方导入开启，重复第 8–10 项。在 Hooks output 里确认一次事件只得到一次 jstack 门禁响应。旧工具和业务 hooks 的响应另行核对。
 
 ## 失败时记录
 

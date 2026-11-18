@@ -29,13 +29,15 @@ pstack 和 spec 都锁定在上游某个提交，另外叠加了 jstack 自己�
 
 ### 项目级接入（推荐）
 
-一台新机器、一个新仓库，一条命令完成接入：
+项目维护者生成工作流一次，再把生成的入口、`.jstack/vendor/` 和 `.jstack/lock.json` 随项目提交：
 
 ```bash
 ./jstack install --all --scope project --repo /path/to/repo
 ```
 
-`--all` 探测本机已装的 harness（Claude Code、Pi、OMP、Cursor、Codex），没装的跳过并提示。产物全部落在仓库里：
+项目级 `--all` 生成 Claude Code、Pi、OMP、Cursor 和 Codex 的原生入口。用 `--harnesses pi,cursor` 接入指定的 harness。协作者 clone 后，用已有的 harness 打开项目并按提示信任，即可加载工作流入口和项目门禁。默认接线无需协作者运行 `jstack`、npm 安装或单独安装 JavaScript 运行时。各阶段实际调用的工具仍有各自的依赖，见下文「运行时依赖」。
+
+维护者可以把项目约定和 tracker 选择一起提交。需要需求拆解时，在项目内运行 `setup-matt-pocock-skills` 配置一次，提交它生成的项目文档。
 
 ```
 <repo>/.jstack/
@@ -53,12 +55,23 @@ pstack 和 spec 都锁定在上游某个提交，另外叠加了 jstack 自己�
 - Claude Code 另外复制 `poteto-agent`、`comment-sicko` 到 `.claude/agents`，并把 flow 的三个 hook 写进 `.claude/settings.json`，命令用 `${CLAUDE_PROJECT_DIR}` 指向 vendor；不注册 marketplace。
 - Pi 的 `poteto-agent`、`comment-sicko` 写到 `.agents/agents/`，已有同名文件时保留用户版本并跳过；OMP 写到 `.omp/agents/`；Cursor 从转换产物 `plugins/pstack-cursor/agents/` 复制两个 agent 到 `.cursor/agents/`。
 - Codex 另外把两个 agent 的 Markdown 正文转成 TOML，写到 `.codex/agents/{poteto-agent,comment-sicko}.toml`（`name`、`description`、`developer_instructions`），`spawn_agent` 按名字派出去。
-- Codex 的门禁写进 `.codex/hooks.json`，三个事件和 Claude Code 同形，命令用安装时 checkout 的绝对路径（Codex 不给项目 hooks 暴露 PROJECT_DIR 一类的变量）；它只对当前 clone 有效，移动仓库或重新 clone 后必须重跑 install。hooks 默认要落过信任才执行：交互式会话里同意一次，headless（`codex exec`）加 `--dangerously-bypass-hook-trust`。
-- 重复运行幂等；`--dry-run` 只打印；不写任何用户级文件。锁与 `doctor --repo` 覆盖项目扩展和 agent 文件。安装完成后提交 `.jstack/`、三个入口目录及各 harness 项目产物；若 ignore 规则屏蔽了产物，安装和 doctor 会通过 `git check-ignore` 检测并给出 白名单建议。
+- Codex 的门禁写进 `.codex/hooks.json`。命令在执行时从会话目录定位 Git 根，再调用该 checkout 的 vendor。首次启动时在 Codex 中审查并信任项目 hooks。
+- Cursor 使用自己的三个项目级 hook。启用 Claude 兼容导入时，对应的原生 hook 负责执行门禁。
+- `--dry-run` 预览项目接线。重复安装复用 lock 中登记的入口和所有权。安装完成后，提交 lock 记录的入口和整个 vendor。安装与 `doctor` 会报告 Git 忽略规则挡住的产物。
 
 同一个 harness 不要同时做用户级和项目级安装：插件或入口会加载两次，flow 的 hooks 也会跑两遍。换仓库时用项目级；只想全局装一次时用用户级。
 
-`./jstack doctor --repo <repo>` 会核对 vendor 版本、树哈希、lock 记录、入口链接、Pi / OMP 扩展和 agent 文件；也会用 `git check-ignore` 检测被忽略的项目级产物并给出 白名单建议。任何一处对不上都返回非 0。
+`./jstack doctor --repo <repo>` 核对 vendor、入口链接、生成文件以及共享配置里的 jstack 条目。它会报告 Git 忽略规则挡住的产物。判断协作者能否收到这些文件时，以提交后的干净 clone 回归为准。
+
+### 清退项目工作流
+
+预览退役 jstack 的项目级接线：
+
+```bash
+./jstack uninstall --scope project --repo /path/to/repo --dry-run
+```
+
+确认预览后去掉 `--dry-run`。用 `--harnesses cursor,pi` 只退役指定 harness。卸载按 lock 核对归属，其他 harness 仍使用的入口保留。第一版 lock 需要先重跑项目级 install，再预览卸载。
 
 ### Claude Code
 
@@ -93,7 +106,7 @@ claude plugin marketplace add jionpz/jstack && claude plugin install pstack@jsta
 
 它会执行 `pi install <仓库> --approve`，并把 `plugins/pstack/agents/` 里的 `poteto-agent`、`comment-sicko` 转换后写到 `~/.pi/agent/agents/`（`background: true` 改成 Pi 的 `run_in_background: true`）。重复运行是幂等的；同名的非 jstack agent 文件不会被覆盖。
 
-在 Pi 里用 `/skill:poteto-mode`、`/skill:route` 这类命令调用入口。pstack 的入口 skill 都是 `disable-model-invocation: true`，不会出现在模型自动选择的 skill 列表里，这是正常的，`/skill:<名字>` 仍然能加载。子 agent 由固定的 `@tintinweb/pi-subagents@0.23.2` 提供；`install-pi` 和 `install --all` 检测到目标作用域没有它时，会用原生 `pi install` 安装（项目级加 `-l`，并设置 `npm_config_ignore_scripts=true`），已有包则按作用域跳过并报告版本，`--dry-run` 不联网也不写文件。安装只动包资源，不改 provider、models、auth 或权限设置，也不会另外装一个 hooks 包。Pi 的项目级扩展首次加载可能要求信任项目扩展；核对 `.pi/extensions/jstack-flow-gates.ts` 指向本仓库 vendor 后，在 Pi 中信任它，门禁才会运行。
+在 Pi 里用 `/skill:poteto-mode`、`/skill:route` 这类命令调用入口。pstack 的入口 skill 都是 `disable-model-invocation: true`，只通过显式调用加载。项目自带门禁扩展，首次加载时按 Pi 的提示审查并信任它。Pi 子 agent 需要 `@tintinweb/pi-subagents`。维护者可用 `--with-pi-recommended` 写入项目包声明，Pi 在信任项目后按自己的包加载机制获取依赖。项目安装保留用户管理的包声明和版本，`--no-pi-recommended` 可移除 lock 已证明归属的 jstack 声明。用户级 `install-pi` 仍走 Pi 原生包安装，可用同一参数跳过推荐包。
 
 ### OMP
 
@@ -402,9 +415,9 @@ pstack 只同步 Claude Code 树；Cursor 版由 `build` 转换，不再单独�
 14. 模型分层命令（`./jstack models`）：在临时 HOME 里跑 init、set、apply、status，核对四个 harness 的规则文件、Pi/OMP 标记块合并与首次确认、旧配置迁移备份、roles 覆盖、settings.json 的模型 env 和原有键、备份幂等、`--dry-run` 不落盘、预算降级，以及今日 token 统计
 15. 仓库级配置（`<repo>/.jstack/config.json`，ADR-0006）：当前仓库有配置时校验字段与 `stages_file`；在临时仓库里验证 `stage.sh` 按 `stages_file` 收/拒阶段、`guard.sh` 合并 `must_stop` 并在 reason 里标明“仓库追加”、`prompt.sh` 注入配置，坏 JSON、禁用键、缺 `execute` 都要报出来
 16. `./jstack doctor`：临时 HOME 构造 Claude user/project、Pi package、OMP 缓存、Cursor 本地插件、Codex 缓存、vendor 和 lock 七种来源，核对表格与 `--json` 的值；篡改 lock 版本或源目录版本后必须报漂移并返回非 0，`--no-fail` 只警告
-17. 项目级安装（`./jstack install --all --scope project`）：在临时仓库和假 HOME 里核对 vendor、9 个入口链接、Claude agents 与 hooks、Cursor hooks、Codex 的 `.codex/agents/*.toml` 与 `.codex/hooks.json`（三条绝对路径、PreToolUse 匹配 Bash）、lock 的版本、树哈希与 `recommended.pi`；三路 `locate.sh` 都要找全阶段表提供者，重复运行不改产物，`--dry-run` 不落盘，改 vendor 文件、删入口、删 `.pi/settings.json`、`.cursor/hooks.json`、`.codex/hooks.json` 或 `.codex/agents` 后 `doctor` 必须失败
+17. 项目级安装（`./jstack install --all --scope project`）：在临时仓库和隔离 HOME 里验证 vendor、9 个入口、五个 harness 的原生接线及 lock。把产物提交并 clone 到新路径，移走原仓库，再验证阶段提供者和项目门禁命令。
 18. 工具配置（`tests/tool-policy.py`）：阶段 profile 引用变化反映在导出、重复导出 digest 稳定、digest 可由标准 JSON 复算、重复字段/未知能力/未知 profile 被拒绝、Pi 与 Claude Code 的原生名选择、缺必需工具拒绝、shell fallback 需显式接受、缺可选工具不伪装成可用
-19. Pi 推荐包（`tests/pi-recommended.py`）：缺包时安装固定 source、第二次跳过、项目作用域不复用用户作用域、已装的较新版本保留并报告、`--dry-run` 不安装不写文件、安装时禁用 lifecycle scripts、provider/models/auth 配置不变
+19. Pi 推荐包（`tests/pi-recommended.py`）：用户级安装保留较新的版本并禁用 lifecycle scripts；项目级从包声明读取精确来源，显式选择后才添加默认声明，预检和项目级声明都无需启动 Pi 或 npm。
 
 第 3、4、5 项专门查 adapter 管不到的地方：脚本和 frontmatter 都不经过模型，上游新引入的 Cursor 依赖在同步时就能发现；第 5 项查的是 spec 这种"只收一部分 skill"的插件有没有漏掉依赖。`claude plugin validate` 不查 frontmatter 键，也不查插件内部 skill 之间的调用关系，更不查 YAML 合法性，所以 `: ` 这种写法只能由第 4 项拦。全部通过才提交。
 

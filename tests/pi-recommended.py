@@ -43,12 +43,13 @@ def add_package(scope, source):
 
 if sys.argv[1] == "list":
     for scope, label in (("user", "User packages:"), ("project", "Project packages:")):
+        source = state.get(f"{scope}_source")
         version = state.get(scope)
-        if not version:
+        if not source and not version:
             continue
         print(label)
-        print(f"  npm:@tintinweb/pi-subagents@{version}")
-        print("    /fake/pi/node_modules/@tintinweb/pi-subagents")
+        print(f"  {source or f'npm:@tintinweb/pi-subagents@{version}'}")
+        print("    /fake/pi/node_modules/package")
     sys.exit(0)
 
 if sys.argv[1] == "install":
@@ -115,7 +116,7 @@ class PiRecommendedTests(unittest.TestCase):
         if env:
             merged.update(env)
         return subprocess.run(
-            [sys.executable, str(SCRIPT), *args],
+            [sys.executable, "-B", str(SCRIPT), *args],
             text=True,
             capture_output=True,
             check=False,
@@ -194,6 +195,124 @@ class PiRecommendedTests(unittest.TestCase):
         self.assertIn("0.24.0", human.stdout)
         self.assertIn("0.23.2", human.stdout)
         self.assertIn("未改动已有包", human.stdout)
+
+    def test_pi_list_ignores_unrelated_packages_containing_name(self) -> None:
+        self.state.write_text(
+            json.dumps(
+                {
+                    "user": None,
+                    "project": None,
+                    "project_source": "npm:@someone/pi-subagents-helper@4.0.0",
+                    "installs": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        payload = self.json_run("--scope", "project", "--repo", str(self.repo))
+        self.assertEqual(payload["status"], "installed")
+        self.assertEqual(len(self.read_state()["installs"]), 1)
+
+    def test_project_declaration_stages_without_pi_or_home_writes(self) -> None:
+        settings = self.repo / ".pi/settings.json"
+        settings.parent.mkdir(parents=True)
+        original = {
+            "models": {"keep": "p/m"},
+            "packages": ["npm:other@1.0.0", {"source": "git+https://example.test/tool.git"}],
+            "providers": {"keep": {"base": "local"}},
+        }
+        settings.write_text(json.dumps(original), encoding="utf-8")
+        home_before = set(self.home.rglob("*"))
+
+        payload = self.json_run(
+            "--stage-project-declaration",
+            "--scope",
+            "project",
+            "--repo",
+            str(self.repo),
+            "--pi",
+            str(self.base / "missing-pi"),
+        )
+
+        self.assertEqual(
+            payload,
+            {"source": SOURCE, "version": "0.23.2", "declaration_created": True},
+        )
+        updated = json.loads(settings.read_text(encoding="utf-8"))
+        self.assertEqual(updated["models"], original["models"])
+        self.assertEqual(updated["providers"], original["providers"])
+        self.assertEqual(updated["packages"], [*original["packages"], SOURCE])
+        self.assertEqual(set(self.home.rglob("*")), home_before)
+        self.assertFalse(self.state.exists())
+
+        second = self.json_run(
+            "--stage-project-declaration", "--scope", "project", "--repo", str(self.repo)
+        )
+        self.assertEqual(
+            second,
+            {"source": SOURCE, "version": "0.23.2", "declaration_created": False},
+        )
+
+    def test_project_declaration_preserves_structured_existing_source_and_version(self) -> None:
+        settings = self.repo / ".pi/settings.json"
+        settings.parent.mkdir(parents=True)
+        original = {
+            "packages": [
+                "npm:pi-subagents-helper@1.0.0",
+                {"source": "npm:@tintinweb/pi-subagents@0.24.1", "skills": ["keep"]},
+            ],
+        }
+        settings.write_text(json.dumps(original), encoding="utf-8")
+        before = settings.read_bytes()
+
+        payload = self.json_run(
+            "--stage-project-declaration", "--scope", "project", "--repo", str(self.repo)
+        )
+
+        self.assertEqual(
+            payload,
+            {
+                "source": "npm:@tintinweb/pi-subagents@0.24.1",
+                "version": "0.24.1",
+                "declaration_created": False,
+            },
+        )
+        self.assertEqual(settings.read_bytes(), before)
+
+    def test_project_declaration_rejects_user_scope(self) -> None:
+        result = self.run_script("--stage-project-declaration", "--json")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("仅支持", result.stderr)
+        self.assertFalse((self.home / ".pi").exists())
+
+    def test_project_declaration_dry_run_leaves_settings_absent(self) -> None:
+        payload = self.json_run(
+            "--stage-project-declaration", "--dry-run", "--scope", "project", "--repo", str(self.repo)
+        )
+        self.assertEqual(payload["source"], SOURCE)
+        self.assertFalse(payload["declaration_created"])
+        self.assertFalse((self.repo / ".pi").exists())
+
+    def test_inspect_project_declaration_without_adding_it(self) -> None:
+        settings = self.repo / ".pi/settings.json"
+        settings.parent.mkdir(parents=True)
+        settings.write_text('{"packages":["npm:pi-subagents@0.88.1"]}\n', encoding="utf-8")
+        before = settings.read_bytes()
+        arguments = ("--project-declaration", "--scope", "project", "--repo", str(self.repo))
+        self.assertIsNone(self.json_run(*arguments)["source"])
+        self.assertEqual(settings.read_bytes(), before)
+
+        settings.write_text('{"packages":[{"source":"npm:@tintinweb/pi-subagents@0.20.0"}]}\n', encoding="utf-8")
+        observed = self.json_run(*arguments)
+        self.assertEqual(observed["version"], "0.20.0")
+        self.assertFalse(observed["declaration_created"])
+
+    def test_project_declaration_rejects_symlinked_settings_directory(self) -> None:
+        (self.repo / ".pi").symlink_to(self.home, target_is_directory=True)
+        result = self.run_script(
+            "--stage-project-declaration", "--scope", "project", "--repo", str(self.repo)
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.home / "settings.json").exists())
 
     def test_dry_run_does_not_install_or_write(self) -> None:
         self.seed()

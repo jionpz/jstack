@@ -1,11 +1,12 @@
 {
-  "version": 1,
+  "version": 2,
   "jstack": {
     "version": "0.1.0",
-    "commit": "42b5694"
+    "commit": "2fceba6"
   },
   "vendor": {
-    "tree": "375b8e69694a9fd7d4cbc51f8d58fd09a7e0883008f334f56c63afe2e9f1009a"
+    "tree": "375b8e69694a9fd7d4cbc51f8d58fd09a7e0883008f334f56c63afe2e9f1009a",
+    "integrity": "e56a4b53c331e41336a0ad815a5c9637bd102b8791f1989cd5ad3d21b4b8e31c"
   },
   "upstream": {
     "pstack": "8ecfb19f844b67a4bc7af7f66c366d57bc7b6d2b",
@@ -20,14 +21,6 @@
     },
     "flow": {
       "version": "0.1.0+jstack.eda3397"
-    }
-  },
-  "recommended": {
-    "pi": {
-      "source": "npm:@tintinweb/pi-subagents@0.23.2",
-      "version": "0.23.2",
-      "scope": "project",
-      "config": ".pi/settings.json"
     }
   },
   "harnesses": {
@@ -61,7 +54,6 @@
         ".agents/skills/route",
         ".agents/skills/archive",
         ".pi/extensions/jstack-flow-gates.ts",
-        ".pi/settings.json",
         ".agents/agents/poteto-agent.md",
         ".agents/agents/comment-sicko.md"
       ]
@@ -116,6 +108,260 @@
         ".codex/agents/comment-sicko.toml",
         ".codex/hooks.json"
       ]
+    }
+  },
+  "recommended": {
+    "pi": {
+      "source": "npm:@tintinweb/pi-subagents@0.23.2",
+      "version": "0.23.2",
+      "scope": "project",
+      "config": ".pi/settings.json"
+    }
+  },
+  "managed": {
+    ".agents/agents/comment-sicko.md": {
+      "kind": "file",
+      "sha256": "b49801d8a1e4746a79c99d9d56ca66371426e650ed61a44f6d98c635b61c6a1b",
+      "executable": false
+    },
+    ".agents/agents/poteto-agent.md": {
+      "kind": "file",
+      "sha256": "99f7ccba5e381025b48f3c1974c05c98156df4fdff67db0fe35a7977d6748772",
+      "executable": false
+    },
+    ".agents/skills/archive": {
+      "kind": "symlink",
+      "target": "../../.jstack/vendor/plugins/flow/skills/archive"
+    },
+    ".agents/skills/grill-with-docs": {
+      "kind": "symlink",
+      "target": "../../.jstack/vendor/plugins/spec/skills/engineering/grill-with-docs"
+    },
+    ".agents/skills/handoff": {
+      "kind": "symlink",
+      "target": "../../.jstack/vendor/plugins/spec/skills/productivity/handoff"
+    },
+    ".agents/skills/poteto-mode": {
+      "kind": "symlink",
+      "target": "../../.jstack/vendor/plugins/pstack/skills/poteto-mode"
+    },
+    ".agents/skills/route": {
+      "kind": "symlink",
+      "target": "../../.jstack/vendor/plugins/flow/skills/route"
+    },
+    ".agents/skills/setup-matt-pocock-skills": {
+      "kind": "symlink",
+      "target": "../../.jstack/vendor/plugins/spec/skills/engineering/setup-matt-pocock-skills"
+    },
+    ".agents/skills/to-spec": {
+      "kind": "symlink",
+      "target": "../../.jstack/vendor/plugins/spec/skills/engineering/to-spec"
+    },
+    ".agents/skills/to-tickets": {
+      "kind": "symlink",
+      "target": "../../.jstack/vendor/plugins/spec/skills/engineering/to-tickets"
+    },
+    ".agents/skills/wayfinder": {
+      "kind": "symlink",
+      "target": "../../.jstack/vendor/plugins/spec/skills/engineering/wayfinder"
+    },
+    ".claude/agents/comment-sicko.md": {
+      "kind": "file",
+      "sha256": "601ae0ab8a1c5ab48bd6e30a5f3c1b3464ec6928f4cdb04921cc0b9bacd97271",
+      "executable": false
+    },
+    ".claude/agents/poteto-agent.md": {
+      "kind": "file",
+      "sha256": "b125cab2f6b6b3f7c33b58d76aa45a6034c56ef4c688948f9ecfed1533092f78",
+      "executable": false
+    },
+    ".claude/settings.json": {
+      "kind": "hooks",
+      "sha256": "a32e5aafd45860f60a76c5b602143177e65086db216a604403d9385285e4f4f4",
+      "fragments": [
+        [
+          "UserPromptSubmit",
+          {},
+          {
+            "type": "command",
+            "command": "if [ -n \"${CURSOR_VERSION:-}\" ] && command -v jq >/dev/null 2>&1 && jq -e --arg command '\"${CURSOR_PROJECT_DIR}/.jstack/vendor/plugins/flow\"/hooks/prompt.sh' '(.hooks.beforeSubmitPrompt // []) | any(.command == $command and .timeout == 10)' \"${CURSOR_PROJECT_DIR:-${CLAUDE_PROJECT_DIR:-.}}/.cursor/hooks.json\" >/dev/null 2>&1; then exit 0; fi; exec \"${CLAUDE_PROJECT_DIR}/.jstack/vendor/plugins/flow/hooks/prompt.sh\"",
+            "timeout": 10
+          }
+        ],
+        [
+          "PreToolUse",
+          {
+            "matcher": "Bash"
+          },
+          {
+            "type": "command",
+            "command": "if [ -n \"${CURSOR_VERSION:-}\" ] && command -v jq >/dev/null 2>&1 && jq -e --arg command '\"${CURSOR_PROJECT_DIR}/.jstack/vendor/plugins/flow\"/hooks/guard.sh' '(.hooks.beforeShellExecution // []) | any(.command == $command and .timeout == 10)' \"${CURSOR_PROJECT_DIR:-${CLAUDE_PROJECT_DIR:-.}}/.cursor/hooks.json\" >/dev/null 2>&1; then exit 0; fi; exec \"${CLAUDE_PROJECT_DIR}/.jstack/vendor/plugins/flow/hooks/guard.sh\"",
+            "timeout": 10
+          }
+        ],
+        [
+          "Stop",
+          {},
+          {
+            "type": "command",
+            "command": "if [ -n \"${CURSOR_VERSION:-}\" ] && command -v jq >/dev/null 2>&1 && jq -e --arg command '\"${CURSOR_PROJECT_DIR}/.jstack/vendor/plugins/flow\"/hooks/stop.sh' '(.hooks.stop // []) | any(.command == $command and .timeout == 10 and .loop_limit == 3)' \"${CURSOR_PROJECT_DIR:-${CLAUDE_PROJECT_DIR:-.}}/.cursor/hooks.json\" >/dev/null 2>&1; then exit 0; fi; exec \"${CLAUDE_PROJECT_DIR}/.jstack/vendor/plugins/flow/hooks/stop.sh\"",
+            "timeout": 10
+          }
+        ]
+      ],
+      "created_file": false,
+      "created_hooks": false,
+      "created_events": []
+    },
+    ".claude/skills/archive": {
+      "kind": "symlink",
+      "target": "../../.jstack/vendor/plugins/flow/skills/archive"
+    },
+    ".claude/skills/grill-with-docs": {
+      "kind": "symlink",
+      "target": "../../.jstack/vendor/plugins/spec/skills/engineering/grill-with-docs"
+    },
+    ".claude/skills/handoff": {
+      "kind": "symlink",
+      "target": "../../.jstack/vendor/plugins/spec/skills/productivity/handoff"
+    },
+    ".claude/skills/poteto-mode": {
+      "kind": "symlink",
+      "target": "../../.jstack/vendor/plugins/pstack/skills/poteto-mode"
+    },
+    ".claude/skills/route": {
+      "kind": "symlink",
+      "target": "../../.jstack/vendor/plugins/flow/skills/route"
+    },
+    ".claude/skills/setup-matt-pocock-skills": {
+      "kind": "symlink",
+      "target": "../../.jstack/vendor/plugins/spec/skills/engineering/setup-matt-pocock-skills"
+    },
+    ".claude/skills/to-spec": {
+      "kind": "symlink",
+      "target": "../../.jstack/vendor/plugins/spec/skills/engineering/to-spec"
+    },
+    ".claude/skills/to-tickets": {
+      "kind": "symlink",
+      "target": "../../.jstack/vendor/plugins/spec/skills/engineering/to-tickets"
+    },
+    ".claude/skills/wayfinder": {
+      "kind": "symlink",
+      "target": "../../.jstack/vendor/plugins/spec/skills/engineering/wayfinder"
+    },
+    ".codex/agents/comment-sicko.toml": {
+      "kind": "file",
+      "sha256": "1e36805483a1a0459b201fe08492862989f6bd9e7676befdbf10bfb33cb3b9d5",
+      "executable": false
+    },
+    ".codex/agents/poteto-agent.toml": {
+      "kind": "file",
+      "sha256": "57aedf5b6da9ac62401f0ff780a88ec9f09c9ddf360cc8b497896193c5ec4184",
+      "executable": false
+    },
+    ".codex/hooks.json": {
+      "kind": "hooks",
+      "sha256": "be4cfe58e476c1fbed675f43ac086c171d3b3eca3dac0dbb000eb1908d3d12e5",
+      "fragments": [
+        [
+          "UserPromptSubmit",
+          {},
+          {
+            "type": "command",
+            "command": "repo=$(git rev-parse --show-toplevel) && exec \"$repo/.jstack/vendor/plugins/flow/hooks/prompt.sh\"",
+            "timeout": 10
+          }
+        ],
+        [
+          "PreToolUse",
+          {
+            "matcher": "Bash"
+          },
+          {
+            "type": "command",
+            "command": "repo=$(git rev-parse --show-toplevel) && exec \"$repo/.jstack/vendor/plugins/flow/hooks/guard.sh\"",
+            "timeout": 10
+          }
+        ],
+        [
+          "Stop",
+          {},
+          {
+            "type": "command",
+            "command": "repo=$(git rev-parse --show-toplevel) && exec \"$repo/.jstack/vendor/plugins/flow/hooks/stop.sh\"",
+            "timeout": 10
+          }
+        ]
+      ],
+      "created_file": false,
+      "created_hooks": false,
+      "created_events": []
+    },
+    ".cursor/agents/comment-sicko.md": {
+      "kind": "file",
+      "sha256": "1a164097cf7cf5470e66ec3057d7e136aa24ae30586171dbd8b61d1898fb5e4a",
+      "executable": false
+    },
+    ".cursor/agents/poteto-agent.md": {
+      "kind": "file",
+      "sha256": "3e7c9907b2fa24952761ce325172afba70bc1a8e777dd0d7492ba377125e12f5",
+      "executable": false
+    },
+    ".cursor/hooks.json": {
+      "kind": "hooks",
+      "sha256": "f5dc8921735d6ce5d7dfae5eeae8c0975c74b9bd03353eb4b491ba1d68064226",
+      "fragments": [
+        [
+          "beforeShellExecution",
+          {},
+          {
+            "command": "\"${CURSOR_PROJECT_DIR}/.jstack/vendor/plugins/flow\"/hooks/guard.sh",
+            "timeout": 10
+          }
+        ],
+        [
+          "beforeSubmitPrompt",
+          {},
+          {
+            "command": "\"${CURSOR_PROJECT_DIR}/.jstack/vendor/plugins/flow\"/hooks/prompt.sh",
+            "timeout": 10
+          }
+        ],
+        [
+          "stop",
+          {},
+          {
+            "command": "\"${CURSOR_PROJECT_DIR}/.jstack/vendor/plugins/flow\"/hooks/stop.sh",
+            "timeout": 10,
+            "loop_limit": 3
+          }
+        ]
+      ],
+      "created_file": false,
+      "created_hooks": false,
+      "created_events": [],
+      "version": 1,
+      "created_version": false
+    },
+    ".omp/agents/comment-sicko.md": {
+      "kind": "file",
+      "sha256": "1a164097cf7cf5470e66ec3057d7e136aa24ae30586171dbd8b61d1898fb5e4a",
+      "executable": false
+    },
+    ".omp/agents/poteto-agent.md": {
+      "kind": "file",
+      "sha256": "d03f2187c66de8800292c5048755a6e818dc87fd46f24b96229f495b0448720a",
+      "executable": false
+    },
+    ".omp/extensions/jstack-flow-gates.ts": {
+      "kind": "file",
+      "sha256": "3304bff2315baf529998e8d17db14aa9b513acd46f420817bbaa1604cb67d3ea",
+      "executable": false
+    },
+    ".pi/extensions/jstack-flow-gates.ts": {
+      "kind": "file",
+      "sha256": "408ef0ea632b4fa74036508fbadbb8fa0ccd88dc952f1c6413e3ed637484a4c0",
+      "executable": false
     }
   }
 }
