@@ -394,7 +394,7 @@ pstack 只同步 Claude Code 树；Cursor 版由 `build` 转换，不再单独�
 6. spec/flow 的 Cursor manifest 是否和 Claude manifest 同名、同版本、同样的 skill 列表
 7. `plugins/pstack-cursor` 是否等于 `plugins/pstack` 的转换结果；`patches/pstack-cursor/rules.tsv` 的每条规则是否都命中差异，转换是否只改动规则覆盖的文件（skills/ 24 个、agents/ 1 个）；manifest、logo、`is_background` 和 worktree-audit 的 Cursor 路径是否齐全
 8. 根目录 `package.json` 是否把三个插件的 skills 和 flow 的门禁扩展（`pi.extensions`）都暴露给 Pi
-9. shell 脚本里有没有 `$VAR` 紧跟中文标点的写法（`jstack`、`src/flow/**/*.sh`、`patches/**/*.sh`、`tests/*.sh`、`evals/*.sh`、`scripts/*.sh`，只扫代码行）：bash 3.2 在 UTF-8 locale 下会把标点的首字节算进变量名，报 `unbound variable`，而开发机的 locale 常常扫不到，所以静态拦
+9. shell 脚本里有没有 bash 3.2 不吃的两种写法（`jstack`、`src/flow/**/*.sh`、`patches/**/*.sh`、`tests/*.sh`、`evals/*.sh`、`scripts/*.sh`，只扫代码行）：`$VAR` 紧跟中文标点（UTF-8 locale 下把标点首字节算进变量名，报 `unbound variable`），以及 `local a=x b="$a/y"` 这种同行交叉引用（bash 3.2 先声明后赋值，`$a` 还是空的，`set -u` 下直接报错）
 10. `stages.md` 里的每个提供者是否在七种布局下都找得到：用 `plugins/` 产物在临时的假 HOME 里复制出本地 marketplace、Claude GitHub 缓存、OMP 缓存、Cursor 本地插件、Pi npm 包、Codex 缓存（`$CODEX_HOME/plugins/cache/jstack/<插件>/<版本>`，版本去掉 `+` 后面的构建元数据），再加一种入口软链（`<tmp>/.agents/skills/route` 指向仓库里的 flow skill），从各自的 flow 副本运行 `locate.sh`，路径必须落在该布局自己的树里；再把一个提供者换成 `spec:no-such-skill`，`locate.sh` 必须失败并点名它
 11. `claude plugin validate` 是否通过（marketplace 和全部插件）
 12. 评测任务自检（`./jstack eval --selftest`）：每个任务的 check 在初始状态下失败、在参考解下通过
