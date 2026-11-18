@@ -402,9 +402,10 @@ pstack 只同步 Claude Code 树；Cursor 版由 `build` 转换，不再单独�
 14. 模型分层命令（`./jstack models`）：在临时 HOME 里跑 init、set、apply、status，核对四个 harness 的规则文件、Pi/OMP 标记块合并与首次确认、旧配置迁移备份、roles 覆盖、settings.json 的模型 env 和原有键、备份幂等、`--dry-run` 不落盘、预算降级，以及今日 token 统计
 15. 仓库级配置（`<repo>/.jstack/config.json`，ADR-0006）：当前仓库有配置时校验字段与 `stages_file`；在临时仓库里验证 `stage.sh` 按 `stages_file` 收/拒阶段、`guard.sh` 合并 `must_stop` 并在 reason 里标明“仓库追加”、`prompt.sh` 注入配置，坏 JSON、禁用键、缺 `execute` 都要报出来
 16. `./jstack doctor`：临时 HOME 构造 Claude user/project、Pi package、OMP 缓存、Cursor 本地插件、Codex 缓存、vendor 和 lock 七种来源，核对表格与 `--json` 的值；篡改 lock 版本或源目录版本后必须报漂移并返回非 0，`--no-fail` 只警告
-17. 项目级安装（`./jstack install --all --scope project`）：在临时仓库和假 HOME 里核对 vendor、9 个入口链接、Claude agents 与 hooks、Cursor hooks、Codex 的 `.codex/agents/*.toml` 与 `.codex/hooks.json`（三条绝对路径、PreToolUse 匹配 Bash）、lock 的版本、树哈希与 `recommended.pi`；三路 `locate.sh` 都要找全阶段表提供者，重复运行不改产物，`--dry-run` 不落盘，改 vendor 文件、删入口、删 `.pi/settings.json`、`.cursor/hooks.json`、`.codex/hooks.json` 或 `.codex/agents` 后 `doctor` 必须失败
-18. 工具配置（`tests/tool-policy.py`）：阶段 profile 引用变化反映在导出、重复导出 digest 稳定、digest 可由标准 JSON 复算、重复字段/未知能力/未知 profile 被拒绝、Pi 与 Claude Code 的原生名选择、缺必需工具拒绝、shell fallback 需显式接受、缺可选工具不伪装成可用
-19. Pi 推荐包（`tests/pi-recommended.py`）：缺包时安装固定 source、第二次跳过、项目作用域不复用用户作用域、已装的较新版本保留并报告、`--dry-run` 不安装不写文件、安装时禁用 lifecycle scripts、provider/models/auth 配置不变
+17. OMP 用户级安装（`install_omp_user`）：用伪 `omp` CLI 在临时 HOME 里跑——干净 shell 首次把三个插件各 install 一次并写对门禁入口；重跑只 upgrade、不再 install（`already installed` 的回归）；外层恰好有同名 `dir` 时不写错路径；少一个插件时只补装它；`plugin list`、`upgrade`、`install` 报错要中断且不留下门禁入口；用户自己的门禁文件、以及指向用户文件的符号链接都不覆盖
+18. 项目级安装（`./jstack install --all --scope project`）：在临时仓库和假 HOME 里核对 vendor、9 个入口链接、Claude agents 与 hooks、Cursor hooks、Codex 的 `.codex/agents/*.toml` 与 `.codex/hooks.json`（三条绝对路径、PreToolUse 匹配 Bash）、lock 的版本、树哈希与 `recommended.pi`；三路 `locate.sh` 都要找全阶段表提供者，重复运行不改产物，`--dry-run` 不落盘，改 vendor 文件、删入口、删 `.pi/settings.json`、`.cursor/hooks.json`、`.codex/hooks.json` 或 `.codex/agents` 后 `doctor` 必须失败
+19. 工具配置（`tests/tool-policy.py`）：阶段 profile 引用变化反映在导出、重复导出 digest 稳定、digest 可由标准 JSON 复算、重复字段/未知能力/未知 profile 被拒绝、Pi 与 Claude Code 的原生名选择、缺必需工具拒绝、shell fallback 需显式接受、缺可选工具不伪装成可用
+20. Pi 推荐包（`tests/pi-recommended.py`）：缺包时安装固定 source、第二次跳过、项目作用域不复用用户作用域、已装的较新版本保留并报告、`--dry-run` 不安装不写文件、安装时禁用 lifecycle scripts、provider/models/auth 配置不变
 
 第 3、4、5 项专门查 adapter 管不到的地方：脚本和 frontmatter 都不经过模型，上游新引入的 Cursor 依赖在同步时就能发现；第 5 项查的是 spec 这种"只收一部分 skill"的插件有没有漏掉依赖。`claude plugin validate` 不查 frontmatter 键，也不查插件内部 skill 之间的调用关系，更不查 YAML 合法性，所以 `: ` 这种写法只能由第 4 项拦。全部通过才提交。
 
@@ -414,7 +415,7 @@ pstack 只同步 Claude Code 树；Cursor 版由 `build` 转换，不再单独�
 
 CI 只跑不耗 token 的部分：
 
-- 跑：上面第 1–18 项全部，包括 `claude plugin validate` 和 `./jstack eval --selftest`（自检不调模型）
+- 跑：上面第 1–20 项全部，包括 `claude plugin validate` 和 `./jstack eval --selftest`（自检不调模型）
 - 不跑：`--smoke`（要本机已安装的 Pi / OMP / Cursor / Codex，会启动模型）、`./jstack eval`（调模型，要网络和模型额度）
 
 workflow 里装了 `jq`、Python、Node 24 和当前的 Claude Code CLI（只给 `claude plugin validate` 用），不读任何密钥，也不访问模型接口。macOS job 的 Python 是 3.9，与开发机的系统 `python3` 一致；`ubuntu-latest`（26.04）没有 3.9 的构建，用 3.12。抬高最低支持版本时记得同步这里。
