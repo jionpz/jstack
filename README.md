@@ -527,6 +527,10 @@ Claude 的 `--resume` 之后，`result` 事件里的 `modelUsage` 和 `total_cos
 
 退化要么修掉，要么在提交说明里写明理由。单个样本的噪声很大，判断退化至少用 `--samples 3`。差距小于同一提交多次运行之间的波动时，不算退化。改了 `evals/` 本身（runner、任务、fixture）以后，旧基线就不能直接比了，要先重跑一份新基线。`harness`、`provider`、`thinking`、`group` 是记录里的分基线字段：同一次改动前后必须用同一组值；完整评测默认两组都跑，用 `--group` 只跑一组的结果不能和完整基线比。Pi 没有 Claude 的续跑，`nudges` 不要跨 harness 比较。
 
+## 从 Trellis 迁移
+
+按 [Trellis 项目清退指南](docs/trellis-retirement.md) 迁移在途任务与项目约定，再切换项目入口。`./jstack retire trellis --repo <项目>` 先预览清退，应用时归档原资料和共享配置原件。
+
 ## 推广到团队项目
 
 仓库当前是 public，队友直接 clone 即可；如果改回 private，先在 Settings → Collaborators 里把队员加为协作者，他们才有权 clone（以及运行 `gh auth setup-git` 或配好 SSH key）。
