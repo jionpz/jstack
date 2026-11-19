@@ -188,8 +188,15 @@ jstack_gate_missing() {
     esac
     case ",$path," in
     *,review,*)
-        grep -q '^review [^ ]' "$file" ||
-            echo "review 缺少审查结论：先 enter review，再 review \"<结论和发现处置>\""
+        grep -q '^review complete [^ ]' "$file" ||
+            echo "review 缺少审查结论：先 enter review，再 review complete \"<结论>\""
+        awk '
+            /^review finding / { finding[$3] = 1 }
+            /^review resolution / { resolved[$3] = 1 }
+            END { for (id in finding) if (!(id in resolved))
+                print "review 发现 " id " 尚未用 review resolution 记录 fixed/dismissed 及原因"
+            }
+        ' "$file"
         ;;
     esac
     case ",$path," in
