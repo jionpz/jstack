@@ -1,6 +1,8 @@
 name: check
 
 # 每个 PR 和 main 的每次提交都跑 ./jstack check。
+# 固定系统主版本和 CLI 版本，防止 latest 浮动触发无关代码的回归。
+# GitHub 的镜像仍会接收系统补丁；依赖升级应经单独 PR 验证。
 # 不跑 --smoke（要本机已装的 harness、模型和网络），不跑 ./jstack eval（调模型、消耗 token）。
 on:
   pull_request:
@@ -24,10 +26,10 @@ jobs:
       matrix:
         include:
           # macOS 用 3.9：与开发机的系统 python3 一致。
-          # ubuntu-latest（26.04）没有 3.9 的 setup-python 构建，用 3.12。
-          - os: macos-latest
+          # Linux 上用支持 Python 3.12 的稳定镜像，避免 latest 切换底层 OS。
+          - os: macos-15
             python: '3.9'
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             python: '3.12'
     steps:
       - uses: actions/checkout@v7
@@ -52,7 +54,8 @@ jobs:
 
       - name: 安装 Claude Code CLI
         # check 用它跑 claude plugin validate；这一步不需要登录，也不访问模型接口。
-        run: npm install -g @anthropic-ai/claude-code
+        # 与已通过的 macOS/Ubuntu CI 环境保持一致；升级时单独验证。
+        run: npm install -g @anthropic-ai/claude-code@2.1.327
 
       - name: 在 macOS 上按 UTF-8 locale 运行
         # 本机是 UTF-8；bash 3.2 的 $VAR 后跟中文标点的问题只在 UTF-8 locale 下出现。
