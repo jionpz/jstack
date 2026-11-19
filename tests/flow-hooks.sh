@@ -389,4 +389,55 @@ t "没有 jq 时仓库追加的 must-stop 不生效" sh -c '
 	out=$(cd "$1" && printf "%s" "$2" | JSTACK_NO_JQ=1 "$3" "$4")
 	[ -z "$out" ]' _ "$REPO" "$(bash_input './deploy.sh')" "$BASH" "$H/guard.sh"
 
+# #58: stage-specific receipts, unresolved findings, remote PR and subagent isolation.
+GATE_REPO="$T/gate-repo"
+mkdir -p "$GATE_REPO"
+git -C "$GATE_REPO" init -q
+git -C "$GATE_REPO" remote add origin https://github.com/example/fixture.git
+export JSTACK_REPO="$GATE_REPO"
+SID=gate-session-0058
+STATE="$JSTACK_STATE_DIR/$SID"
+stage start execute,verify,review,land >/dev/null
+stage evidence 'npm test -> passed' >/dev/null
+t "执行阶段证据无法冒充 verify/review/land" blocks "$(stop_in)"
+t "阶段记录不能被新路径覆盖" not stage start execute,verify
+previous=$(cat "$STATE")
+stage start execute,verify,review,land >/dev/null
+t "重复 start 原路径不丢进度" test "$(cat "$STATE")" = "$previous"
+t "未记录具体问题不能用 ask 绕过门禁" not stage ask '稍后再问'
+stage ask '要采用方案二吗？' >/dev/null
+t "有无关问号不能绕过门禁" blocks "$(stop_in false "$SID" '现在几点？')"
+t "实际提出排队问题才允许中断" silent hook stop "$(stop_in false "$SID" '要采用方案二吗？')"
+t "子代理命令不能清除主会话状态" not sh -c 'JSTACK_SUBAGENT_ID=child CLAUDE_CODE_SESSION_ID="$1" "$2" "$3" end' _ "$SID" "$BASH" "$ST"
+t "子代理命令不能覆盖主会话路径" not sh -c 'JSTACK_SUBAGENT_ID=child CLAUDE_CODE_SESSION_ID="$1" "$2" "$3" start execute,verify' _ "$SID" "$BASH" "$ST"
+t "被拒绝的子代理操作不改变主记录" test "$(cat "$STATE")" = "$previous"
+
+subagent_guard() {
+    local out
+    out=$(hook guard '{"session_id":"gate-session-0058","agent_id":"agent-child","tool_name":"Bash","tool_input":{"command":"./stage.sh end"}}')
+    valid_json "$out" && printf '%s' "$out" | grep -qF '"permissionDecision":"deny"'
+}
+for mode in jq nojq; do
+    if [ "$mode" = nojq ]; then export JSTACK_NO_JQ=1; else unset JSTACK_NO_JQ; fi
+    t "[$mode] 子代理 PreToolUse 拒绝改写主记录" subagent_guard
+done
+unset JSTACK_NO_JQ
+stage enter verify >/dev/null
+stage evidence 'npm test -> passed' >/dev/null
+t "只有 verify 时不能冒充 review" blocks "$(stop_in)"
+stage enter review >/dev/null
+stage review finding F1 '原有并发写入有数据丢失风险' >/dev/null
+stage review complete '发现 F1，等待修复' >/dev/null
+t "未处置的 review finding 会阻止结束" not stage end
+stage review resolution F1 fixed '增加锁与并发回归测试' >/dev/null
+stage enter land >/dev/null
+stage land commit deadbeef >/dev/null
+t "有 remote 但缺少 PR URL 会阻止 Stop" blocks "$(stop_in)"
+t "有 remote 但缺少 PR URL 会阻止 end" not stage end
+stage land pr https://github.com/example/fixture/pull/42 >/dev/null
+t "verify、review、commit、PR 全齐后 Stop 放行" silent hook stop "$(stop_in)"
+t "verify、review、commit、PR 全齐后可结束" stage end
+t "完成后状态文件被删除" test ! -e "$STATE"
+unset JSTACK_REPO
+
 [ "$fails" -eq 0 ]
