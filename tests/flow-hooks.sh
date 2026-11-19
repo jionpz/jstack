@@ -406,6 +406,7 @@ stage start execute,verify,review,land >/dev/null
 t "重复 start 原路径不丢进度" test "$(cat "$STATE")" = "$previous"
 t "未记录具体问题不能用 ask 绕过门禁" not stage ask '稍后再问'
 stage ask '要采用方案二吗？' >/dev/null
+previous=$(cat "$STATE")
 t "有无关问号不能绕过门禁" blocks "$(stop_in false "$SID" '现在几点？')"
 t "实际提出排队问题才允许中断" silent hook stop "$(stop_in false "$SID" '要采用方案二吗？')"
 t "子代理命令不能清除主会话状态" not sh -c 'JSTACK_SUBAGENT_ID=child CLAUDE_CODE_SESSION_ID="$1" "$2" "$3" end' _ "$SID" "$BASH" "$ST"
