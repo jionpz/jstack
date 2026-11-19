@@ -167,6 +167,10 @@ JStack 支持把模型按职责分成两层：`premium` 负责架构判断、关
 - **运行与集成**：[门禁能力](docs/harness/gates.md) · [Keel 托管工作流接口](docs/managed.md)
 - **维护与评测**：[CI](.github/workflows/check.yml) · [测试](tests/) · [评测](evals/) · [上游同步记录](SYNC-LOG.md) · [旧版详细维护说明（存档）](docs/archive/README-2026-11-18.md)
 
+## 从 Trellis 迁移
+
+运行 `./jstack retire trellis --repo <项目>` 预览旧入口和待迁任务。按 [Trellis 项目清退指南](docs/trellis-retirement.md) 迁移在途任务与项目约定，再应用清退。原资料和共享配置原件会保存到项目归档目录。
+
 ## 来源与致谢
 
 JStack 自有工作流位于 [`src/flow/`](src/flow/)。`pstack` 由 Lauren Tan 创建，`spec` 采用 Matt Pocock skills 的选定子集；两个上游均以固定提交及本地补丁维护，相关版权与许可证保留在 [`plugins/pstack/LICENSE`](plugins/pstack/LICENSE) 和 [`plugins/spec/LICENSE`](plugins/spec/LICENSE) 中。部分 pstack 补丁还借鉴了 [backnotprop/pstack](https://github.com/backnotprop/pstack) 的实现。
