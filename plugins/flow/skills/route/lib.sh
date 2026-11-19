@@ -165,3 +165,50 @@ jstack_cfg_patterns() {
 	jstack_cfg '(.must_stop // [])[] | select(.regex != null and .regex != "") |
 		"\(.hook // .action // "repo")\u0001\(.regex)"' | tr '\001' '\t'
 }
+
+# Return unmet, structured stage outputs (one diagnostic per line).
+# An unscoped evidence line from an older session is intentionally insufficient.
+# Hook and CLI call the same function so Stop and end cannot disagree.
+jstack_gate_missing() {
+    local file=$1 path stage repo
+    [ -f "$file" ] || return 0
+    path=$(jstack_get path "$file")
+    stage=$(jstack_get stage "$file")
+    [ -n "$path" ] && [ -n "$stage" ] || { echo "阶段状态缺少 path/stage"; return 0; }
+    # Clarification and investigation may end a turn before execution starts.
+    printf '%s\n' "$path" | tr ',' '\n' | awk -v s="$stage" '
+        !($0 in i) { i[$0] = NR }
+        END { exit !(("execute" in i) && (s in i) && i[s] >= i["execute"]) }
+    ' || return 0
+    case ",$path," in
+    *,verify,*)
+        grep -q '^evidence verify [^ ]' "$file" ||
+            echo "verify 缺少本阶段的验证结果：先 enter verify，再 evidence \"<命令> -> <结果>\""
+        ;;
+    esac
+    case ",$path," in
+    *,review,*)
+        grep -q '^review complete [^ ]' "$file" ||
+            echo "review 缺少审查结论：先 enter review，再 review complete \"<结论>\""
+        awk '
+            /^review finding / { finding[$3] = 1 }
+            /^review resolution / { resolved[$3] = 1 }
+            END { for (id in finding) if (!(id in resolved))
+                print "review 发现 " id " 尚未用 review resolution 记录 fixed/dismissed 及原因"
+            }
+        ' "$file"
+        ;;
+    esac
+    case ",$path," in
+    *,land,*)
+        grep -Eq '^land commit [0-9a-fA-F]{7,64}$' "$file" ||
+            echo "land 缺少 commit SHA：先 enter land，再 land commit <SHA>"
+        repo=$PWD
+        [ -z "${JSTACK_REPO:-}" ] || repo=$JSTACK_REPO
+        if git -C "$repo" remote 2>/dev/null | grep -q .; then
+            grep -Eq '^land pr https://[^ ]+' "$file" ||
+                echo "land 缺少 PR URL：仓库有 remote，须在 land 阶段记录 land pr <URL>"
+        fi
+        ;;
+    esac
+}

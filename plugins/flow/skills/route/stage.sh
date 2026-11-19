@@ -15,10 +15,15 @@ usage() {
 	cat >&2 <<'EOF'
 用法：stage.sh start <阶段>,<阶段>,...   记录阶段路径并进入第一个阶段
       stage.sh enter <阶段>              进入路径上的某个阶段
-      stage.sh evidence <文本>           记录一条验证证据，写成 "<命令> -> <结果>"
+      stage.sh evidence <文本>           记录当前阶段证据；verify 证据写成 "<命令> -> <结果>"
+      stage.sh review finding <ID> <说明>      在 review 阶段记录一条发现
+      stage.sh review resolution <ID> fixed|dismissed <理由>   记录每条发现的处置
+      stage.sh review complete <结论>         所有发现处理完后记录审查结论（允许零发现）
+      stage.sh land commit <SHA>         在 land 阶段记录 commit
+      stage.sh land pr <URL>             在 land 阶段记录 PR URL
       stage.sh default <文本>            记录一个替用户采用的默认决定，写成 "<决定> -> <理由>"
-      stage.sh ask                       停下来问用户之前运行
-      stage.sh end                       任务结束，删掉记录（路径含 verify 时没有证据不能收尾）
+      stage.sh ask <具体问题>            排队一个问题；本轮回复必须包含该问题
+      stage.sh end                       所需阶段产出齐全后才删除记录
       stage.sh show                      打印当前记录
       stage.sh pending [<PR URL> <文本>]  记一条合并后归档待补（PR 还没合）；不带参数时列出本仓库的待补
       stage.sh settled <PR URL>          合并后归档做完，删掉这条待补
@@ -41,6 +46,13 @@ need_state() { [ -f "$file" ] || die "还没有阶段记录，先运行 stage.sh
 
 cmd=${1:-}
 [ $# -gt 0 ] && shift
+# Extensions and tool hooks can mark a delegated worker. No worker may change
+# the parent session state, even though it may inherit the parent session ID.
+case $cmd in
+start | enter | evidence | review | land | default | ask | end | pending | settled)
+    [ -z "${JSTACK_SUBAGENT_ID:-}" ] || die "子代理不能修改主会话阶段记录；请将结果交给主会话"
+    ;;
+esac
 case $cmd in
 start)
 	[ $# -eq 1 ] && [ -n "$1" ] || usage
@@ -58,6 +70,10 @@ start)
 	set +f
 	IFS=$old_ifs
 	[ -z "$bad" ] || die "不是 stages.md 里的阶段：${bad}。可用的阶段：$(echo $known)"
+	if [ -f "$file" ]; then
+		[ "$(jstack_get path "$file")" != "$1" ] || { echo "jstack: 此路径已经启动，保留当前阶段与证据"; exit 0; }
+		die "本会话已有未结束的阶段记录；先 stage.sh show，完成或处理原任务，不能 start 覆盖"
+	fi
 	mkdir -p "$dir"
 	find "$dir" -type f -mmin +10080 -delete 2>/dev/null || true
 	printf 'path %s\nstage %s\n' "$1" "${1%%,*}" | jstack_replace "$file"
@@ -81,16 +97,66 @@ enter)
 	*) die "阶段 $1 不在路径 ${path} 上" ;;
 	esac
 	# 每次进入 execute 是一个新的工作单元（L 路径的下一张 ticket），之前的证据不再算数。
-	awk -v s="$1" '/^stage / { print "stage " s; next } $0 == "ask" { next } s == "execute" && /^evidence / { next } { print }' "$file" | jstack_replace "$file"
+	awk -v s="$1" '/^stage / { print "stage " s; next } /^ask / { next } s == "execute" && (/^evidence / || /^review / || /^land /) { next } { print }' "$file" | jstack_replace "$file"
 	echo "jstack: 当前阶段 $1"
 	;;
 evidence)
 	text=$(printf '%s' "$*" | tr '\r\n' '  ' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
 	[ -n "$text" ] || die "证据不能为空，写成 \"<命令> -> <结果>\""
 	need_state
-	{ cat "$file"; printf 'evidence %s\n' "$text"; } | jstack_replace "$file"
-	echo "jstack: 已记录证据：${text}"
+	stage=$(jstack_get stage "$file")
+	{ cat "$file"; printf 'evidence %s %s\n' "$stage" "$text"; } | jstack_replace "$file"
+	echo "jstack: 已记录 ${stage} 阶段证据：${text}"
 	;;
+review)
+    [ $# -ge 2 ] || usage
+    need_state
+    [ "$(jstack_get stage "$file")" = review ] || die "先 enter review 再记录审查"
+    kind=$1; shift
+    case $kind in
+    finding | resolution)
+        [ $# -ge 2 ] || usage
+        id=$1; shift
+        case $id in '' | *[!a-zA-Z0-9_-]*) die "review finding ID 只能包含字母、数字、下划线和短横线" ;; esac
+        if [ "$kind" = finding ]; then
+            grep -q "^review finding $id " "$file" && die "review finding ID 已存在：$id"
+        else
+            grep -q "^review finding $id " "$file" || die "review finding 不存在：$id"
+            action=$1; shift
+            case $action in fixed | dismissed) ;; *) die "review resolution 必须是 fixed 或 dismissed" ;; esac
+        fi
+        ;;
+    complete) ;;
+    *) usage ;;
+    esac
+    text=$(printf '%s' "$*" | tr '\r\n' '  ' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+    [ -n "$text" ] || die "review 结论或处置原因不能为空"
+    case $kind in
+    finding) entry="review finding $id $text" ;;
+    resolution) entry="review resolution $id $action $text" ;;
+    complete) entry="review complete $text" ;;
+    esac
+    { cat "$file"; printf '%s\n' "$entry"; } | jstack_replace "$file"
+    echo "jstack: 已记录 $entry"
+    ;;
+land)
+    [ $# -eq 2 ] || usage
+    need_state
+    [ "$(jstack_get stage "$file")" = land ] || die "先 enter land 再记录落地凭据"
+    kind=$1 value=$2
+    case $kind in
+    commit)
+        case $value in '' | *[!0-9a-fA-F]*) die "commit 必须是十六进制 SHA" ;; esac
+        [ "${#value}" -ge 7 ] && [ "${#value}" -le 64 ] || die "commit SHA 长度不合法"
+        ;;
+    pr)
+        case $value in https://*/*/pull/[0-9]* | https://*/*/merge_requests/[0-9]*) ;; *) die "PR URL 应指向 pull 或 merge_requests" ;; esac
+        ;;
+    *) usage ;;
+    esac
+    { cat "$file"; printf 'land %s %s\n' "$kind" "$value"; } | jstack_replace "$file"
+    echo "jstack: 已记录 land ${kind}：${value}"
+    ;;
 default)
 	text=$(printf '%s' "$*" | tr '\r\n' '  ' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
 	[ -n "$text" ] || die "默认决定不能为空，写成 \"<决定> -> <理由>\""
@@ -99,29 +165,21 @@ default)
 	echo "jstack: 已记录默认决定：${text}"
 	;;
 ask)
-	[ $# -eq 0 ] || usage
-	need_state
-	grep -qx ask "$file" || { cat "$file"; echo ask; } | jstack_replace "$file"
-	echo "jstack: 已标记为等待用户回答"
-	;;
+    [ $# -gt 0 ] || usage
+    need_state
+    text=$(printf '%s' "$*" | tr '\r\n' '  ' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+    case $text in *\?* | *？*) ;; *) die "ask 必须包含一条具体问句（? 或 ？）" ;; esac
+    grep -qxF "ask $text" "$file" || { cat "$file"; printf 'ask %s\n' "$text"; } | jstack_replace "$file"
+    echo "jstack: 已排队问题：${text}"
+    ;;
 end)
-	[ $# -eq 0 ] || usage
-	# 和 Stop 门禁同一条规则：路径含 verify、已经进入 execute 或之后却没有证据时不能收尾。
-	# 否则模型只要运行 end 就能清掉状态，绕过 Stop 门禁，把"没证据就不算做完"变成一句空话。
-	if [ -f "$file" ]; then
-		path=$(jstack_get path "$file")
-		stage=$(jstack_get stage "$file")
-		if ! grep -q '^evidence ' "$file" &&
-			printf '%s\n' "$path" | tr ',' '\n' | awk -v s="$stage" '
-				!($0 in i) { i[$0] = NR }
-				END { exit !(("verify" in i) && ("execute" in i) && (s in i) && i[s] >= i["execute"]) }
-			'; then
-			die "还没有记录验证证据，不能收尾。在真实表面上运行检查，再用 stage.sh evidence \"<命令> -> <结果>\" 记录；只有停下来向用户提问时才运行 stage.sh ask（ask 不能代替验证）"
-		fi
-	fi
-	rm -f "$file"
-	echo "jstack: 已清除阶段记录"
-	;;
+    [ $# -eq 0 ] || usage
+    need_state
+    missing=$(jstack_gate_missing "$file")
+    [ -z "$missing" ] || die "阶段未完成，不能清除记录：$missing"
+    rm -f "$file"
+    echo "jstack: 已清除阶段记录"
+    ;;
 show)
 	[ $# -eq 0 ] || usage
 	if [ -f "$file" ]; then cat "$file"; else echo none; fi
