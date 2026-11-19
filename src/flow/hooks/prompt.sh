@@ -71,7 +71,8 @@ main() {
 		[ "$d" -eq 0 ] || echo "已采用的默认决定：${d} 条（收尾摘要里逐条列出，让用户能改）"
 		[ -z "$next" ] || echo "门禁满足后运行 $st enter ${next}"
 		printf '%s\n' "进入 verify 后运行 $st evidence \"<命令> -> <结果>\"；执行阶段的证据不会替代 verify" \
-            "进入 review 后运行 $st review \"<结论与发现处置>\"" \
+            "进入 review 后对每条发现运行 $st review finding F1 \"<发现>\"，再 review resolution F1 fixed|dismissed \"<原因>\"" \
+            "审查结束运行 $st review complete \"<结论，含零发现>\"" \
             "进入 land 后运行 $st land commit <SHA>；有 remote 时再记录 $st land pr <PR URL>" \
             "有待决问题时运行 $st ask \"<具体问题？>\"，并在本轮回复中完整提出同一问题" \
             "所有所需阶段完成后运行 $st end"
