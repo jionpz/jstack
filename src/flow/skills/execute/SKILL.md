@@ -15,7 +15,7 @@ You own one task or one ticket from the first edit to the committed change. Work
 3. Change in small units. After each unit, run the real check for what changed: the repo's test command, or the command the task names. Read the failure before editing again. Fix the root cause, then rerun.
 4. Review your own diff before committing: debug leftovers, unrelated edits, error handling at boundaries, and tests that assert observable behavior.
 5. Commit each verified unit with a message that says why. Branch first when the repo works on branches. Never push to a repo the user did not point you at, and never rewrite a pushed branch.
-6. After each check, record it with `../route/stage.sh evidence "<command> -> <what it showed>"`. If it reports that the gates are off, say so once in the finish report and continue.
+6. Keep the command outputs from each check. When the route enters `verify`, record the actual verification with `../route/stage.sh evidence "<command> -> <what it showed>"`. An `evidence` entry written while still in `execute` is useful context but **does not satisfy** the `verify` gate. If gates are unavailable, report that honestly and keep the real results.
 
 ## Delegation
 
