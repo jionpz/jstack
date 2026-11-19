@@ -28,7 +28,7 @@ flow 的三个门禁（阶段提示、验证门禁、红线守卫）的判定逻
 
 ## 会话 id
 
-`stage.sh` 和 hooks 必须拿到同一个会话 id，才读写同一份状态。`lib.sh` 的 `jstack_hook_sid` 按以下顺序取：
+`stage.sh` 和 hooks 必须拿到同一个会话 id，才读写同一份状态。相同的 id 不是主代理身份的证明。`lib.sh` 的 `jstack_hook_sid` 按以下顺序取：
 
 1. hook / session 输入里的 `session_id`（Claude Code）或 `conversation_id`（Cursor）
 2. `JSTACK_SESSION_ID`
@@ -45,13 +45,19 @@ flow 的三个门禁（阶段提示、验证门禁、红线守卫）的判定逻
 - Codex 给 `shell` 工具的环境导出 `CODEX_SESSION_ID`（与 `CODEX_THREAD_ID` 同值），`codex exec` 里同样可用；hook 输入里也带 `session_id`，两者同值，`stage.sh` 和三个 hook 读写同一份状态。
 - Workloop 沙箱的 shell 环境里有 `WORKLOOP_SESSION_ID`；`stage.sh` 能记阶段和证据。
 
+## 阶段证据与完成条件（#58）
+
+阶段状态仍是每个 session 一份纯文本，但结果必须由明确的阶段命令写入。进入 `verify` 后用 `stage.sh evidence "<命令> -> <实际结果>"` 产生 `evidence verify ...`；进入 `review` 后记录 `review finding <ID> ...`、每条 `review resolution <ID> fixed|dismissed <原因>`，最后 `review complete <总结>`；进入 `land` 后记录 `land commit <SHA>`，远端仓库还需 `land pr <URL>`。Stop hook 和 `stage.sh end` 共用 `lib.sh` 的验证条件，旧格式自由文本不会自动视为阶段完成。
+
+待决问题必须通过 `stage.sh ask "<具体问题？>"` 排队。Claude Code、Pi/OMP、Codex 的 Stop 输入包含最后回复时，必须出现同一条完整问题才暂停；Cursor 无法取得最后回复内容，只能检查是否有排队问题。输入里的 `agent_id` 是 Claude Code PreToolUse 的身份线索，不是任意 shell 命令的不可伪造凭证。缺少 hook 的环境仍可能无强制门禁。
+
 ## 降级
 
 1. **没有 UI 时“先问”变“拦下”**（Cursor 的 `preToolUse`、Pi / OMP 的 print / JSON 运行）：没有人能回答确认框，`guard.sh` 命中的命令直接拒绝执行，不会先运行。交互式会话（包括 Claude Code 的 `bypassPermissions`）仍弹确认框。
 2. **Pi 的 Stop 门禁每条用户消息最多拦 3 次**：Pi 没有 Claude Code / Cursor / OMP 那种由 harness 维护的 `stop_hook_active`，`agent_before_settle` 的 `continue` 只对本次结算有效。扩展自己计数，模型硬顶着不记证据时第 4 次放行；用户发新消息或门禁满足时清零。代价是模型坚持不记证据时会溜过去，收益是不会无限续跑。
 3. **Cursor 的 Stop 门禁拿不到最后一条回复**：标了 `ask` 时直接放行，无法核对回复里是否真的提了问题；`loop_limit` 3 兜底。
 4. **OMP 扩展缺失时门禁不生效**：用户级检查 `~/.omp/agent/extensions/jstack-flow-gates.ts`；项目级检查 `.omp/extensions/jstack-flow-gates.ts`。用户级入口仍引用安装时 checkout 的绝对路径，移动 checkout 后需重跑用户级 install。若当前作用域的入口文件缺失或未加载，`stage.sh` 打印“这个 harness 没有会话 id”。
-5. **子 agent 会话不跑门禁**：Pi / OMP 的扩展跳过 `parentSession` 非空的会话。子 agent 不该也不能替主会话记证据；它的 shell 继承根会话 id，只读同一份状态。
+5. **子 agent 状态隔离是有限保护，不是沙箱**：Pi / OMP 的扩展跳过 `parentSession` 非空会话的提示和 Stop 门禁；在识别到子代理的 `tool_call(bash)` 中，扩展拒绝直接调用会修改主状态的 `stage.sh` 命令。Claude Code 的 `PreToolUse` 提供 `agent_id` 时，`guard.sh` 同样拒绝直接修改状态的命令。`stage.sh` 收到 `JSTACK_SUBAGENT_ID` 也直接拒绝写入。**但是**子代理 shell 可能继承根会话 id，经过 wrapper/间接脚本、无 hook 或未受信任的 hook 仍可能绕过普通命令匹配；不能将此机制称为 OS 级权限隔离。主会话必须亲自读取子代理结果、重新验证并记录阶段凭据；真正防篡改需要独立可验证的子代理身份或文件访问隔离。
 6. **Codex 的 ask 降级为 deny，hooks 要先信任**：Codex 的 `PreToolUse` 只认 deny，返回 `permissionDecision: ask` 会被忽略、命令照跑（0.166.0 实测），所以 `guard.sh` 在 Codex 输入下直接 deny，和 Cursor 的 `preToolUse` 同规则，交互式会话里也没有“先问”这一步。另外 Codex 的 hooks 默认要落过信任才执行：交互式会话首次会要求同意；`codex exec` 不加 `--dangerously-bypass-hook-trust` 就静默跳过未信任的 hooks。
 7. **Workloop 三个门禁都不强制**：Workloop 是第三方云端编码平台，没有 Stop hook，也没有已知的扩展点。`stage.sh start` 会打印未强制提示；agent 结束前自己运行 `stage.sh show` 核对证据，收尾摘要的门禁一行写明未强制。这是自检，不是门禁。本地 `./jstack smoke` 跑不到 Workloop，只能在它的沙箱里手动验收。
 
