@@ -16,7 +16,9 @@ usage() {
 用法：stage.sh start <阶段>,<阶段>,...   记录阶段路径并进入第一个阶段
       stage.sh enter <阶段>              进入路径上的某个阶段
       stage.sh evidence <文本>           记录当前阶段证据；verify 证据写成 "<命令> -> <结果>"
-      stage.sh review <结论>             在 review 阶段记录发现及每项处置（无发现时写明）
+      stage.sh review finding <ID> <说明>      在 review 阶段记录一条发现
+      stage.sh review resolution <ID> fixed|dismissed <理由>   记录每条发现的处置
+      stage.sh review complete <结论>         所有发现处理完后记录审查结论（允许零发现）
       stage.sh land commit <SHA>         在 land 阶段记录 commit
       stage.sh land pr <URL>             在 land 阶段记录 PR URL
       stage.sh default <文本>            记录一个替用户采用的默认决定，写成 "<决定> -> <理由>"
@@ -107,13 +109,35 @@ evidence)
 	echo "jstack: 已记录 ${stage} 阶段证据：${text}"
 	;;
 review)
-    [ $# -gt 0 ] || usage
+    [ $# -ge 2 ] || usage
     need_state
-    [ "$(jstack_get stage "$file")" = review ] || die "先 enter review 再记录审查结论"
+    [ "$(jstack_get stage "$file")" = review ] || die "先 enter review 再记录审查"
+    kind=$1; shift
+    case $kind in
+    finding | resolution)
+        [ $# -ge 2 ] || usage
+        id=$1; shift
+        case $id in '' | *[!a-zA-Z0-9_-]*) die "review finding ID 只能包含字母、数字、下划线和短横线" ;; esac
+        if [ "$kind" = finding ]; then
+            grep -q "^review finding $id " "$file" && die "review finding ID 已存在：$id"
+        else
+            grep -q "^review finding $id " "$file" || die "review finding 不存在：$id"
+            action=$1; shift
+            case $action in fixed | dismissed) ;; *) die "review resolution 必须是 fixed 或 dismissed" ;; esac
+        fi
+        ;;
+    complete) ;;
+    *) usage ;;
+    esac
     text=$(printf '%s' "$*" | tr '\r\n' '  ' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-    [ -n "$text" ] || die "review 结论不能为空，明确写出零发现或逐条处置"
-    { cat "$file"; printf 'review %s\n' "$text"; } | jstack_replace "$file"
-    echo "jstack: 已记录 review 结论：${text}"
+    [ -n "$text" ] || die "review 结论或处置原因不能为空"
+    case $kind in
+    finding) entry="review finding $id $text" ;;
+    resolution) entry="review resolution $id $action $text" ;;
+    complete) entry="review complete $text" ;;
+    esac
+    { cat "$file"; printf '%s\n' "$entry"; } | jstack_replace "$file"
+    echo "jstack: 已记录 $entry"
     ;;
 land)
     [ $# -eq 2 ] || usage
