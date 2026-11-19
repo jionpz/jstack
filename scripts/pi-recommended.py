@@ -14,7 +14,7 @@ PACKAGE = "@tintinweb/pi-subagents"
 PINNED_VERSION = "0.23.2"
 SECTION_RE = re.compile(r"^(User|Project) packages:\s*$")
 PACKAGE_LINE_RE = re.compile(r"^\s{2}(\S.*?)\s*$")
-NPM_VERSION_RE = re.compile(r"^npm:(?:@[^/\s]+/)?[^@\s]+@([^\s]+)$")
+PACKAGE_SOURCE_RE = re.compile(r"^npm:@tintinweb/pi-subagents(?:@([^\s]+))?$")
 
 
 class RecommendedError(Exception):
@@ -42,6 +42,61 @@ def metadata(scope: str, repo: Path | None) -> dict[str, object]:
     }
 
 
+def package_version(source: str) -> str | None:
+    match = PACKAGE_SOURCE_RE.fullmatch(source)
+    return match.group(1) if match else None
+
+
+def package_entry_source(entry: object) -> str | None:
+    if isinstance(entry, str):
+        return entry
+    if isinstance(entry, dict) and isinstance(entry.get("source"), str):
+        return entry["source"]
+    return None
+
+
+def project_declaration(repo: Path, *, declare: bool, dry_run: bool) -> dict[str, object]:
+    path = config_path("project", repo)
+    if path.parent.is_symlink() or path.is_symlink():
+        raise RecommendedError(f"Pi 项目设置路径不能是符号链接：{path}")
+    if path.exists():
+        try:
+            settings = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise RecommendedError(f"无法读取 Pi 项目设置：{path}") from exc
+        if not isinstance(settings, dict):
+            raise RecommendedError(f"Pi 项目设置必须是 JSON 对象：{path}")
+    else:
+        settings = {}
+
+    packages = settings.get("packages", [])
+    if not isinstance(packages, list):
+        raise RecommendedError(f"Pi 项目设置 packages 必须是数组：{path}")
+
+    for entry in packages:
+        source = package_entry_source(entry)
+        version = package_version(source) if source is not None else None
+        if version is not None or source == f"npm:{PACKAGE}":
+            return {
+                "source": source,
+                "version": version or "unknown",
+                "declaration_created": False,
+            }
+
+    if not declare:
+        return {"source": None, "version": None, "declaration_created": False}
+    if not dry_run:
+        packages.append(SOURCE)
+        settings["packages"] = packages
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(settings, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return {
+        "source": SOURCE,
+        "version": PINNED_VERSION,
+        "declaration_created": not dry_run,
+    }
+
+
 def run_pi(pi: str, args: list[str], cwd: Path | None, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
@@ -59,13 +114,13 @@ def run_pi(pi: str, args: list[str], cwd: Path | None, env: dict[str, str] | Non
         raise RecommendedError(f"运行 Pi CLI 失败：{exc}") from exc
 
 
-def list_packages(pi: str, scope: str, repo: Path | None) -> dict[str, dict[str, str]]:
+def list_packages(pi: str, scope: str, repo: Path | None) -> dict[str, dict[str, dict[str, str]]]:
     cwd = repo if scope == "project" else None
     result = run_pi(pi, ["list", "--approve"], cwd)
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or f"退出码 {result.returncode}"
         raise RecommendedError(f"pi list 失败：{detail}")
-    sections: dict[str, dict[str, str]] = {"user": {}, "project": {}}
+    sections: dict[str, dict[str, dict[str, str]]] = {"user": {}, "project": {}}
     current: str | None = None
     for line in result.stdout.splitlines():
         header = SECTION_RE.match(line.strip())
@@ -78,10 +133,12 @@ def list_packages(pi: str, scope: str, repo: Path | None) -> dict[str, dict[str,
         if not match:
             continue
         source = match.group(1)
-        if "pi-subagents" not in source:
-            continue
-        version_match = NPM_VERSION_RE.match(source)
-        sections[current][PACKAGE] = version_match.group(1) if version_match else "unknown"
+        version = package_version(source)
+        if version is None:
+            if source != f"npm:{PACKAGE}":
+                continue
+            version = "unknown"
+        sections[current][PACKAGE] = {"source": source, "version": version}
     return sections
 
 
@@ -97,7 +154,8 @@ def install(pi: str, scope: str, repo: Path | None) -> dict[str, object]:
         detail = result.stderr.strip() or result.stdout.strip() or f"退出码 {result.returncode}"
         raise RecommendedError(f"安装 {SOURCE} 失败：{detail}")
     after = list_packages(pi, scope, repo)
-    version = after[scope].get(PACKAGE)
+    package = after[scope].get(PACKAGE)
+    version = package["version"] if package else None
     return {"version": version}
 
 
@@ -111,14 +169,19 @@ def execute(args: argparse.Namespace) -> dict[str, object]:
     base = metadata(scope, repo)
     if args.metadata:
         return base
+    if args.stage_project_declaration or args.project_declaration:
+        if scope != "project":
+            raise RecommendedError("项目包声明仅支持 --scope project")
+        assert repo is not None
+        return project_declaration(repo, declare=args.stage_project_declaration, dry_run=args.dry_run)
     existing = list_packages(args.pi, scope, repo)
     current = existing[scope].get(PACKAGE)
     if current is not None:
         return {
             **base,
             "status": "skipped",
-            "version": current,
-            "matches_pinned": current == PINNED_VERSION,
+            "version": current["version"],
+            "matches_pinned": current["version"] == PINNED_VERSION,
         }
     if args.dry_run:
         return {**base, "status": "would-install", "version": None, "matches_pinned": False}
@@ -152,6 +215,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--metadata", action="store_true")
+    declaration = parser.add_mutually_exclusive_group()
+    declaration.add_argument(
+        "--project-declaration",
+        action="store_true",
+        help="只读检查 Pi 项目设置中的推荐包声明",
+    )
+    declaration.add_argument(
+        "--stage-project-declaration",
+        action="store_true",
+        help="直接在项目 Pi 设置中添加推荐包声明，不运行 Pi 或 npm",
+    )
     parser.add_argument("--pi", default="pi", help="Pi CLI 路径，默认 pi")
     args = parser.parse_args(argv)
     try:
@@ -159,8 +233,11 @@ def main(argv: list[str] | None = None) -> int:
     except (RecommendedError, OSError) as exc:
         print(f"pi-recommended: 错误：{exc}", file=sys.stderr)
         return 1
-    if args.json or args.metadata:
+    if args.json or args.metadata or args.project_declaration:
         print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+    elif args.stage_project_declaration:
+        action = "预览" if args.dry_run else "已添加" if payload["declaration_created"] else "已存在"
+        print(f"✓ {action} {payload['source']}（声明版本 {payload['version']}）")
     else:
         print(describe(payload))
     return 0

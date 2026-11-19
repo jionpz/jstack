@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"/Users/jionpz/mycode/jstack/.jstack/vendor/plugins/flow\"/hooks/prompt.sh",
+            "command": "repo=$(git rev-parse --show-toplevel) && exec \"$repo/.jstack/vendor/plugins/flow/hooks/prompt.sh\"",
             "timeout": 10
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"/Users/jionpz/mycode/jstack/.jstack/vendor/plugins/flow\"/hooks/guard.sh",
+            "command": "repo=$(git rev-parse --show-toplevel) && exec \"$repo/.jstack/vendor/plugins/flow/hooks/guard.sh\"",
             "timeout": 10
           }
         ]
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"/Users/jionpz/mycode/jstack/.jstack/vendor/plugins/flow\"/hooks/stop.sh",
+            "command": "repo=$(git rev-parse --show-toplevel) && exec \"$repo/.jstack/vendor/plugins/flow/hooks/stop.sh\"",
             "timeout": 10
           }
         ]

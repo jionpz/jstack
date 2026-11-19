@@ -58,11 +58,23 @@ cd jstack
 ./jstack doctor --repo /absolute/path/to/your-project
 ```
 
-`--all` 会检测本机已安装的 AI 编程工具，并跳过尚未安装的工具。JStack 会在目标仓库中生成 `.jstack/vendor/`、`.jstack/lock.json`，以及对应工具需要的项目级入口和门禁文件。
+项目级 `--all` 会生成 Claude Code、Pi、OMP、Cursor 和 Codex 的原生入口，无需在维护者的机器上装齐五种工具。用 `--harnesses pi,cursor` 可只接入指定工具，也可在现有项目上追加接入。
+
+把 `.jstack/vendor/`、`.jstack/lock.json` 和生成的项目入口一起提交。协作者 `git clone` 后，用已有的 AI 编程工具打开项目，按提示审查并信任项目入口即可。默认接线无需另外安装 JStack、npm 包或 JavaScript 运行时。各阶段所用的外部工具仍有各自的依赖。
 
 在 Claude Code 的项目级安装中，可以从目标仓库使用 `/route` 入口。其他工具的调用方式见下方[兼容性说明](#支持的运行环境)。
 
-安装前可加 `--dry-run` 查看计划。**同一种工具不要同时启用用户级和项目级的 JStack**，以免插件或门禁重复加载。安装后可以用 `doctor` 核对版本、路径和锁文件。
+安装前可加 `--dry-run` 查看计划。**同一种工具不要同时启用用户级和项目级的 JStack**，以免插件或门禁重复加载。安装后用 `doctor` 核对版本、入口归属及 Git 忽略规则。
+
+Pi 的项目接线默认不声明子 agent 扩展包。需要该功能时，用 `--with-pi-recommended` 添加声明，Pi 按原生机制加载。用 `--no-pi-recommended` 可移除归属已记录在 lock 的声明。
+
+清退项目接线前，先预览：
+
+```bash
+./jstack uninstall --scope project --repo /absolute/path/to/your-project --dry-run
+```
+
+核对预览后去掉 `--dry-run`。加 `--harnesses cursor,pi` 可只清退指定工具。卸载按 lock 移除已有归属证明的接线，并保留仍在使用的共享入口。第一版 lock 需要先重跑项目级安装。详见[项目级安装设计](docs/adr/0006-project-level-install.md)。
 
 > 环境要求：Git、Bash，以及相应的 AI 编程工具。部分安装或运行功能还需要 `jq`、`rg`、`gh`、`bun` 等依赖。当前仓库的静态 CI 覆盖 macOS 和 Linux；其他平台应先自行验证。
 
