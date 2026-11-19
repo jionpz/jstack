@@ -164,9 +164,9 @@ t "stage.sh enter 没有状态时失败" not stage enter execute
 stage start clarify,execute,verify,land >/dev/null
 t "stage.sh start 的状态文件" state_is 'path clarify,execute,verify,land' 'stage clarify'
 t "stop.sh 在 clarify 阶段放行" silent hook stop "$(stop_in)"
-stage ask >/dev/null
-stage ask >/dev/null
-t "stage.sh ask 只加一行 ask" state_is 'path clarify,execute,verify,land' 'stage clarify' 'ask'
+stage ask '排序按 due 还是按标题？' >/dev/null
+stage ask '排序按 due 还是按标题？' >/dev/null
+t "stage.sh ask 只加一行 ask" state_is 'path clarify,execute,verify,land' 'stage clarify' 'ask 排序按 due 还是按标题？'
 stage enter execute >/dev/null
 t "stage.sh enter 更新阶段并清掉 ask" state_is 'path clarify,execute,verify,land' 'stage execute'
 t "stage.sh enter 不在路径上的阶段时失败" not stage enter review
@@ -194,7 +194,7 @@ for mode in jq nojq; do
 	t "[$mode] stop.sh 对别的 Cursor 会话放行" silent hook stop "$(cursor_stop_in completed other-session)"
 	t "[$mode] stop.sh 对 Codex 输入同样拦下" blocks "$(codex_stop_in)"
 	t "[$mode] stop.sh 对 Codex 的 stop_hook_active=true 放行" silent hook stop "$(codex_stop_in true)"
-	stage ask >/dev/null
+	stage ask '排序按 due 还是按标题？' >/dev/null
 	t "[$mode] stop.sh 标了 ask 但回复没有提问时仍拦下" blocks "$(stop_in)"
 	t "[$mode] stop.sh 标了 ask 且回复向用户提问时放行" silent hook stop "$(stop_in false "$SID" "排序按 due 还是按标题？")"
 	t "[$mode] stop.sh 在 Cursor 标了 ask 时放行（无法核对回复）" silent hook stop "$(cursor_stop_in)"
@@ -210,14 +210,16 @@ done
 unset JSTACK_NO_JQ
 stage evidence './run-tests' '->' "12 passed
 0 failed" >/dev/null
-t "stage.sh evidence 把参数拼成一行追加" state_is 'path clarify,execute,verify,land' 'stage execute' 'evidence ./run-tests -> 12 passed 0 failed'
-t "stop.sh 有证据时放行" silent hook stop "$(stop_in)"
+t "stage.sh evidence 把参数拼成一行追加" state_is 'path clarify,execute,verify,land' 'stage execute' 'evidence execute ./run-tests -> 12 passed 0 failed'
+t "execute 的证据不能替代 verify" blocks "$(stop_in)"
 stage enter verify >/dev/null
 stage enter execute >/dev/null
 t "stage.sh 再次进入 execute 时清掉旧证据" state_is 'path clarify,execute,verify,land' 'stage execute'
 t "stop.sh 下一张 ticket 没有新证据时拦下" blocks "$(stop_in)"
+SID=second-case-0002; STATE="$JSTACK_STATE_DIR/$SID"
 stage start execute >/dev/null
 t "stop.sh 在路径不含 verify 时放行" silent hook stop "$(stop_in)"
+stage end >/dev/null
 stage start verify,land >/dev/null
 t "stop.sh 在路径不含 execute 时放行" silent hook stop "$(stop_in)"
 stage end >/dev/null
@@ -225,6 +227,7 @@ t "stage.sh end 删掉状态文件" test ! -e "$STATE"
 stage start execute,verify >/dev/null
 t "stage.sh end 路径含 verify 且没有证据时拒绝收尾" not stage end
 t "stage.sh end 拒绝后状态还在" state_is 'path execute,verify' 'stage execute'
+stage enter verify >/dev/null
 stage evidence './run-tests -> 12 passed' >/dev/null
 t "stage.sh end 有证据时收尾" stage end
 t "stage.sh end 收尾后状态文件已删除" test ! -e "$STATE"
@@ -249,6 +252,8 @@ t "调查提示注入引用证据回答的产出" sh -c '
 t "调查路线不要求实现验证证据" silent hook stop "$(stop_in)"
 stage end >/dev/null
 t "stage.sh start 顺带删掉 7 天前的状态文件" old_file_cleaned
+stage enter verify >/dev/null
+stage evidence "npm test -> ok" >/dev/null
 stage end >/dev/null
 
 # 默认决定：记录替用户做的选择，收尾摘要里逐条列出；进入下一张 ticket 时保留。
@@ -260,6 +265,7 @@ stage enter verify >/dev/null
 stage enter execute >/dev/null
 t "stage.sh 再次进入 execute 时保留默认决定" state_is 'path execute,verify' 'stage execute' 'default 按标题排序 -> 任务只要求排序'
 t "prompt.sh 注入已采用的默认决定" prompt_defaults
+stage enter verify >/dev/null
 stage evidence 'npm test -> 12 passed' >/dev/null
 stage end >/dev/null
 
@@ -288,7 +294,9 @@ pstage settled https://example.test/o/r/pull/70 >/dev/null
 t "待补清完后 start 不再提示" sh -c '
 	out=$(cd "$1" && CLAUDE_CODE_SESSION_ID=other-session-9 "$2" "$3" start execute,verify)
 	! printf "%s" "$out" | grep -q 待补' _ "$PEND_REPO" "$BASH" "$ST"
-(cd "$PEND_REPO" && CLAUDE_CODE_SESSION_ID=other-session-9 "$BASH" "$ST" evidence x >/dev/null && CLAUDE_CODE_SESSION_ID=other-session-9 "$BASH" "$ST" end >/dev/null)
+(cd "$PEND_REPO" && CLAUDE_CODE_SESSION_ID=other-session-9 "$BASH" "$ST" enter verify >/dev/null &&
+  CLAUDE_CODE_SESSION_ID=other-session-9 "$BASH" "$ST" evidence "test -> ok" >/dev/null &&
+  CLAUDE_CODE_SESSION_ID=other-session-9 "$BASH" "$ST" end >/dev/null)
 
 for mode in jq nojq; do
 	if [ $mode = nojq ]; then export JSTACK_NO_JQ=1; else command -v jq >/dev/null || continue; fi
@@ -366,6 +374,7 @@ if command -v jq >/dev/null; then
 		printf "%s\n" "$out" | grep -qF "验证命令=./scripts/verify.sh" &&
 		printf "%s\n" "$out" | grep -qF "must-stop 追加=1 条"' \
 		_ "$REPO" "$(repo_prompt_in)" "$BASH" "$H/prompt.sh"
+	repo_stage enter verify >/dev/null
 	repo_stage evidence './scripts/verify.sh -> ok' >/dev/null
 	repo_stage end >/dev/null
 fi
