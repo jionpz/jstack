@@ -46,8 +46,8 @@ main() {
 		[ -z "$text" ] || emit "$text" "$proto"
 		return 0
 	}
-	if grep -qx ask "$file"; then
-		grep -vx ask "$file" | jstack_replace "$file" || return 0
+	if grep -q '^ask [^ ]' "$file"; then
+		grep -v '^ask ' "$file" | jstack_replace "$file" || return 0
 	fi
 	path=$(jstack_get path "$file")
 	stage=$(jstack_get stage "$file")
@@ -57,7 +57,7 @@ main() {
 	next=$(printf '%s\n' "$path" | tr ',' '\n' | awk -v s="$stage" 'f { print; exit } $0 == s { f = 1 }')
 	arrow=$(printf '%s\n' "$path" | tr ',' '\n' |
 		awk -v s="$stage" '{ printf "%s%s", (NR > 1 ? " → " : ""), ($0 == s ? "[" $0 "]" : $0) }')
-	n=$(grep -c '^evidence ' "$file")
+	n=$(grep -c "^evidence ${stage} " "$file")
 	d=$(grep -c '^default ' "$file")
 	st="\"$route/stage.sh\""
 	text=$(
@@ -66,13 +66,15 @@ main() {
 			"路径：${arrow}" \
 			"本阶段产出：$(printf '%s' "$row" | cut -f2)" \
 			"本阶段门禁：$(printf '%s' "$row" | cut -f3)" \
-			"已记录验证证据：${n} 条" \
+			"本阶段已记录证据：${n} 条" \
 			"下一阶段：${next:-无，这是路径上的最后一个阶段}"
 		[ "$d" -eq 0 ] || echo "已采用的默认决定：${d} 条（收尾摘要里逐条列出，让用户能改）"
 		[ -z "$next" ] || echo "门禁满足后运行 $st enter ${next}"
-		printf '%s\n' "每条验证证据运行 $st evidence \"<命令> -> <结果>\"" \
-			"停下来问用户之前运行 $st ask，并在回复里写出要问的问题（只标 ask 不提问，Stop 门禁仍会拦）" \
-			"任务结束运行 $st end"
+		printf '%s\n' "进入 verify 后运行 $st evidence \"<命令> -> <结果>\"；执行阶段的证据不会替代 verify" \
+            "进入 review 后运行 $st review \"<结论与发现处置>\"" \
+            "进入 land 后运行 $st land commit <SHA>；有 remote 时再记录 $st land pr <PR URL>" \
+            "有待决问题时运行 $st ask \"<具体问题？>\"，并在本轮回复中完整提出同一问题" \
+            "所有所需阶段完成后运行 $st end"
 		cfg=$(jstack_cfg_summary 2>/dev/null) || cfg=
 		[ -z "$cfg" ] || printf '%s\n' "仓库配置：$(printf '%s' "$cfg" | tr '\n' ' ' | sed 's/ $//')"
 		[ -z "$warn" ] || printf '%s\n' "$warn"
