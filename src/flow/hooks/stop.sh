@@ -47,7 +47,7 @@ main() {
 		# ask 只在这次回复确实向用户提了问题时才放行，否则它就成了跳过验证的出口。
 		grep -q '^ask [^ ]' "$file" && asks_user "$input" "$file" && return 0
 	fi
-    missing=$(jstack_gate_missing "$file")
+    missing=$(jstack_gate_missing "$file" | tr '\n' ';')
     [ -n "$missing" ] || return 0
     st="\"$route/stage.sh\""
     reason="jstack verify/review/land 门禁：以下阶段产出尚未齐全：${missing}。请按当前阶段进入并记录真实结果；执行 $st show 可查看现有状态。等待用户决定时先执行 $st ask \"<具体问题>\"，再在回复中完整提出该问题。"
