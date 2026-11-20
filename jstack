@@ -34,11 +34,11 @@
 #   ./jstack models set premium|bulk <值> [--harness <h>] [--yes]
 #                                                  改一个值并自动 apply（--harness 默认 claude-code）
 #   ./jstack models apply [--dry-run] [--yes]      写入四个 harness 的模型规则；--dry-run 只打印
-#   ./jstack models status                         premium 今日 token 用量与预算
+#   ./jstack models status                         premium 今日 token 用量、预算和生效的 flow 角色
 #   ./jstack doctor [--json] [--no-fail] [--repo <dir>]  只读列出各 harness × 作用域的安装、版本、来源与 lock 状态
 #   ./jstack retire trellis [--repo <dir>] [--task-map <file>] [--json] [--apply]
 #                                                  先预览 Trellis 清退，--apply 应用已通过检查的项目变更
-#   ./jstack managed-export [--root <dir>] [--route] [--ticket-id ID ...]
+#   ./jstack managed-export [--root <dir>] [--route] [--ticket-id ID ...] [--with-stage-tiers]
 #                                                     导出只读调查、XS/S/M/L/XL 路线或单 ticket 包给 Keel
 #   ./jstack tools export [--root <dir>] [--pretty]   导出阶段→工具 profile、profiles、harness 映射和内容摘要
 #   ./jstack tools resolve --stage <阶段>|--role <profile> --harness pi|claude-code
@@ -1382,6 +1382,22 @@ PY
 		say "✗ Pi AGENTS.md 的角色行不对"
 		rc=1
 	fi
+	for file in "$rule" "$cursor_rule" "$omp_rule" "$pi_file"; do
+		a=a/x b=c/y
+		[ "$file" != "$rule" ] || { a=sonnet; b=opus; }
+		for role in route clarify plan investigate execute verify review land archive; do
+			if ! grep -qxF "flow ${role}: ${a}" "$file"; then
+				say "✗ ${file} 缺少 flow ${role} 的 bulk 模型"
+				rc=1
+			fi
+		done
+		for role in clarify plan review; do
+			if ! grep -qxF "flow ${role} gate: ${b}" "$file"; then
+				say "✗ ${file} 缺少 flow ${role} gate 的 premium 模型"
+				rc=1
+			fi
+		done
+	done
 	grep -qx 'keep me' "$pi_file" || {
 		say "✗ Pi AGENTS.md 的块外内容被改了"
 		rc=1
@@ -1441,7 +1457,9 @@ import json, sys
 path = sys.argv[1]
 with open(path, encoding="utf-8") as f:
 	doc = json.load(f)
-doc["models"]["claude-code"]["roles"] = {"hardest tasks": "bulk0", "judgment and prose": "bulk0,bulk1"}
+doc["models"]["claude-code"]["roles"] = {
+	"hardest tasks": "bulk0", "judgment and prose": "bulk0,bulk1", "flow review gate": "bulk1",
+}
 with open(path, "w", encoding="utf-8") as f:
 	json.dump(doc, f, ensure_ascii=False, indent=2)
 	f.write("\n")
@@ -1459,6 +1477,13 @@ PY
 		say "✗ 角色覆盖没有把 judgment and prose 改成 bulk0,bulk1"
 		rc=1
 	}
+	if ! grep -qxF 'flow review gate: haiku' "$rule" ||
+		! out=$(HOME="$h" "$ROOT/jstack" models status 2>&1) ||
+		! grep -qxF 'claude-code 的 premium flow 角色: flow clarify gate, flow plan gate' <<<"$out" ||
+		! grep -qxF 'pi 的 premium flow 角色: flow clarify gate, flow plan gate, flow review gate' <<<"$out"; then
+		say "✗ flow 角色覆盖没有同时反映在 apply 和 status"
+		rc=1
+	fi
 	python3 -I - "$cfg" <<'PY'
 import json, sys
 path = sys.argv[1]
@@ -1505,6 +1530,10 @@ PY
 		say "✗ 预算超限时列表里的 premium 没有降级为 sonnet"
 		rc=1
 	}
+	grep -qxF 'flow review gate: sonnet' "$rule" || {
+		say "✗ 预算超限时 flow review gate 没有降级为 sonnet"
+		rc=1
+	}
 	grep -q '^  slow: a/x$' "$omp_cfg" || {
 		say "✗ 预算超限时 OMP 的 slow 没有降级为 bulk0"
 		rc=1
@@ -1520,7 +1549,8 @@ PY
 		say "✗ models status 运行失败："
 		printf '%s\n' "$out" | sed 's/^/  /'
 		rc=1
-	elif [ "$out" != 'premium 今日 tokens: 18 / 上限 1' ]; then
+	elif ! grep -qxF 'premium 今日 tokens: 18 / 上限 1' <<<"$out" ||
+		[ "$(grep -c '的 premium flow 角色: 无$' <<<"$out")" -ne 4 ]; then
 		say "✗ models status 的今日统计不对：${out}"
 		rc=1
 	fi
@@ -1537,7 +1567,8 @@ PY
 	if ! out=$(HOME="$h" "$ROOT/jstack" models status 2>&1); then
 		say "✗ models status（不限预算）运行失败"
 		rc=1
-	elif [ "$out" != 'premium 今日 tokens: 18 / 上限 -（不限）' ]; then
+	elif ! grep -qxF 'premium 今日 tokens: 18 / 上限 -（不限）' <<<"$out" ||
+		[ "$(grep -c '的 premium flow 角色: flow clarify gate, flow plan gate, flow review gate$' <<<"$out")" -ne 4 ]; then
 		say "✗ models status 的不限预算输出不对：${out}"
 		rc=1
 	fi
@@ -1545,7 +1576,7 @@ PY
 	if ! out=$(HOME="$h" "$ROOT/jstack" models status 2>&1); then
 		say "✗ models status（无日志）运行失败"
 		rc=1
-	elif [ "$out" != 'premium 今日 tokens: - / 上限 -（不限）' ]; then
+	elif ! grep -qxF 'premium 今日 tokens: - / 上限 -（不限）' <<<"$out"; then
 		say "✗ models status 在日志不存在时没有打印 -：${out}"
 		rc=1
 	fi
@@ -2916,16 +2947,30 @@ models_budget_line() { # <premium_daily_tokens> <premium_concurrency>
 	fi
 }
 
-# 角色→层级映射。四个 harness 共用；这里把层级换成别名或真实模型 id。
-# 第 6 个参数是 models.<harness>.roles 的覆盖，每行 "角色<TAB>层级,..."。
-models_role_lines() { # <harness> <premium> <bulk0> <bulk1> <degraded> [roles]
-	local h=$1 premium=$2 bulk0=$3 bulk1=$4 degraded=$5 roles=${6:-} role tiers tier value values override
+models_flow_roles() {
+	python3 -IB "$ROOT/scripts/stage_table.py" "$ROOT/src/flow/skills/route/stages.md"
+}
+
+models_role_tiers() { # <definitions> <overrides> <degraded>
+	local definitions=$1 roles=$2 degraded=$3 role tiers override
 	while IFS='|' read -r role tiers; do
 		[ -n "$role" ] || continue
 		if [ -n "$roles" ]; then
 			override=$(printf '%s\n' "$roles" | awk -F'\t' -v r="$role" '$1 == r { print $2; exit }')
 			[ -z "$override" ] || tiers=$override
 		fi
+		[ "$degraded" -eq 0 ] || tiers=${tiers//premium/bulk0}
+		printf '%s|%s\n' "$role" "$tiers"
+	done <<<"$definitions"
+}
+
+models_premium_degraded() {
+	[ "$1" != null ] && [ "$2" != - ] && [ "$2" -ge "$1" ]
+}
+
+models_role_lines() { # <harness> <premium> <bulk0> <bulk1>
+	local h=$1 premium=$2 bulk0=$3 bulk1=$4 role tiers tier value values
+	while IFS='|' read -r role tiers; do
 		values=
 		for tier in ${tiers//,/ }; do
 			case ${h}:${tier} in
@@ -2936,16 +2981,14 @@ models_role_lines() { # <harness> <premium> <bulk0> <bulk1> <degraded> [roles]
 			*:bulk0) value=$bulk0 ;;
 			*:bulk1) value=$bulk1 ;;
 			esac
-			if [ "$degraded" -eq 1 ] && [ "$tier" = premium ]; then
-				case $h in
-				claude-code) value=sonnet ;;
-				*) value=$bulk0 ;;
-				esac
-			fi
 			values="${values:+$values, }$value"
 		done
 		printf '%s: %s\n' "$role" "$values"
-	done <<'EOF'
+	done
+}
+
+models_pstack_roles() {
+	cat <<'EOF'
 feature, refactoring|bulk0
 bug-fix|bulk0
 perf-issue|bulk0
@@ -2966,17 +3009,17 @@ interrogate reviewers|bulk0,bulk1
 EOF
 }
 
-models_rule_content() { # <harness> <premium> <bulk0> <bulk1> <degraded> <cap> <concurrency> [roles]
-	local h=$1 premium=$2 bulk0=$3 bulk1=$4 degraded=$5 cap=$6 concurrency=$7 roles=${8:-}
+models_rule_content() { # <harness> <premium> <bulk0> <bulk1> <degraded> <cap> <concurrency> <resolved roles>
+	local h=$1 premium=$2 bulk0=$3 bulk1=$4 degraded=$5 cap=$6 concurrency=$7 roles=$8
 	case $h in
 	cursor)
-		printf -- '---\ndescription: pstack per-role model choices (overrides skill defaults)\nalwaysApply: true\n---\n'
+		printf -- '---\ndescription: pstack and flow per-role model choices\nalwaysApply: true\n---\n'
 		;;
 	omp)
 		printf -- '---\nalwaysApply: true\n---\n'
 		;;
 	esac
-	printf '%s\n' '# pstack model configuration, generated by jstack from ~/.jstack/config.json. Do not edit; run ./jstack models set instead.'
+	printf '%s\n' '# pstack and flow model configuration, generated by jstack from ~/.jstack/config.json. Do not edit; run ./jstack models set instead.'
 	case $h in
 	claude-code) printf '# opus = premium (%s), sonnet = bulk (%s), haiku = bulk (%s)\n' "$premium" "$bulk0" "$bulk1" ;;
 	*) printf '# premium = %s, bulk = %s, %s\n' "$premium" "$bulk0" "$bulk1" ;;
@@ -2986,7 +3029,7 @@ models_rule_content() { # <harness> <premium> <bulk0> <bulk1> <degraded> <cap> <
 	if [ "$h" = claude-code ] && [ "$concurrency" != null ]; then
 		printf '# premium_concurrency=%s is recorded only; Claude Code has no per-tier concurrency control.\n' "$concurrency"
 	fi
-	models_role_lines "$h" "$premium" "$bulk0" "$bulk1" "$degraded" "$roles"
+	models_role_lines "$h" "$premium" "$bulk0" "$bulk1" <<<"$roles"
 }
 
 # 统计某 premium 模型今天的 in + out；magpie 日志不存在时以 3 退出。
@@ -3227,7 +3270,7 @@ models_usage_text() {
                                          改一个值并自动 apply；--harness 默认 claude-code
   ./jstack models apply [--dry-run] [--yes]
                                          把配置写成四个 harness 的规则文件；首次写 Pi/OMP 的共享文件要确认，--yes 跳过
-  ./jstack models status                 统计 premium 今日 token 用量
+  ./jstack models status                 统计 premium 今日 token，并列出各 harness 的 premium flow 角色
 EOF
 }
 
@@ -3439,7 +3482,7 @@ cmd_models_set() {
 }
 
 cmd_models_apply() {
-	local dry=0 yes=0 cfg harnesses h premium bulk0 bulk1 cap conc degraded=0 tokens= stats_h stats_bulk0 summary= content roles
+	local dry=0 yes=0 cfg harnesses h premium bulk0 bulk1 cap conc degraded=0 tokens stats_h stats_bulk0 summary= content roles flow_roles definitions
 	local block="$WORK/models-block" pi_file omp_cfg rc
 	while [ $# -gt 0 ]; do
 		case $1 in
@@ -3457,6 +3500,8 @@ cmd_models_apply() {
 	command -v python3 >/dev/null || die "models 需要 python3"
 	harnesses=$(models_json "$cfg" harnesses)
 	[ -n "$harnesses" ] || die "配置里没有可用的 harness，先运行 ./jstack models init"
+	flow_roles=$(models_flow_roles)
+	definitions="$(models_pstack_roles)"$'\n'"$flow_roles"
 	cap=$(models_json "$cfg" budget premium_daily_tokens)
 	conc=$(models_json "$cfg" budget premium_concurrency)
 	if [ "$cap" != null ]; then
@@ -3464,11 +3509,9 @@ cmd_models_apply() {
 		if [ -n "$stats_h" ]; then
 			premium=$(models_json "$cfg" get "$stats_h" premium)
 			stats_bulk0=$(models_json "$cfg" get "$stats_h" bulk0)
-			if tokens=$(models_usage "$premium"); then
-				if [ "$tokens" -ge "$cap" ]; then
-					degraded=1
-					say "⚠ premium 今日已用 ${tokens} tokens，超过上限 ${cap}，判断类角色降级为 ${stats_bulk0}"
-				fi
+			if tokens=$(models_usage "$premium") && models_premium_degraded "$cap" "$tokens"; then
+				degraded=1
+				say "⚠ premium 今日已用 ${tokens} tokens，超过上限 ${cap}，判断类角色降级为 ${stats_bulk0}"
 			fi
 		fi
 	fi
@@ -3480,6 +3523,7 @@ cmd_models_apply() {
 		bulk0=$(models_json "$cfg" get "$h" bulk0)
 		bulk1=$(models_json "$cfg" get "$h" bulk1)
 		roles=$(models_json "$cfg" roles "$h")
+		roles=$(models_role_tiers "$definitions" "$roles" "$degraded")
 		case $h in
 		claude-code)
 			content=$(models_rule_content claude-code "$premium" "$bulk0" "$bulk1" "$degraded" "$cap" "$conc" "$roles")
@@ -3543,7 +3587,7 @@ cmd_models_apply() {
 }
 
 cmd_models_status() {
-	local cfg h premium tokens cap
+	local cfg h premium tokens cap harnesses flow_roles overrides roles degraded=0
 	models_migrate_if_needed 0
 	cfg=$(models_config_path)
 	[ -f "$cfg" ] || die "没有模型配置 ${cfg}，先运行 ./jstack models init"
@@ -3552,11 +3596,20 @@ cmd_models_status() {
 	premium=$(models_json "$cfg" get "$h" premium)
 	cap=$(models_json "$cfg" budget premium_daily_tokens)
 	if tokens=$(models_usage "$premium"); then :; else tokens=-; fi
+	if models_premium_degraded "$cap" "$tokens"; then degraded=1; fi
+	harnesses=$(models_json "$cfg" harnesses)
+	flow_roles=$(models_flow_roles)
 	if [ "$cap" = null ]; then
 		printf 'premium 今日 tokens: %s / 上限 -（不限）\n' "$tokens"
 	else
 		printf 'premium 今日 tokens: %s / 上限 %s\n' "$tokens" "$cap"
 	fi
+	for h in $harnesses; do
+		overrides=$(models_json "$cfg" roles "$h")
+		roles=$(models_role_tiers "$flow_roles" "$overrides" "$degraded" |
+			awk -F'|' '$2 ~ /(^|,)premium(,|$)/ { printf "%s%s", sep, $1; sep=", " }')
+		printf '%s 的 premium flow 角色: %s\n' "$h" "${roles:-无}"
+	done
 }
 
 cmd_models() {
@@ -4577,8 +4630,8 @@ cmd_install_pi() {
 }
 
 case "${1:-}" in
-managed-export) shift; exec python3 "$ROOT/scripts/managed-export.py" "$@" ;;
-tools) shift; exec python3 "$ROOT/scripts/tool-policy.py" "$@" ;;
+managed-export) shift; exec python3 -B "$ROOT/scripts/managed-export.py" "$@" ;;
+tools) shift; exec python3 -B "$ROOT/scripts/tool-policy.py" "$@" ;;
 install) shift; cmd_install "$@" ;;
 uninstall) shift; cmd_uninstall "$@" ;;
 install-pi) shift; cmd_install_pi "$@" ;;

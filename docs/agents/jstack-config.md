@@ -24,13 +24,15 @@
 |---|---|---|---|---|
 | `models.<harness>.premium` | string | 无（必填才有分层） | `jstack models apply/status` | 高级模型 id，可带 `[1m]` 与 `:effort` 后缀；`<harness>` 取 `claude-code`、`cursor`、`omp`、`pi` |
 | `models.<harness>.bulk` | string[2] | 无 | `jstack models apply/status`；`evals/run.sh` 在没给 `--model` 时取 `claude-code` 的 `bulk[0]` 作默认 | 两个无限模型；`bulk[0]` 给 `sonnet`/判断降级，`bulk[1]` 给 `haiku`/`SMALL_FAST` |
-| `models.<harness>.roles` | object | pstack 的 17 行角色表 | 同上 | 角色 → `premium` \| `bulk` \| `bulk0` \| `bulk1` 的覆盖，只写要改的行；值可以是逗号分隔的字符串或数组，`bulk` 等同 `bulk0` |
+| `models.<harness>.roles` | object | pstack 角色表及阶段表的 flow 角色 | 同上 | 角色 → `premium` \| `bulk` \| `bulk0` \| `bulk1` 的覆盖，只写要改的行；值可以是逗号分隔的字符串或数组，`bulk` 等同 `bulk0` |
 | `budget.premium_daily_tokens` | number \| null | `null` | `jstack models status/apply` | premium 当日 token 上限；超限时判断类角色降级到 `bulk0` |
 | `budget.premium_concurrency` | number \| null | `null` | 同上 | premium 并发上限（AnyRouter 这类不能并发的 provider 用） |
 | `notifications.channel` | string \| null | `null` | 预留（#13） | 只占位，不实现；实现前写入即报"未支持" |
 | `notifications.target` | string \| null | `null` | 预留（#13） | 同上 |
 
 `models` 里出现未知 harness 名不算错误（向前兼容），`apply` 遇到未实现的 harness 只打印角色表。
+
+[阶段表](../../src/flow/skills/route/stages.md)中的 `Tier` 为每个阶段声明工作和裁决层级。工作角色采用 `flow <阶段>`，规模判断用 `flow route`。有裁决层级时另生成 `flow <阶段> gate`，例如 `flow review gate`。`models status` 按 harness 列出应用角色覆盖和预算降级后使用 premium 的 flow 角色。角色声明本身是供调用方使用的配置，阶段执行仍由现有提供者驱动。
 
 ## 仓库级 `<repo>/.jstack/config.json`
 
