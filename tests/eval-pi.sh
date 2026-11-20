@@ -107,6 +107,14 @@ if [ -f .claude/settings.json ]; then
 fi
 if [ "$mode" = multi ]; then
 	printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"first line\nsecond line","session_id":"s","num_turns":1,"modelUsage":{"mock-claude":{"inputTokens":3,"outputTokens":2}},"total_cost_usd":0.1}'
+elif [ "$mode" = attention ]; then
+	if [ "$3" = --resume ]; then
+		[ "$2" = '暂不发布' ] && [ "$4" = s ] && [ ! -f .git/resumed ] || exit 1
+		touch .git/resumed
+		printf '%s\n' '{"type":"result","subtype":"success","result":"done","session_id":"s"}'
+	else
+		printf '%s\n' '{"type":"result","subtype":"success","result":"需要你决定：是否批准发布？\n默认决定：立即发布","session_id":"s"}'
+	fi
 else
 	printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"s","num_turns":1,"modelUsage":{"mock-claude":{"inputTokens":3,"outputTokens":2}},"total_cost_usd":0.1}'
 fi
@@ -234,6 +242,20 @@ write_claude "$OUT/claude-answer" multi
 run_ok claude-answer --group control --model mock-claude --keep t-multi
 t "Claude 答案取整个 result：第一行还在" grep -qx 'first line' "$OUT"/claude-answer/scratch/*/t-multi-1-control/answer-1.txt
 t "Claude 答案取整个 result：最后一行还在" grep -qx 'second line' "$OUT"/claude-answer/scratch/*/t-multi-1-control/answer-1.txt
+
+mkdir -p "$TASKS/t-attention"
+cp "$TASKS/t-one/prompt.md" "$TASKS/t-one/check.sh" "$TASKS/t-attention/"
+cat >"$TASKS/t-attention/attention.json" <<'JSON'
+{"questions":[{"id":"approval","pattern":"批准发布"}],"reply":"暂不发布","overridden_defaults":[{"id":"publish","pattern":"立即发布"}]}
+JSON
+write_claude "$OUT/claude-attention" attention
+run_ok claude-attention --group control --model mock-claude --max-nudges 0 t-attention
+t "Claude 注意力题用同一会话回答一次，且不计为催促" jq -e '
+	.pass and .rounds == 2 and .nudges == 0 and
+	(.attention | .replied and .interruptions == 1 and .missed_stops == 0 and .false_stops == 0 and .overturned_defaults == 1)
+' "$OUT/claude-attention/results.jsonl"
+run_eval pi-attention --harness pi --model mock-model t-attention >/dev/null 2>&1
+t "Pi 显式请求注意力题时给出提示" grep -q '需要 --harness claude' "$OUT/pi-attention/run.log"
 
 run_eval bad-group --model mock-claude --group vanilla >/dev/null 2>&1
 t "未知组拒绝运行" grep -q 'group 只能是' "$OUT/bad-group/run.log"
