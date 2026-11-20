@@ -13,7 +13,7 @@ stages=${JSTACK_STAGES_FILE:-$here/stages.md}
 
 usage() {
 	cat >&2 <<'EOF'
-用法：stage.sh start <阶段>,<阶段>,...   记录阶段路径并进入第一个阶段
+用法：stage.sh start <阶段>,<阶段>,... [--recheck-size]   记录阶段路径并进入第一个阶段
       stage.sh enter <阶段>              进入路径上的某个阶段
       stage.sh evidence <文本>           记录当前阶段证据；verify 证据写成 "<命令> -> <结果>"
       stage.sh review finding <ID> <说明>      在 review 阶段记录一条发现
@@ -55,7 +55,7 @@ start | enter | evidence | review | land | default | ask | end | pending | settl
 esac
 case $cmd in
 start)
-	[ $# -eq 1 ] && [ -n "$1" ] || usage
+	{ [ $# -eq 1 ] || { [ $# -eq 2 ] && [ "$2" = --recheck-size ]; }; } && [ -n "$1" ] || usage
 	[ -f "$stages" ] || die "找不到阶段表 ${stages}"
 	known=$(jstack_stage_rows "$stages" | cut -f1)
 	[ -n "$known" ] || die "阶段表 ${stages} 里没有解析出任何阶段"
@@ -74,9 +74,21 @@ start)
 		[ "$(jstack_get path "$file")" != "$1" ] || { echo "jstack: 此路径已经启动，保留当前阶段与证据"; exit 0; }
 		die "本会话已有未结束的阶段记录；先 stage.sh show，完成或处理原任务，不能 start 覆盖"
 	fi
+	baseline=
+	if [ $# -eq 2 ]; then
+		printf '%s\n' "$known" | grep -qx review || die "配置的阶段表里没有可追加的 review"
+		case ",$1," in
+		*,execute,verify,land,*) ;;
+		*) die "--recheck-size 需要 execute,verify,land 连续相邻的短路径" ;;
+		esac
+		baseline=$(python3 "$here/recheck.py" capture "${JSTACK_REPO:-$PWD}") || die "无法记录改动范围基线"
+	fi
 	mkdir -p "$dir"
 	find "$dir" -type f -mmin +10080 -delete 2>/dev/null || true
-	printf 'path %s\nstage %s\n' "$1" "${1%%,*}" | jstack_replace "$file"
+	{
+		printf 'path %s\nstage %s\n' "$1" "${1%%,*}"
+		[ -z "$baseline" ] || printf 'scope-baseline %s\n' "$baseline"
+	} | jstack_replace "$file"
 	echo "jstack: 阶段路径 $(printf '%s' "$1" | sed 's/,/ → /g')，当前阶段 ${1%%,*}"
 	# Workloop 没有 Stop hook：状态照记，但不能让人以为门禁在执行。
 	if [ "$sid" = "${WORKLOOP_SESSION_ID:-}" ]; then
@@ -92,10 +104,23 @@ enter)
 	[ $# -eq 1 ] && [ -n "$1" ] || usage
 	need_state
 	path=$(jstack_get path "$file")
+	if { [ "$1" = verify ] || [ "$1" = land ]; } &&
+		grep -q '^scope-baseline ' "$file" && [[ ",$path," != *,review,* ]]; then
+		reason=$(python3 "$here/recheck.py" compare "${JSTACK_REPO:-$PWD}" "$file") || die "未完成范围复核"
+		if [ -n "$reason" ]; then
+			path=${path/verify,land/verify,review,land}
+			{ printf 'path %s\n' "$path"; sed '/^path /d' "$file"; } | jstack_replace "$file"
+			echo "jstack: 范围复核追加 review（${reason}）"
+		fi
+	fi
 	case ",$path," in
 	*",$1,"*) ;;
 	*) die "阶段 $1 不在路径 ${path} 上" ;;
 	esac
+	if [ "$1" = land ] && grep -q '^scope-baseline ' "$file" && [[ ",$path," = *,review,* ]]; then
+		missing=$(jstack_gate_missing "$file" | sed -n '/^review /p')
+		[ -z "$missing" ] || die "$missing"
+	fi
 	# 每次进入 execute 是一个新的工作单元（L 路径的下一张 ticket），之前的证据不再算数。
 	awk -v s="$1" '/^stage / { print "stage " s; next } /^ask / { next } s == "execute" && (/^evidence / || /^review / || /^land /) { next } { print }' "$file" | jstack_replace "$file"
 	echo "jstack: 当前阶段 $1"
@@ -182,7 +207,7 @@ end)
     ;;
 show)
 	[ $# -eq 0 ] || usage
-	if [ -f "$file" ]; then cat "$file"; else echo none; fi
+	if [ -f "$file" ]; then sed '/^scope-baseline /d' "$file"; else echo none; fi
 	;;
 pending)
 	if [ $# -eq 0 ]; then

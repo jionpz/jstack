@@ -1,7 +1,7 @@
 {
   "name": "flow",
   "displayName": "flow",
-  "version": "0.1.0+jstack.773ef73",
+  "version": "0.1.0+jstack.d9eb876",
   "description": "jstack 的工作流：route 驱动 size、clarify、plan、investigate、execute、verify、review、land、archive 阶段；flow:execute 和 flow:review 分别是默认执行与审查提供者，pstack:poteto-mode 可作为多 ticket 或多天工作的执行替代项。",
   "author": {
     "name": "jionpz"

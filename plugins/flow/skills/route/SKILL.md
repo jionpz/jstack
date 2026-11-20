@@ -50,7 +50,7 @@ Pi and OMP carry the gates through the flow extension. A session id or a hook co
 
 | When | Command |
 |---|---|
-| Right after sizing | `stage.sh start <stage>,<stage>,...` with the path in order |
+| Right after sizing | `stage.sh start <stage>,<stage>,...` with the path in order. For a Git checkout with Python 3.9+ and an XS/S route containing `execute,verify,land` with a `review` provider available, append `--recheck-size` before the first edit. |
 | Entering each stage | `stage.sh enter <stage>` |
 | In `verify`, after running the real check | `stage.sh evidence "<command> -> <what it showed>"` (stage-scoped) |
 | During `review`, for each finding | `stage.sh review finding F1 "<finding>"`, then `stage.sh review resolution F1 fixed|dismissed "<reason>"` |
@@ -65,6 +65,8 @@ Pi and OMP carry the gates through the flow extension. A session id or a hook co
 Delegated workers should return results to the main session; they must not use `stage.sh start`, `stage.sh end`, or `stage.sh evidence` to modify the parent session. A repeated `start` with the same path preserves existing state; a new path cannot silently replace active work. Bash hooks can identify `agent_id` on supported Claude Code tool events and Pi/OMP extensions identify subagents, but shell wrappers or untrusted hooks are **not** a sandbox: treat isolation as best-effort and keep the main session responsible for recording each result.
 
 A repo's `.jstack/config.json` can replace the stage table (`stages_file`) and add must-stop entries. The "仓库配置" line the harness injects each turn shows the values in effect; drop any stage on your path that the table no longer has, and leave `stage.sh start` to reject stages outside its table. If filtering leaves an empty path, report the missing configured stage and do not call start with an empty path. A Question remains read-only when a custom table omits investigate; answer from inspected evidence rather than switching to execute.
+
+On a short route with size recheck enabled, `stage.sh enter verify` compares the candidate against the checkout before execution. Crossing directory modules, changing more than three paths, or touching standard interface, hook, or policy paths adds `review` between `verify` and `land`. Treat the expanded path as at least M, update the todo list, and run the review provider before land. Re-entering execute or shrinking the diff keeps the added review. Repository-specific API boundaries and must-stop actions still follow the repository's rules. When Git, Python, or a configured review stage is unavailable, report that automatic recheck is unavailable.
 
 Once execute has started, the Stop gate checks **each stage on the selected path**: `verify` needs evidence recorded *after entering verify*, `review` needs a completed conclusion and a fixed/dismissed disposition for every recorded finding, and `land` needs a commit SHA plus a PR URL if the repository has a remote. The CLI `stage.sh end` applies the same gate before deleting state. A free-form evidence entry from `execute` cannot satisfy later stages. Entering execute for the next ticket invalidates older evidence/review/land receipts. Record actual results, not placeholders. To interrupt for a human decision, queue a concrete question with `stage.sh ask "<exact question?>"` and include that question verbatim in the final reply; a random question mark does not suffice. Cursor cannot inspect the reply and therefore relies only on a queued question; report that degradation. Never drop verify just because the user asks to skip tests.
 
