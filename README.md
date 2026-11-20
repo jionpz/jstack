@@ -157,9 +157,12 @@ JStack 支持把模型按职责分成两层：`premium` 负责架构判断、关
 ```bash
 ./jstack check                 # 静态检查与不依赖模型的测试
 ./jstack doctor --repo <dir>  # 检查项目安装、版本和锁文件
-./jstack check --smoke         # 调用可用工具做真实 smoke（需模型和网络）
+./jstack check --smoke         # 发布检查，要求 Claude Code 和 Pi 的真实 smoke 通过
+./jstack smoke claude-code      # 单独验收项目安装后的 Claude Code 门禁
 ./jstack eval list             # 列出固定评测任务
 ```
+
+真实 smoke 需要模型和网络。全量 smoke 会报告 OMP、Cursor 和 Codex 的结果，这三者缺失或未通过时仍可通过发布检查。发布前还需通过 Claude Code 和 Pi 的评测。
 
 项目源码与构建产物分开管理：`src/flow/` 是 JStack 自有工作流的源码；`upstream/` 保留第三方上游副本，`patches/` 保存本地补丁，`plugins/` 是生成后的插件目录。修改功能时请改源码或补丁，不要直接编辑构建产物。
 
