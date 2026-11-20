@@ -31,6 +31,17 @@ claude plugin install spec@jstack
 claude plugin install flow@jstack
 ```
 
+通过 Claude Code 插件市场安装的插件从本地缓存加载，桌面端也使用这份缓存。用以下命令刷新来自 GitHub 插件市场的副本。
+
+```bash
+claude plugin marketplace update jstack
+claude plugin update pstack@jstack
+claude plugin update spec@jstack
+claude plugin update flow@jstack
+```
+
+如果市场指向本地 JStack checkout，修改构建输入后，运行 `./jstack build` 和 `./jstack install` 刷新缓存。
+
 重新打开 Claude Code 会话，或执行 `/reload-plugins`。然后进入你想修改的代码仓库，试着提交一个任务：
 
 ```text
