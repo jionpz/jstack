@@ -286,16 +286,23 @@ match_edit() {
 }
 
 main() {
-	local input evt tool cmd kind= reason
+	local input evt tool cmd kind= reason project_event=
 	input=$(cat)
 	evt=$(jstack_json_str hook_event_name "$input")
 	case $evt in
 	beforeShellExecution)
 		kind=shell
 		cmd=$(jstack_json_str command "$input")
+		project_event=beforeShellExecution
 		;;
 	preToolUse)
 		tool=$(jstack_json_str tool_name "$input")
+		# Cursor 的 preToolUse 对 shell 也会触发；shell 统一由 beforeShellExecution
+		# 处理，否则同一个 guard 会被调用两次。编辑工具仍走这里。
+		case $tool in
+		Shell | shell | Bash | bash) return 0 ;;
+		esac
+		project_event=preToolUse
 		if is_shell_tool "$tool"; then
 			kind=shell
 			cmd=$(json_command "$input")
@@ -310,13 +317,16 @@ main() {
 		if is_shell_tool "$tool"; then
 			kind=shell
 			cmd=$(json_command "$input")
+			project_event=beforeShellExecution
 		elif is_edit_tool "$tool"; then
 			kind=edit
+			project_event=preToolUse
 		else
 			return 0
 		fi
 		;;
 	esac
+	jstack_cursor_defer_to_project "$0" "$project_event" && return 0
 	if [ "$kind" = shell ]; then
 		[ -n "$cmd" ] || return 0
 		# Claude Code's PreToolUse payload includes agent_id for subagents. Deny only
