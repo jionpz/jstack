@@ -1,5 +1,7 @@
 # Multi-harness support: one generic adapter, native distribution per harness
 
+> [Issue #29](https://github.com/jionpz/jstack/issues/29) superseded the decision to maintain two pstack upstreams. Both builds now use the Claude Code upstream tree.
+
 jstack originally shipped only Claude Code plugins. Adding Pi, OMP, and Cursor forced three choices: keep one runtime adapter instead of per-harness translated builds; distribute through each harness's native mechanism instead of a single copy-based installer; and use the upstream Cursor-native pstack tree for Cursor while keeping the Claude Code tree for Claude Code. We picked the generic adapter because upstream already maintains the Claude Code tree and translation was rejected for maintenance cost; native distribution because each harness owns update, scope, and enablement semantics; and the native Cursor tree because it is authored for Cursor's Task/model/path semantics, whereas translating the Claude Code tree back to Cursor would add a second translation layer. The cost is two pstack trees to sync and a larger adapter document.
 
 ## Consequences

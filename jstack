@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # jstack：维护并安装 jstack marketplace。Claude Code marketplace 发布三个插件：
 #   pstack  原版 pstack 的 Claude Code 版（cursor/plugins 的 harness/pstack/claude-code）
-#   spec    Matt Pocock skills 里负责需求澄清和任务拆解的几个（mattpocock/skills），产出交给 pstack 执行
+#   spec    Matt Pocock skills 里负责需求澄清和任务拆解的几个（mattpocock/skills），产出交给阶段表指定的 execute 提供者
 #   flow    jstack 自己写的衔接层（src/flow），按任务大小把 spec 和 pstack 接起来
 # 另外从 plugins/pstack 转换出 Cursor 版 pstack，放在 plugins/pstack-cursor，不进 Claude marketplace；
 # 转换规则和替换文件在 patches/pstack-cursor/。spec 和 flow 同时带 .claude-plugin 和 .cursor-plugin
@@ -78,7 +78,7 @@ use_plugin() {
 	spec)
 		# 只取需求澄清、任务拆解的 5 个 skill（grill-with-docs 到 handoff），加上它们运行时要用的：
 		# grilling 到 prototype 由它们通过 Skill 工具调用（check 会核对），setup-matt-pocock-skills
-		# 是 to-spec、to-tickets、wayfinder 要求先运行的配置。实现交给 /pstack:poteto-mode，所以不取
+		# 是 to-spec、to-tickets、wayfinder 要求先运行的配置。实现由 flow 的 execute 阶段编排，所以不取
 		# implement、implement-spec 这类实现编排。增删时同步改 patches/spec/0001 里的 skills 清单。
 		UPSTREAM_REPO=https://github.com/mattpocock/skills.git
 		UPSTREAM_PATH=.
@@ -886,6 +886,7 @@ locate_in() {
 # 阶段表的每个提供者在每种安装布局下都找得到：用 plugins/ 产物复制出各布局，从布局自己的 flow 副本运行 locate.sh。
 check_locate() {
 	local L="$WORK/layouts" want n p v fv lay name flow tree out path bad rc=0 err="$WORK/locate.err"
+	local layout_count=0 documented_layouts
 	want=$(stage_providers "$ROOT/plugins/flow/skills/route/stages.md")
 	[ -n "$want" ] || { say "✗ plugins/flow/skills/route/stages.md 的 Stages 表里没有提供者"; return 1; }
 	n=$(printf '%s\n' "$want" | wc -l | tr -d ' ')
@@ -917,6 +918,7 @@ check_locate() {
 		"Pi npm 包|$L/pi/.pi/agent/npm/node_modules/jstack/plugins/flow|$L/pi|$L/pi" \
 		"Codex 缓存|$L/codex/.codex/plugins/cache/jstack/flow/${fv%%+*}|$L/codex|$L/codex" \
 		"软链入口|$L/link/.agents|$ROOT/plugins|$L/link"; do
+		layout_count=$((layout_count + 1))
 		IFS='|' read -r name flow tree home <<<"$lay"
 		bad=
 		if ! out=$(JSTACK_STAGES_FILE= locate_in "$home" "$flow/skills/route/locate.sh" 2>"$err"); then
@@ -939,6 +941,13 @@ check_locate() {
 			say "✓ 阶段表的 $n 个提供者在 ${name} 布局下都找得到"
 		fi
 	done
+	documented_layouts=$(sed -nE 's/.*在 ([0-9]+) 种安装布局下核对.*/\1/p' "$ROOT/AGENTS.md")
+	if [ "$documented_layouts" = "$layout_count" ]; then
+		say "✓ AGENTS.md 记录的安装布局数量与 check 一致（${layout_count} 种）"
+	else
+		say "✗ AGENTS.md 应写明「在 ${layout_count} 种安装布局下核对」，目前记录为 ${documented_layouts:-未找到}"
+		rc=1
+	fi
 	# 反例：把一个提供者换成不存在的名字，locate.sh 必须失败并点名它。
 	sed "s|\`$(printf '%s\n' "$want" | head -1)\`|\`spec:no-such-skill\`|" \
 		"$ROOT/plugins/flow/skills/route/stages.md" >"$WORK/stages-bad.md"
