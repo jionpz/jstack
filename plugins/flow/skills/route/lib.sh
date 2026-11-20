@@ -103,7 +103,7 @@ jstack_repo_root() {
 	[ -n "$d" ] || return 1
 	while :; do
 		[ -f "$d/.jstack/config.json" ] && { printf '%s\n' "$d"; return 0; }
-		[ -d "$d/.git" ] && { printf '%s\n' "$d"; return 0; }
+		[ -e "$d/.git" ] && { printf '%s\n' "$d"; return 0; }
 		[ "$d" = / ] && return 1
 		d=$(dirname "$d")
 	done
@@ -166,11 +166,34 @@ jstack_cfg_patterns() {
 		"\(.hook // .action // "repo")\u0001\(.regex)"' | tr '\001' '\t'
 }
 
+jstack_run_verify() {
+    local cfg repo
+    repo=$(jstack_get verify_repo "$1")
+    if [ -n "$repo" ]; then
+        if [ ! -d "$repo" ]; then
+            echo "无法找到任务启动时的验证仓库：$repo"
+            return 1
+        fi
+        cfg="$repo/.jstack/config.json"
+        [ -f "$cfg" ] || return 10
+    else
+        cfg=$(jstack_repo_config) || return 10
+    fi
+    if ! command -v python3 >/dev/null; then
+        if jstack_has_jq && ! jq -e '.verify.command // empty | strings | select(length>0)' "$cfg" >/dev/null; then
+            return 10
+        fi
+        echo "验证命令需要 python3"
+        return 1
+    fi
+    python3 -I "${BASH_SOURCE[0]%/*}/verify.py" "$2" "${cfg%/.jstack/config.json}" "$1"
+}
+
 # Return unmet, structured stage outputs (one diagnostic per line).
 # An unscoped evidence line from an older session is intentionally insufficient.
 # Hook and CLI call the same function so Stop and end cannot disagree.
 jstack_gate_missing() {
-    local file=$1 path stage repo
+    local file=$1 mode=${2:-wait} path stage repo verify_result verify_status
     [ -f "$file" ] || return 0
     path=$(jstack_get path "$file")
     stage=$(jstack_get stage "$file")
@@ -182,8 +205,16 @@ jstack_gate_missing() {
     ' || return 0
     case ",$path," in
     *,verify,*)
-        grep -q '^evidence verify [^ ]' "$file" ||
-            echo "verify 缺少本阶段的验证结果：先 enter verify，再 evidence \"<命令> -> <结果>\""
+        verify_status=0
+        verify_result=$(jstack_run_verify "$file" "$mode") || verify_status=$?
+        case $verify_status in
+        0) ;;
+        10)
+            grep -q '^evidence verify [^ ]' "$file" ||
+                echo "verify 缺少本阶段的验证结果：先 enter verify，再 evidence \"<命令> -> <结果>\""
+            ;;
+        *) printf '%s\n' "${verify_result:-配置的验证命令未能完成}" ;;
+        esac
         ;;
     esac
     case ",$path," in

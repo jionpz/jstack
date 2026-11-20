@@ -16,6 +16,7 @@ usage() {
 用法：stage.sh start <阶段>,<阶段>,...   记录阶段路径并进入第一个阶段
       stage.sh enter <阶段>              进入路径上的某个阶段
       stage.sh evidence <文本>           记录当前阶段证据；verify 证据写成 "<命令> -> <结果>"
+      stage.sh verify [--retry]           执行配置的验证命令，或等待 Stop 已启动的验证
       stage.sh review finding <ID> <说明>      在 review 阶段记录一条发现
       stage.sh review resolution <ID> fixed|dismissed <理由>   记录每条发现的处置
       stage.sh review complete <结论>         所有发现处理完后记录审查结论（允许零发现）
@@ -49,7 +50,7 @@ cmd=${1:-}
 # Extensions and tool hooks can mark a delegated worker. No worker may change
 # the parent session state, even though it may inherit the parent session ID.
 case $cmd in
-start | enter | evidence | review | land | default | ask | end | pending | settled)
+start | enter | evidence | verify | review | land | default | ask | end | pending | settled)
     [ -z "${JSTACK_SUBAGENT_ID:-}" ] || die "子代理不能修改主会话阶段记录；请将结果交给主会话"
     ;;
 esac
@@ -76,7 +77,13 @@ start)
 	fi
 	mkdir -p "$dir"
 	find "$dir" -type f -mmin +10080 -delete 2>/dev/null || true
-	printf 'path %s\nstage %s\n' "$1" "${1%%,*}" | jstack_replace "$file"
+	repo_config=$(jstack_repo_config) || repo_config=
+	{
+		printf 'path %s\nstage %s\n' "$1" "${1%%,*}"
+		if [ -n "$repo_config" ]; then
+			printf 'verify_repo %s\n' "${repo_config%/.jstack/config.json}"
+		fi
+	} | jstack_replace "$file"
 	echo "jstack: 阶段路径 $(printf '%s' "$1" | sed 's/,/ → /g')，当前阶段 ${1%%,*}"
 	# Workloop 没有 Stop hook：状态照记，但不能让人以为门禁在执行。
 	if [ "$sid" = "${WORKLOOP_SESSION_ID:-}" ]; then
@@ -107,6 +114,25 @@ evidence)
 	stage=$(jstack_get stage "$file")
 	{ cat "$file"; printf 'evidence %s %s\n' "$stage" "$text"; } | jstack_replace "$file"
 	echo "jstack: 已记录 ${stage} 阶段证据：${text}"
+	;;
+verify)
+	case $#:${1:-} in
+	0:) mode=wait ;;
+	1:--retry) mode=retry ;;
+	*) usage ;;
+	esac
+	need_state
+	case ",$(jstack_get path "$file")," in
+	*,verify,*) ;;
+	*) die "当前路径不含 verify" ;;
+	esac
+	verify_status=0
+	verify_result=$(jstack_run_verify "$file" "$mode") || verify_status=$?
+	case $verify_status in
+	0) echo "jstack: 配置的验证命令通过" ;;
+	10) die "仓库没有配置 verify.command" ;;
+	*) die "${verify_result:-配置的验证命令未能完成}" ;;
+	esac
 	;;
 review)
     [ $# -ge 2 ] || usage
@@ -177,12 +203,20 @@ end)
     need_state
     missing=$(jstack_gate_missing "$file")
     [ -z "$missing" ] || die "阶段未完成，不能清除记录：$missing"
-    rm -f "$file"
+    rm -f "$file" "$file.verify.json"
     echo "jstack: 已清除阶段记录"
     ;;
 show)
 	[ $# -eq 0 ] || usage
-	if [ -f "$file" ]; then cat "$file"; else echo none; fi
+	if [ -f "$file" ]; then
+		cat "$file"
+		if [ -s "$file.verify.json" ]; then
+			printf 'verify receipt '
+			cat "$file.verify.json"
+		fi
+	else
+		echo none
+	fi
 	;;
 pending)
 	if [ $# -eq 0 ]; then
