@@ -8,11 +8,14 @@ flow 的三个门禁（阶段提示、验证门禁、红线守卫）的判定逻
 
 | 门禁 | Claude Code | Cursor | Pi | OMP | Codex |
 |---|---|---|---|---|---|
+| 发布支持 | 一等 | 尽力而为 | 一等 | 尽力而为 | 尽力而为 |
 | 阶段提示（UserPromptSubmit） | 支持（原生 hooks） | 需适配（`beforeSubmitPrompt` → `additional_context`） | 需适配（`before_agent_start` → 隐藏消息） | 需适配（`before_agent_start` → 隐藏消息） | 需适配（原生 `UserPromptSubmit` → `hookSpecificOutput.additionalContext`） |
 | 验证门禁（Stop） | 支持（原生 hooks，`stop_hook_active` 由 harness 维护） | 需适配（`stop` → `followup_message`，`loop_limit` 3） | 需适配（`agent_before_settle`，扩展自己限 3 次） | 需适配（`session_stop` → `decision: block`，`stop_hook_active` 由 harness 维护） | 需适配（原生 `Stop`，`stop_hook_active` 由 harness 维护） |
 | 红线守卫（PreToolUse） | 支持（原生 hooks，`permissionDecision: ask`） | 需适配（`beforeShellExecution` → `permission: ask`；`preToolUse` 降级 `deny`） | 需适配（`tool_call` → 确认框或 `block`） | 需适配（`tool_call` → 确认框或 `block`） | 需适配（`PreToolUse` → `permissionDecision: deny`；不支持 ask，降级为 deny） |
 
 “需适配”不是没实现：三个门禁在 Pi、OMP 和 Codex 上都已实现，只是需要各自的事件/协议翻译，并有下面的降级。
+
+`./jstack check --smoke` 与 `./jstack smoke all` 要求 Claude Code 和 Pi 的烟测通过；OMP、Cursor、Codex 缺失或失败会在输出里报告。单独运行 `./jstack smoke <harness>` 时，被指定的 harness 必须可用并通过。发布还需通过 Claude Code 和 Pi 的评测，见 [ADR-0002](../adr/0002-flow-is-the-product.md#发布支持分级)。
 
 ## 接入方式
 

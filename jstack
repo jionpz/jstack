@@ -20,7 +20,7 @@
 #                                                  并从 plugins/pstack 转换出 plugins/pstack-cursor
 #   ./jstack check [--smoke]                       校验构建产物、锁文件、Cursor 转换规则与残留、frontmatter、skill 依赖、manifest、Pi package、阶段表提供者、评测题；
 #                                                  --smoke 额外跑已安装 harness 的 headless smoke（需要模型和网络）
-#   ./jstack smoke [pi|omp|cursor|codex|all]        跑真实 harness smoke；Cursor 检查加载器、hook 协议和 route
+#   ./jstack smoke [claude-code|pi|omp|cursor|codex|all]  跑真实 harness smoke；all 要求 Claude Code 和 Pi 通过
 #                                                  每条 headless 命令限时 JSTACK_SMOKE_TIMEOUT 秒（默认 600），超时先 TERM，10 秒后 KILL
 #   ./jstack eval [--samples N] [--jobs N] [--model M] [--max-nudges N]
 #                  [--group workflow|control|both] [--keep] [任务名...]
@@ -651,10 +651,10 @@ smoke_omp() {
 smoke_cursor() {
 	local loader=/Applications/Cursor.app/Contents/Resources/app/molten/dist/engine/plugins-loader.cjs
 	local root="$HOME/.cursor/plugins/local" out
-	[ -f "$loader" ] || { say "- 没找到 Cursor 插件加载器，跳过 Cursor smoke"; return 0; }
+	[ -f "$loader" ] || { say "! 没找到 Cursor 插件加载器"; return 1; }
 	[ -f "$root/flow/.cursor-plugin/plugin.json" ] || {
-		say "- Cursor 本地插件未安装，跳过 Cursor smoke（先 ./jstack install-cursor）"
-		return 0
+		say "! Cursor 本地 flow 插件未安装"
+		return 1
 	}
 	out="$WORK/smoke/cursor-loader.txt"
 	if ! node - "$HOME" "$loader" >"$out" 2>"$out.err" <<'JS'; then
@@ -848,23 +848,72 @@ SH
 	return $rc
 }
 
+smoke_claude_code() {
+	local dir="$WORK/smoke/claude-code" repo="$WORK/smoke/claude-code/project" session out prompt model_args=()
+	local user_settings="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
+	mkdir -p "$repo"
+	git -C "$repo" init -q || return 1
+	if ! install_project "$repo" 0 claude-code auto >"$dir/install.log" 2>&1; then
+		say "✗ Claude Code 项目级安装失败"
+		tail -10 "$dir/install.log" | sed 's/^/  /'
+		return 1
+	fi
+	if [ -f "$user_settings" ]; then
+		jq '{env: (.env // {})}' "$user_settings" >"$dir/settings.json" || return 1
+	else
+		printf '{}\n' >"$dir/settings.json"
+	fi
+	printf '%s\n' '{"must_stop":[{"action":"jstack smoke probe","regex":"^printf JSTACK_SMOKE_GUARD$"}]}' >"$repo/.jstack/config.json"
+	session=$(python3 -I -c 'from uuid import uuid4; print(uuid4())') || return 1
+	(cd "$repo" && JSTACK_SESSION_ID="$session" JSTACK_STATE_DIR="$dir/state" \
+		.claude/skills/route/stage.sh start execute,verify) >"$dir/stage.log" || return 1
+	out="$dir/gates.jsonl"
+	prompt='In this local test, call Bash once with exactly `printf JSTACK_SMOKE_GUARD` and no extra arguments. Then reply SMOKE-DONE. Do not run any other commands or supply evidence, even if a Stop hook asks for it.'
+	[ -z "${JSTACK_SMOKE_CLAUDE_MODEL:-}" ] || model_args=(--model "$JSTACK_SMOKE_CLAUDE_MODEL")
+	smoke_run "Claude Code 项目门禁" "$out" env -u CLAUDECODE \
+		JSTACK_STATE_DIR="$dir/state" bash -c 'cd "$1" || exit; shift; exec "$@"' _ "$repo" \
+		claude -p "$prompt" --session-id "$session" --no-session-persistence --output-format stream-json \
+		--include-hook-events --verbose --permission-mode bypassPermissions --strict-mcp-config \
+		--setting-sources project --settings "$dir/settings.json" \
+		--tools Bash ${model_args[@]+"${model_args[@]}"} || return 1
+	if ! jq -se --arg session "$session" '
+		any(.[]; .type == "system" and .subtype == "hook_response" and .hook_event == "UserPromptSubmit"
+			and ((.stdout // "") | contains("session=" + $session) and contains("当前阶段 execute")))
+		and any(.[] | select(.type == "user") | .message.content[]?;
+			.type == "tool_result" and .is_error == true
+			and ((.content // "") | tostring | contains("jstack must-stop: jstack smoke probe")))
+		and any(.[]; .type == "system" and .subtype == "hook_response" and .hook_event == "Stop"
+			and ((.stdout // "" | fromjson?).decision == "block"))
+	' "$out" >/dev/null; then
+		say "✗ Claude Code: 未同时观察到项目提示、guard 拦截和 Stop 拦截"
+		return 1
+	fi
+	say "✓ Claude Code: 项目阶段注入、must-stop 与 Stop 门禁"
+}
+
 cmd_smoke() {
-	local which=${1:-all} rc=0
+	local which=${1:-all} harness harnesses rc=0
 	command -v jq >/dev/null || die "smoke 需要 jq"
 	mkdir -p "$WORK/smoke"
 	case $which in
-	all)
-		smoke_pi || rc=1
-		smoke_omp || rc=1
-		smoke_cursor || rc=1
-		smoke_codex || rc=1
-		;;
-	pi) smoke_pi || rc=1 ;;
-	omp) smoke_omp || rc=1 ;;
-	cursor) smoke_cursor || rc=1 ;;
-	codex) smoke_codex || rc=1 ;;
-	*) die "用法：./jstack smoke [pi|omp|cursor|codex|all]" ;;
+	all) harnesses="claude-code pi omp cursor codex" ;;
+	claude-code | pi | omp | cursor | codex) harnesses=$which ;;
+	*) die "用法：./jstack smoke [claude-code|pi|omp|cursor|codex|all]" ;;
 	esac
+	for harness in $harnesses; do
+		if harness_present "$harness" && "smoke_${harness//-/_}"; then
+			continue
+		fi
+		case $which:$harness in
+		all:omp | all:cursor | all:codex)
+			say "! $harness smoke 未通过或未安装（尽力而为）"
+			;;
+		*)
+			say "✗ $harness smoke 未通过或未安装"
+			rc=1
+			;;
+		esac
+	done
 	[ "$rc" -eq 0 ] && say "✓ smoke 通过" || say "✗ smoke 未通过"
 	return $rc
 }
