@@ -125,7 +125,9 @@ prompt_shows() {
 		printf '%s\n' "$out" | grep -qF '路径：clarify → [execute] → verify → land' &&
 		printf '%s\n' "$out" | grep -qF 'The change, committed in small verified units' &&
 		printf '%s\n' "$out" | grep -qF '本阶段门禁：None' &&
-		printf '%s\n' "$out" | grep -qF "\"$ST\" enter verify" &&
+		printf '%s\n' "$out" | grep -qF "阶段脚本：\"$ST\"" &&
+		printf '%s\n' "$out" | grep -qF '门禁满足后运行 enter verify' &&
+		[ "$(printf '%s\n' "$out" | grep -Fo -- "\"$ST\"" | wc -l | tr -d ' ')" -eq 1 ] &&
 		[ "$(printf '%s' "$out" | LC_ALL=en_US.UTF-8 wc -m | tr -d ' ')" -lt 1500 ]
 }
 prompt_gate() { hook prompt "$(prompt_in)" | grep -qF '本阶段门禁：No evidence means not done'; }

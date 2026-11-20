@@ -69,13 +69,14 @@ main() {
 			"本阶段已记录证据：${n} 条" \
 			"下一阶段：${next:-无，这是路径上的最后一个阶段}"
 		[ "$d" -eq 0 ] || echo "已采用的默认决定：${d} 条（收尾摘要里逐条列出，让用户能改）"
-		[ -z "$next" ] || echo "门禁满足后运行 $st enter ${next}"
-		printf '%s\n' "进入 verify 后运行 $st evidence \"<命令> -> <结果>\"；执行阶段的证据不会替代 verify" \
-            "进入 review 后对每条发现运行 $st review finding F1 \"<发现>\"，再 review resolution F1 fixed|dismissed \"<原因>\"" \
-            "审查结束运行 $st review complete \"<结论，含零发现>\"" \
-            "进入 land 后运行 $st land commit <SHA>；有 remote 时再记录 $st land pr <PR URL>" \
-            "有待决问题时运行 $st ask \"<具体问题？>\"，并在本轮回复中完整提出同一问题" \
-            "所有所需阶段完成后运行 $st end"
+		printf '阶段脚本：%s。下列子命令均通过这个脚本运行。\n' "$st"
+		[ -z "$next" ] || echo "门禁满足后运行 enter ${next}"
+		printf '%s\n' "进入 verify 后运行 evidence \"<命令> -> <结果>\"；执行阶段的证据不会替代 verify" \
+			"进入 review 后对每条发现运行 review finding F1 \"<发现>\"，再 review resolution F1 fixed|dismissed \"<原因>\"" \
+			"审查结束运行 review complete \"<结论，含零发现>\"" \
+			"进入 land 后运行 land commit <SHA>；有 remote 时再记录 land pr <PR URL>" \
+			"有待决问题时运行 ask \"<具体问题？>\"，并在本轮回复中完整提出同一问题" \
+			"所有所需阶段完成后运行 end"
 		cfg=$(jstack_cfg_summary 2>/dev/null) || cfg=
 		[ -z "$cfg" ] || printf '%s\n' "仓库配置：$(printf '%s' "$cfg" | tr '\n' ' ' | sed 's/ $//')"
 		[ -z "$warn" ] || printf '%s\n' "$warn"
