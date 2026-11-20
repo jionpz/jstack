@@ -19,7 +19,7 @@ t() {
 	shift
 	if "$@" >/dev/null 2>&1; then echo "✓ $name"; else echo "✗ $name"; fails=$((fails + 1)); fi
 }
-state_body() { sed -E '/^(started|started_epoch|run|repo|ticket|size|asks|base) /d' "$STATE"; }
+state_body() { sed -E '/^(started|started_epoch|run|repo|ticket|ticket_explicit|size|asks|base) /d' "$STATE"; }
 state_is() { [ "$(state_body)" = "$(printf '%s\n' "$@")" ]; }
 stage() { CLAUDE_CODE_SESSION_ID=$SID "$BASH" "$ST" "$@"; }
 hook() { printf '%s' "$2" | "$BASH" "$H/$1.sh"; }

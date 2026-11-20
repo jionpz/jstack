@@ -50,8 +50,8 @@ Pi and OMP carry the gates through the flow extension. A session id or a hook co
 
 | When | Command |
 |---|---|
-| Right after sizing | `stage.sh start --size <XS\|S\|M\|L\|XL\|Question> <stage>,<stage>,...` with the path in order |
-| Entering each stage | `stage.sh enter <stage>` |
+| Right after sizing | `stage.sh start --size <XS\|S\|M\|L\|XL\|Question> [--ticket <ref>] <stage>,<stage>,...` with the path in order |
+| Entering each stage | `stage.sh enter <stage> [--ticket <ref>]`; pass `--ticket` when picking up a ticket not known at start |
 | The size changes after start | `stage.sh size <XS\|S\|M\|L\|XL\|Question>` |
 | In `verify`, after running the real check | `stage.sh evidence "<command> -> <what it showed>"` (stage-scoped) |
 | During `review`, for each finding | `stage.sh review finding F1 "<finding>"`, then `stage.sh review resolution F1 fixed|dismissed "<reason>"` |
@@ -59,7 +59,7 @@ Pi and OMP carry the gates through the flow extension. A session id or a hook co
 | During `land` | `stage.sh land commit <SHA>`; if the repo has a remote, also `stage.sh land pr <PR URL>` |
 | A decision you settled with a default instead of asking | `stage.sh default "<decision> -> <why>"` |
 | Right before a real interruption | `stage.sh ask "<exact question?>"`; ask the same question in the reply |
-| After the finish report | `stage.sh end` |
+| When the task is ready for its finish report | `stage.sh end --report-file <markdown or ->`; plain `stage.sh end` is only for a user-requested local-only finish |
 | The task stops at PR-ready with the after-merge archive still owed | `stage.sh pending "<PR URL> <what is left>"` |
 | The after-merge archive for a merged PR is done | `stage.sh settled <PR URL>` |
 
@@ -100,7 +100,7 @@ Clarification rounds follow the same rule: only decisions reach the user, and a 
 
 ## 5. Finish
 
-End with one summary the user can read on a phone, in this order, then run `stage.sh end`:
+End with one summary the user can read on a phone, in this order:
 
 ```
 目标：<one line>
@@ -113,6 +113,8 @@ End with one summary the user can read on a phone, in this order, then run `stag
 ```
 
 Every adopted default and every queued question must appear; they are how the user corrects you later. Do not restate the code or the ticket. Never write PR-ready for a PR whose CI is red, still running, or not checked, and never write done while the PR is open or the after-merge archive is still pending.
+
+Before replying, write a short Markdown excerpt with `## 目标`, `## 状态`, `## 改动`, and `## 需要你处理`, then pass it to `stage.sh end --report-file -` with a quoted heredoc. The command adds `## 验证` and `## 默认决定`, archives the run locally, then posts an issue comment, updates the bounded summary section in its PR body, or appends that section to the local Markdown ticket. Use the run ID in the command output to retry a failed publish with `./jstack report <run-id>` from the same repository; the local record stays available when the network or tracker write fails. When returning to a ticket, read its latest run-report comment: a plain reply there can override a default.
 
 ## Never
 

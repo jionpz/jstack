@@ -38,6 +38,7 @@
 #   ./jstack doctor [--json] [--no-fail] [--repo <dir>]  只读列出各 harness × 作用域的安装、版本、来源与 lock 状态
 #   ./jstack runs [--repo <dir>] [--limit N] [--json] [--show <run-id>]
 #                                                  列出任务运行记录；完成和未完成的都有路径、证据与默认决定
+#   ./jstack report <run-id>                        在当前仓库重试发布已保存的收尾摘要
 #   ./jstack retire trellis [--repo <dir>] [--task-map <file>] [--json] [--apply]
 #                                                  先预览 Trellis 清退，--apply 应用已通过检查的项目变更
 #   ./jstack managed-export [--root <dir>] [--route] [--ticket-id ID ...]
@@ -2611,6 +2612,13 @@ cmd_check() {
 		grep -v '^✓' "$WORK/hooks" | sed 's/^/  /'
 		rc=1
 	fi
+	if python3 -I "$ROOT/tests/flow-reports.py" >"$WORK/reports" 2>&1; then
+		say "✓ flow 收尾摘要通过 GitHub 和本地 Markdown 发布测试"
+	else
+		say "✗ flow 收尾摘要发布测试未通过："
+		cat "$WORK/reports"
+		rc=1
+	fi
 	if command -v claude >/dev/null; then
 		claude plugin validate "$ROOT" >"$WORK/validate" 2>&1 || failed=1
 		for p in $PLUGINS; do
@@ -4657,6 +4665,7 @@ smoke) shift; cmd_smoke "$@" ;;
 models) shift; cmd_models "$@" ;;
 doctor) shift; cmd_doctor "$@" ;;
 runs) shift; cmd_runs "$@" ;;
+report) shift; exec python3 -IB "$ROOT/plugins/flow/skills/route/report.py" "$@" ;;
 retire)
 	shift
 	[ "${1:-}" = trellis ] || die "用法：./jstack retire trellis [--repo <dir>] [--task-map <file>] [--json] [--apply]"
