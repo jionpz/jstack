@@ -125,7 +125,9 @@ prompt_shows() {
 		printf '%s\n' "$out" | grep -qF '路径：clarify → [execute] → verify → land' &&
 		printf '%s\n' "$out" | grep -qF 'The change, committed in small verified units' &&
 		printf '%s\n' "$out" | grep -qF '本阶段门禁：None' &&
-		printf '%s\n' "$out" | grep -qF "\"$ST\" enter verify" &&
+		printf '%s\n' "$out" | grep -qF "阶段脚本：\"$ST\"" &&
+		printf '%s\n' "$out" | grep -qF '门禁满足后运行 enter verify' &&
+		[ "$(printf '%s\n' "$out" | grep -Fo -- "\"$ST\"" | wc -l | tr -d ' ')" -eq 1 ] &&
 		[ "$(printf '%s' "$out" | LC_ALL=en_US.UTF-8 wc -m | tr -d ' ')" -lt 1500 ]
 }
 prompt_gate() { hook prompt "$(prompt_in)" | grep -qF '本阶段门禁：No evidence means not done'; }
@@ -164,9 +166,9 @@ t "stage.sh enter 没有状态时失败" not stage enter execute
 stage start clarify,execute,verify,land >/dev/null
 t "stage.sh start 的状态文件" state_is 'path clarify,execute,verify,land' 'stage clarify'
 t "stop.sh 在 clarify 阶段放行" silent hook stop "$(stop_in)"
-stage ask >/dev/null
-stage ask >/dev/null
-t "stage.sh ask 只加一行 ask" state_is 'path clarify,execute,verify,land' 'stage clarify' 'ask'
+stage ask '排序按 due 还是按标题？' >/dev/null
+stage ask '排序按 due 还是按标题？' >/dev/null
+t "stage.sh ask 只加一行 ask" state_is 'path clarify,execute,verify,land' 'stage clarify' 'ask 排序按 due 还是按标题？'
 stage enter execute >/dev/null
 t "stage.sh enter 更新阶段并清掉 ask" state_is 'path clarify,execute,verify,land' 'stage execute'
 t "stage.sh enter 不在路径上的阶段时失败" not stage enter review
@@ -194,7 +196,7 @@ for mode in jq nojq; do
 	t "[$mode] stop.sh 对别的 Cursor 会话放行" silent hook stop "$(cursor_stop_in completed other-session)"
 	t "[$mode] stop.sh 对 Codex 输入同样拦下" blocks "$(codex_stop_in)"
 	t "[$mode] stop.sh 对 Codex 的 stop_hook_active=true 放行" silent hook stop "$(codex_stop_in true)"
-	stage ask >/dev/null
+	stage ask '排序按 due 还是按标题？' >/dev/null
 	t "[$mode] stop.sh 标了 ask 但回复没有提问时仍拦下" blocks "$(stop_in)"
 	t "[$mode] stop.sh 标了 ask 且回复向用户提问时放行" silent hook stop "$(stop_in false "$SID" "排序按 due 还是按标题？")"
 	t "[$mode] stop.sh 在 Cursor 标了 ask 时放行（无法核对回复）" silent hook stop "$(cursor_stop_in)"
@@ -210,14 +212,16 @@ done
 unset JSTACK_NO_JQ
 stage evidence './run-tests' '->' "12 passed
 0 failed" >/dev/null
-t "stage.sh evidence 把参数拼成一行追加" state_is 'path clarify,execute,verify,land' 'stage execute' 'evidence ./run-tests -> 12 passed 0 failed'
-t "stop.sh 有证据时放行" silent hook stop "$(stop_in)"
+t "stage.sh evidence 把参数拼成一行追加" state_is 'path clarify,execute,verify,land' 'stage execute' 'evidence execute ./run-tests -> 12 passed 0 failed'
+t "execute 的证据不能替代 verify" blocks "$(stop_in)"
 stage enter verify >/dev/null
 stage enter execute >/dev/null
 t "stage.sh 再次进入 execute 时清掉旧证据" state_is 'path clarify,execute,verify,land' 'stage execute'
 t "stop.sh 下一张 ticket 没有新证据时拦下" blocks "$(stop_in)"
+SID=second-case-0002; STATE="$JSTACK_STATE_DIR/$SID"
 stage start execute >/dev/null
 t "stop.sh 在路径不含 verify 时放行" silent hook stop "$(stop_in)"
+stage end >/dev/null
 stage start verify,land >/dev/null
 t "stop.sh 在路径不含 execute 时放行" silent hook stop "$(stop_in)"
 stage end >/dev/null
@@ -225,6 +229,7 @@ t "stage.sh end 删掉状态文件" test ! -e "$STATE"
 stage start execute,verify >/dev/null
 t "stage.sh end 路径含 verify 且没有证据时拒绝收尾" not stage end
 t "stage.sh end 拒绝后状态还在" state_is 'path execute,verify' 'stage execute'
+stage enter verify >/dev/null
 stage evidence './run-tests -> 12 passed' >/dev/null
 t "stage.sh end 有证据时收尾" stage end
 t "stage.sh end 收尾后状态文件已删除" test ! -e "$STATE"
@@ -249,6 +254,8 @@ t "调查提示注入引用证据回答的产出" sh -c '
 t "调查路线不要求实现验证证据" silent hook stop "$(stop_in)"
 stage end >/dev/null
 t "stage.sh start 顺带删掉 7 天前的状态文件" old_file_cleaned
+stage enter verify >/dev/null
+stage evidence "npm test -> ok" >/dev/null
 stage end >/dev/null
 
 # 默认决定：记录替用户做的选择，收尾摘要里逐条列出；进入下一张 ticket 时保留。
@@ -260,6 +267,7 @@ stage enter verify >/dev/null
 stage enter execute >/dev/null
 t "stage.sh 再次进入 execute 时保留默认决定" state_is 'path execute,verify' 'stage execute' 'default 按标题排序 -> 任务只要求排序'
 t "prompt.sh 注入已采用的默认决定" prompt_defaults
+stage enter verify >/dev/null
 stage evidence 'npm test -> 12 passed' >/dev/null
 stage end >/dev/null
 
@@ -288,7 +296,9 @@ pstage settled https://example.test/o/r/pull/70 >/dev/null
 t "待补清完后 start 不再提示" sh -c '
 	out=$(cd "$1" && CLAUDE_CODE_SESSION_ID=other-session-9 "$2" "$3" start execute,verify)
 	! printf "%s" "$out" | grep -q 待补' _ "$PEND_REPO" "$BASH" "$ST"
-(cd "$PEND_REPO" && CLAUDE_CODE_SESSION_ID=other-session-9 "$BASH" "$ST" evidence x >/dev/null && CLAUDE_CODE_SESSION_ID=other-session-9 "$BASH" "$ST" end >/dev/null)
+(cd "$PEND_REPO" && CLAUDE_CODE_SESSION_ID=other-session-9 "$BASH" "$ST" enter verify >/dev/null &&
+  CLAUDE_CODE_SESSION_ID=other-session-9 "$BASH" "$ST" evidence "test -> ok" >/dev/null &&
+  CLAUDE_CODE_SESSION_ID=other-session-9 "$BASH" "$ST" end >/dev/null)
 
 for mode in jq nojq; do
 	if [ $mode = nojq ]; then export JSTACK_NO_JQ=1; else command -v jq >/dev/null || continue; fi
@@ -366,6 +376,7 @@ if command -v jq >/dev/null; then
 		printf "%s\n" "$out" | grep -qF "验证命令=./scripts/verify.sh" &&
 		printf "%s\n" "$out" | grep -qF "must-stop 追加=1 条"' \
 		_ "$REPO" "$(repo_prompt_in)" "$BASH" "$H/prompt.sh"
+	repo_stage enter verify >/dev/null
 	repo_stage evidence './scripts/verify.sh -> ok' >/dev/null
 	repo_stage end >/dev/null
 fi
@@ -379,5 +390,57 @@ t "仓库配置坏掉时 stage.sh 不受影响" sh -c 'cd "$1" && CLAUDE_CODE_SE
 t "没有 jq 时仓库追加的 must-stop 不生效" sh -c '
 	out=$(cd "$1" && printf "%s" "$2" | JSTACK_NO_JQ=1 "$3" "$4")
 	[ -z "$out" ]' _ "$REPO" "$(bash_input './deploy.sh')" "$BASH" "$H/guard.sh"
+
+# #58: stage-specific receipts, unresolved findings, remote PR and subagent isolation.
+GATE_REPO="$T/gate-repo"
+mkdir -p "$GATE_REPO"
+git -C "$GATE_REPO" init -q
+git -C "$GATE_REPO" remote add origin https://github.com/example/fixture.git
+export JSTACK_REPO="$GATE_REPO"
+SID=gate-session-0058
+STATE="$JSTACK_STATE_DIR/$SID"
+stage start execute,verify,review,land >/dev/null
+stage evidence 'npm test -> passed' >/dev/null
+t "执行阶段证据无法冒充 verify/review/land" blocks "$(stop_in)"
+t "阶段记录不能被新路径覆盖" not stage start execute,verify
+previous=$(cat "$STATE")
+stage start execute,verify,review,land >/dev/null
+t "重复 start 原路径不丢进度" test "$(cat "$STATE")" = "$previous"
+t "未记录具体问题不能用 ask 绕过门禁" not stage ask '稍后再问'
+stage ask '要采用方案二吗？' >/dev/null
+previous=$(cat "$STATE")
+t "有无关问号不能绕过门禁" blocks "$(stop_in false "$SID" '现在几点？')"
+t "实际提出排队问题才允许中断" silent hook stop "$(stop_in false "$SID" '要采用方案二吗？')"
+t "子代理命令不能清除主会话状态" not sh -c 'JSTACK_SUBAGENT_ID=child CLAUDE_CODE_SESSION_ID="$1" "$2" "$3" end' _ "$SID" "$BASH" "$ST"
+t "子代理命令不能覆盖主会话路径" not sh -c 'JSTACK_SUBAGENT_ID=child CLAUDE_CODE_SESSION_ID="$1" "$2" "$3" start execute,verify' _ "$SID" "$BASH" "$ST"
+t "被拒绝的子代理操作不改变主记录" test "$(cat "$STATE")" = "$previous"
+
+subagent_guard() {
+    local out
+    out=$(hook guard '{"session_id":"gate-session-0058","agent_id":"agent-child","tool_name":"Bash","tool_input":{"command":"./stage.sh end"}}')
+    valid_json "$out" && printf '%s' "$out" | grep -qF '"permissionDecision":"deny"'
+}
+for mode in jq nojq; do
+    if [ "$mode" = nojq ]; then export JSTACK_NO_JQ=1; else unset JSTACK_NO_JQ; fi
+    t "[$mode] 子代理 PreToolUse 拒绝改写主记录" subagent_guard
+done
+unset JSTACK_NO_JQ
+stage enter verify >/dev/null
+stage evidence 'npm test -> passed' >/dev/null
+t "只有 verify 时不能冒充 review" blocks "$(stop_in)"
+stage enter review >/dev/null
+stage review finding F1 '原有并发写入有数据丢失风险' >/dev/null
+stage review complete '发现 F1，等待修复' >/dev/null
+t "未处置的 review finding 会阻止结束" not stage end
+stage review resolution F1 fixed '增加锁与并发回归测试' >/dev/null
+stage enter land >/dev/null
+stage land commit deadbeef >/dev/null
+t "有 remote 但缺少 PR URL 会阻止 Stop" blocks "$(stop_in)"
+t "有 remote 但缺少 PR URL 会阻止 end" not stage end
+stage land pr https://github.com/example/fixture/pull/42 >/dev/null
+t "verify、review、commit、PR 全齐后 Stop 放行" silent hook stop "$(stop_in)"
+t "verify、review、commit、PR 全齐后可结束" stage end
+t "完成后状态文件被删除" test ! -e "$STATE"
+unset JSTACK_REPO
 
 [ "$fails" -eq 0 ]

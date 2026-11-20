@@ -1,29 +1,29 @@
 #!/usr/bin/env bash
 # Stop hook（Claude Code 的 Stop / Codex 的 Stop / Cursor 的 stop）：路径含 verify、已进入 execute 或之后的阶段、
-# 却没有一条验证证据时，拦下这次结束。因 stop hook 而继续的一轮、标了 ask 且这次回复确实向用户提问、
-# 没有状态文件时都放行。Cursor 的 stop 输入没有最后一条回复，ask 无法核对，只能放行。
+# 却没有按阶段记录 verify、review、land 的产出时，拦下这次结束。因 stop hook 而继续的一轮、
+# 标了具体问题且这次回复完整提出该问题、
+# 没有状态文件时都放行。Cursor 的 stop 输入没有最后一条回复，ask 无法核对，只能凭排队问题放行。
 # Codex 的输入与 Claude Code 同形（stop_hook_active、last_assistant_message 都有），走同一条分支。
 # 内部出错一律无输出地放行。
 exec 2>/dev/null
 route=${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd -P)}/skills/route
 . "$route/lib.sh" || exit 0
 
-# 最后一条回复里有没有问号。没有 jq 时取 last_assistant_message 键之后的全部文本，宁可多放行一次也不误拦提问。
+# A queued human question must appear verbatim in the final assistant reply.
+# A stray question mark cannot bypass verification.
 asks_user() {
-	local msg
-	if jstack_has_jq; then
-		msg=$(printf '%s' "$1" | jq -r '.last_assistant_message // empty | strings')
-	else
-		msg=$(printf '%s' "$1" | tr '\n' ' ' | sed -n 's/.*"last_assistant_message"[[:space:]]*:[[:space:]]*"//p')
-	fi
-	case $msg in
-	*'?'* | *'？'*) return 0 ;;
-	esac
-	return 1
+    local input=$1 file=$2 msg question
+    msg=$(jstack_json_str last_assistant_message "$input")
+    [ -n "$msg" ] || return 1
+    while IFS= read -r question; do
+        [ -n "$question" ] || continue
+        case $msg in *"$question"*) return 0 ;; esac
+    done < <(sed -n 's/^ask //p' "$file")
+    return 1
 }
 
 main() {
-	local input evt cursor=0 file path stage st reason status loop_count
+	local input evt cursor=0 file st reason status loop_count missing
 	input=$(cat)
 	evt=$(jstack_json_str hook_event_name "$input")
 	if [ "$evt" = stop ]; then cursor=1; fi
@@ -42,20 +42,16 @@ main() {
 		*) [ "$loop_count" -ge 3 ] && return 0 ;;
 		esac
 		# Cursor 的 stop 输入没有最后一条回复，无法核对是否真的向用户提问；标了 ask 就放行。
-		grep -qx ask "$file" && return 0
+		grep -q '^ask [^ ]' "$file" && return 0
 	else
 		# ask 只在这次回复确实向用户提了问题时才放行，否则它就成了跳过验证的出口。
-		grep -qx ask "$file" && asks_user "$input" && return 0
+		grep -q '^ask [^ ]' "$file" && asks_user "$input" "$file" && return 0
 	fi
-	grep -q '^evidence ' "$file" && return 0
-	path=$(jstack_get path "$file")
-	stage=$(jstack_get stage "$file")
-	printf '%s\n' "$path" | tr ',' '\n' | awk -v s="$stage" '
-		!($0 in i) { i[$0] = NR }
-		END { exit !(("verify" in i) && ("execute" in i) && (s in i) && i[s] >= i["execute"]) }
-	' || return 0
-	st="\"$route/stage.sh\""
-	reason="jstack verify 门禁：当前阶段 ${stage}，还没有记录验证证据，不能结束。在真实表面上运行检查，再用 $st evidence \"<命令> -> <结果>\" 记录。只有停下来向用户提问时才运行 $st ask，并且要在回复里写出问题；ask 不能代替验证。"
+    missing=$(jstack_gate_missing "$file" | tr '\n' ';')
+    [ -n "$missing" ] || return 0
+    st="\"$route/stage.sh\""
+    reason="jstack verify/review/land 门禁：以下阶段产出尚未齐全：${missing}。请按当前阶段进入并记录真实结果；执行 $st show 可查看现有状态。等待用户决定时先执行 $st ask \"<具体问题>\"，再在回复中完整提出该问题。"
+
 	if [ "$cursor" -eq 1 ]; then
 		printf '{"followup_message":"%s"}\n' "$(jstack_json_escape "$reason")"
 	else

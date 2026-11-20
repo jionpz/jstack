@@ -32,8 +32,26 @@ main() {
 		fi
 		;;
 	esac
-	[ -n "$cmd" ] || return 0
-	segs=$(printf '%s\n' "$cmd" | awk '{ gsub(/&&|\|\||[;|]/, "\n"); print }')
+    [ -n "$cmd" ] || return 0
+    # Claude Code's PreToolUse payload includes agent_id for subagents.
+    # Deny only stage state mutations; read-only stage.sh show remains available.
+    # This protects ordinary tool calls; it is not a shell sandbox.
+    if [ -n "$(jstack_json_str agent_id "$input")" ] &&
+        printf '%s\n' "$cmd" | grep -Eq 'stage\.sh[^;&|]*(start|enter|evidence|review|land|default|ask|end|pending|settled)([[:space:]]|$)'; then
+        reason="jstack: 子代理不可修改主会话阶段记录；将验证、审查和落地结果交还主会话记录。"
+        case $evt in
+        beforeShellExecution | preToolUse)
+            printf '{"permission":"deny","user_message":"%s","agent_message":"%s"}\n' \
+                "$(jstack_json_escape "$reason")" "$(jstack_json_escape "$reason")"
+            ;;
+        *)
+            printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' \
+                "$(jstack_json_escape "$reason")"
+            ;;
+        esac
+        return 0
+    fi
+    segs=$(printf '%s\n' "$cmd" | awk '{ gsub(/&&|\|\||[;|]/, "\n"); print }')
 	# 内置模式加仓库追加的模式，每条带来源列：builtin / repo。
 	pats=$(
 		awk '/^```patterns[ \t]*$/ { f = 1; next } f && /^```/ { exit } f && NF' "$route/must-stop.md" |

@@ -59,6 +59,11 @@ export default function (pi: any) {
 		if (event?.toolName !== "bash") return;
 		const command = event?.input?.command;
 		if (typeof command !== "string" || !command) return;
+		// In a delegated session, prevent accidental writes to the parent's stage record.
+		// An arbitrary shell wrapper could still evade this check; this is not a sandbox.
+		if (isSubagent(ctx) && /stage\.sh[^;&|]*(?:start|enter|evidence|review|land|default|ask|end|pending|settled)\b/.test(command)) {
+			return { block: true, reason: "jstack: 子代理只能返回结果，不能修改主会话阶段记录" };
+		}
 		const hook = runHook(root, "guard", {
 			session_id: sessionId(ctx),
 			hook_event_name: "PreToolUse",

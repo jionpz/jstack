@@ -18,7 +18,7 @@ You review the change the execute stage made, in the main session. This is the r
 
 - A real finding: fix it, rerun the check that covers it, commit the fix.
 - Everything else: dismiss it with the concrete reason, for example "the parser rejects this before the new branch runs".
-- Record the stage: `../route/stage.sh evidence "review -> <what you read and ran; N fixed, M dismissed>"`.
+- In the `review` stage, record each finding with `../route/stage.sh review finding F1 "<finding>"` and resolve it with `../route/stage.sh review resolution F1 fixed|dismissed "<concrete reason>"`. Only after **every** finding is resolved, record `../route/stage.sh review complete "<overall conclusion>"`. When there are no findings, record `review complete "zero findings; <what you inspected>"`. A generic `evidence` entry does not satisfy the review gate.
 
 ## Do not fan out
 
