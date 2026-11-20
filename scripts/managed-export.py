@@ -30,15 +30,13 @@ ROUTE_GRAPH_LIMITS = {
 }
 TICKET_STAGE_PROVIDERS = {
     "execute": "flow:execute",
-    "verify": "pstack:principle-prove-it-works",
+    "verify": "flow:verify",
     "review": "flow:review",
     "land": "pstack:poteto-mode/playbooks/opening-a-pr.md",
 }
 TICKET_PROVIDER_PATHS = {
     "flow:execute": Path("src/flow/skills/execute/SKILL.md"),
-    "pstack:principle-prove-it-works": Path(
-        "plugins/pstack/skills/principle-prove-it-works/SKILL.md"
-    ),
+    "flow:verify": Path("src/flow/skills/verify/SKILL.md"),
     "flow:review": Path("src/flow/skills/review/SKILL.md"),
     "pstack:poteto-mode/playbooks/opening-a-pr.md": Path(
         "plugins/pstack/skills/poteto-mode/playbooks/opening-a-pr.md"

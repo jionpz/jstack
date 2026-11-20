@@ -21,7 +21,7 @@ MUST_STOP = "src/flow/skills/route/must-stop.md"
 TOOL_POLICY = "src/flow/skills/route/tool-policy.json"
 PROVIDERS = {
     "execute": "src/flow/skills/execute/SKILL.md",
-    "verify": "plugins/pstack/skills/principle-prove-it-works/SKILL.md",
+    "verify": "src/flow/skills/verify/SKILL.md",
     "review": "src/flow/skills/review/SKILL.md",
     "land": "plugins/pstack/skills/poteto-mode/playbooks/opening-a-pr.md",
 }
@@ -47,7 +47,7 @@ class ManagedExportTests(unittest.TestCase):
             "| Stage | Output | Gate | Providers | Tool profile |\n"
             "|---|---|---|---|---|\n"
             "| execute | change | none | `flow:execute` | `developer` |\n"
-            "| verify | evidence | evidence required | `pstack:principle-prove-it-works` | `verifier` |\n"
+            "| verify | evidence | evidence required | `flow:verify` | `verifier` |\n"
             "| review | findings | no open findings | `flow:review` | `reviewer` |\n"
             "| land | commit | no must-stop | `pstack:poteto-mode/playbooks/opening-a-pr.md` | `releaser` |\n"
             "| archive | closed | evidence | `flow:archive` | `archivist` |\n",
