@@ -53,6 +53,7 @@ Pi and OMP carry the gates through the flow extension. A session id or a hook co
 | Right after sizing | `stage.sh start <stage>,<stage>,...` with the path in order |
 | Entering each stage | `stage.sh enter <stage>` |
 | In `verify`, after running the real check | `stage.sh evidence "<command> -> <what it showed>"` (stage-scoped) |
+| In `verify`, when the repo configures `verify.command` | `stage.sh verify` |
 | During `review`, for each finding | `stage.sh review finding F1 "<finding>"`, then `stage.sh review resolution F1 fixed|dismissed "<reason>"` |
 | When review is complete | `stage.sh review complete "<conclusion>"` (explicit zero findings if none) |
 | During `land` | `stage.sh land commit <SHA>`; if the repo has a remote, also `stage.sh land pr <PR URL>` |
@@ -67,6 +68,8 @@ Delegated workers should return results to the main session; they must not use `
 A repo's `.jstack/config.json` can replace the stage table (`stages_file`) and add must-stop entries. The "仓库配置" line the harness injects each turn shows the values in effect; drop any stage on your path that the table no longer has, and leave `stage.sh start` to reject stages outside its table. If filtering leaves an empty path, report the missing configured stage and do not call start with an empty path. A Question remains read-only when a custom table omits investigate; answer from inspected evidence rather than switching to execute.
 
 Once execute has started, the Stop gate checks **each stage on the selected path**: `verify` needs evidence recorded *after entering verify*, `review` needs a completed conclusion and a fixed/dismissed disposition for every recorded finding, and `land` needs a commit SHA plus a PR URL if the repository has a remote. The CLI `stage.sh end` applies the same gate before deleting state. A free-form evidence entry from `execute` cannot satisfy later stages. Entering execute for the next ticket invalidates older evidence/review/land receipts. Record actual results, not placeholders. To interrupt for a human decision, queue a concrete question with `stage.sh ask "<exact question?>"` and include that question verbatim in the final reply; a random question mark does not suffice. Cursor cannot inspect the reply and therefore relies only on a queued question; report that degradation. Never drop verify just because the user asks to skip tests.
+
+With a configured `verify.command`, the gate requires the verifier's result for the current Git snapshot. Run `stage.sh verify` before landing. Stop starts the same verifier automatically. If Stop reports that it is still running, `stage.sh verify` waits for the result. `stage.sh show` displays the receipt. Use `stage.sh verify --retry` to repeat a check after a transient failure.
 
 Take the stages in path order. For each one, read its providers from the locate output and follow them, then check the stage's gate. Mark a stage done only when its gate is met, and write its output into the todo item: a decision list, a spec path, a commit, the verification command and what it showed.
 
