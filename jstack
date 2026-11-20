@@ -1061,11 +1061,11 @@ MD
 		rc=1
 	fi
 	# stage.sh 读 stages_file：接受表里的阶段，拒绝表外的阶段。
-	if ! out=$(cd "$r" && CLAUDE_CODE_SESSION_ID=cfg-check JSTACK_STATE_DIR="$r/state" \
+	if ! out=$(cd "$r" && JSTACK_SESSION_ID=cfg-check JSTACK_STATE_DIR="$r/state" \
 		bash "$flow/skills/route/stage.sh" start execute,verify 2>&1); then
 		say "✗ 仓库 stages_file：stage.sh start 拒绝了表里的阶段：$out"
 		rc=1
-	elif (cd "$r" && CLAUDE_CODE_SESSION_ID=cfg-check JSTACK_STATE_DIR="$r/state" \
+	elif (cd "$r" && JSTACK_SESSION_ID=cfg-check JSTACK_STATE_DIR="$r/state" \
 		bash "$flow/skills/route/stage.sh" start clarify >/dev/null 2>&1); then
 		say "✗ 仓库 stages_file：stage.sh start 接受了表外的 clarify"
 		rc=1
