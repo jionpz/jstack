@@ -31,9 +31,9 @@ Claude Code 有 `--scope project`，其余 harness 只有用户级安装；四�
 - `vendor/plugins/` 保持完整的插件布局，不摊平 skill。路径解析、相对链接、adapter 引用都按插件目录原样工作。
 - 只把 9 个入口 skill 链到各 harness 的项目 skill 目录：flow 的 `route`、`archive`，pstack 的 `poteto-mode`，spec 的 `grill-with-docs`、`to-spec`、`to-tickets`、`wayfinder`、`handoff`、`setup-matt-pocock-skills`。其余 skill 由 `locate.sh` 按物理路径读取，不进入发现目录。
 - 发现目录按实测：Claude Code 用 `.claude/skills`；Pi、OMP、Codex 和 Cursor 共用 `.agents/skills`（Pi 和 OMP 按项目向上查找，Codex 项目根实测可读，Cursor 应用内置读取）。链接用相对路径，仓库搬走也有效。旧安装留在 `.cursor/skills` 的 jstack 软链会在 install 时清理；`.agents` 里已有的同名入口视为用户配置，install 保留并跳过，不覆盖。
-- Claude Code 从 `.claude/skills` 加载入口，从 `.claude/agents` 加载两个 agent。flow 的三个 hook 写进项目 `.claude/settings.json`，命令用 `${CLAUDE_PROJECT_DIR}` 指向 vendor。
-- Cursor 的三个 hook 写进 `.cursor/hooks.json`，命令用 `${CURSOR_PROJECT_DIR}` 指向 vendor。原生接线和 Claude 兼容导入共存时，需要验证一次事件只执行一个 jstack 门禁。
-- Codex 的三个 hook 写进 `.codex/hooks.json`，从会话目录定位当前 checkout 的 Git 根，再找 vendor。
+- Claude Code 从 `.claude/skills` 加载入口，从 `.claude/agents` 加载两个 agent。flow 的三类 hook（提示、guard、Stop）写进项目 `.claude/settings.json`；guard 同时匹配 shell 与编辑工具。命令用 `${CLAUDE_PROJECT_DIR}` 指向 vendor。
+- Cursor 的三类 hook 写进 `.cursor/hooks.json`，其中 guard 接 `beforeShellExecution` 和 `preToolUse` 两个事件。命令用 `${CURSOR_PROJECT_DIR}` 指向 vendor。原生接线和 Claude 兼容导入共存时，需要验证一次事件只执行一个 jstack 门禁。
+- Codex 的三类 hook 写进 `.codex/hooks.json`；guard 同时匹配 `Bash` 和 `apply_patch`。命令从会话目录定位当前 checkout 的 Git 根，再找 vendor。
 
 ### 3. lock：安装可核查
 
@@ -77,7 +77,7 @@ Claude Code 有 `--scope project`，其余 harness 只有用户级安装；四�
 
 ### 6. 门禁可降级，不可静默
 
-flow 的三个 hook（阶段注入、Stop 证据、must-stop guard）目前有 Claude Code 和 Cursor 两套实现。Cursor 用自己的 hooks 配置（`.cursor-plugin/plugin.json` 声明 `hooks/hooks.cursor.json`，项目级写 `.cursor/hooks.json`）承载同样三件事：`beforeShellExecution` 对应 guard 并支持 `ask`，`beforeSubmitPrompt` 对应阶段提示，`stop` 对应验证门禁；Cursor 的 `stop` 输入没有最后一条回复，标了 `ask` 时只能直接放行。其余 harness 按 #28 的调研结果落地能承载的部分；承载不了的写进 adapter 的降级说明，并由 route 在收尾报告里点名"本次跳过了哪些门禁"。仓库级 `must_stop` 追加项在所有 harness 上都是**必须停**清单的一部分，即使该 harness 没有 guard 脚本，route 也必须自己识别。
+flow 的三个 hook（阶段注入、Stop 证据、must-stop guard）目前有 Claude Code 和 Cursor 两套实现。Cursor 用自己的 hooks 配置（`.cursor-plugin/plugin.json` 声明 `hooks/hooks.cursor.json`，项目级写 `.cursor/hooks.json`）承载同样三件事：`beforeShellExecution` 对应 shell guard 并支持 `ask`，`preToolUse` 对应编辑工具和补丁的 guard（Cursor 不执行 `ask`，降级为 `deny`），`beforeSubmitPrompt` 对应阶段提示，`stop` 对应验证门禁；Cursor 的 `stop` 输入没有最后一条回复，标了 `ask` 时只能直接放行。其余 harness 按 #28 的调研结果落地能承载的部分；承载不了的写进 adapter 的降级说明，并由 route 在收尾报告里点名"本次跳过了哪些门禁"。仓库级 `must_stop` 追加项在所有 harness 上都是**必须停**清单的一部分，即使该 harness 没有 guard 脚本，route 也必须自己识别。
 
 ### 7. 模型变更仍是数据流向变更
 

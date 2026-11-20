@@ -42,7 +42,7 @@
 | `domain_docs.glossary` | string | `GLOSSARY.md` | `flow:archive`、`spec:domain-modeling` | 领域词表位置 |
 | `domain_docs.adr` | string | `docs/adr` | 同上 | ADR 目录 |
 | `domain_docs.conventions` | string | `docs/agents/conventions` | `flow:archive`、poteto-mode 的委派 | 项目约定库；缺目录时归档阶段跳过并说明 |
-| `must_stop` | `{action, hook?, regex?}[]` | `[]` | `route`、`prompt.sh`、`guard.sh` | 追加项。`action` 是给人看的一句话；带 `regex`（ERE）的条目由 guard 拦截，`hook` 是稳定标识，便于 reason 和日志引用。没有 `regex` 的条目只能靠 route 自己识别 |
+| `must_stop` | `{action, hook?, regex?, path_regex?, allow_path_regex?}[]` | `[]` | `route`、`prompt.sh`、`guard.sh` | 追加项。`action` 是给人看的一句话；带 `regex`（ERE）的条目由 guard 按 shell 命令拦截，带 `path_regex`（ERE）的条目按编辑工具的路径和补丁目标拦截，`allow_path_regex` 可从路径规则中放行例外；`hook` 是稳定标识，便于 reason 和日志引用。没有匹配字段的条目只能靠 route 自己识别 |
 | `stages_file` | string \| null | `null` | `stage.sh`、`locate.sh`、`prompt.sh`、`route` | 整表替换的路径，相对仓库根；表格格式与插件的 `stages.md` 完全相同。必须含 `execute`，至少要有一个阶段。route 生成路线时丢掉表里没有的阶段 |
 | `verify.command` | string \| null | `null` | `prompt.sh`（注入提示）、`route`、`flow:archive` | 项目的验证命令；提供后 verify 阶段的证据默认来自它 |
 | `verify.timeout_s` | number | `600` | `route` | 验证命令超时 |
@@ -62,7 +62,7 @@
 | `~/.claude/rules/pstack-models.md`、`~/.cursor/rules/pstack-models.mdc`、`~/.omp/agent/rules/pstack-models.md`、`~/.omp/agent/config.yml` 的 `modelRoles` 块、`~/.pi/agent/AGENTS.md` 的角色表块 | 全部由用户级 `models` 生成，禁止手改；`./jstack models apply` 是唯一写入方。Pi/OMP 的共享文件只改 `jstack:models` 标记块，块外不碰；首次写入前确认（`--yes` 跳过），写前备份 |
 | `src/flow/skills/route/stages.md`、`must-stop.md` | 插件内置的默认值；仓库级 `stages_file` 整表替换阶段表，`must_stop` 在读取时追加，都不改插件文件 |
 | `.jstack/vendor/`、`.jstack/lock.json` | 项目级安装的产物，只能由 `./jstack install --all --scope project` 写入；`./jstack doctor` 核对版本、vendor 树哈希和入口链接。不要手改 |
-| `.claude/settings.json`、`.cursor/hooks.json` | 项目级安装写入的 harness hooks：只追加 flow 的三条门禁，按 `.jstack/vendor/plugins/flow` 路径去重，文件里的其它 hooks 保留。两份文件的格式和事件名不同（Claude Code / Cursor 原生） |
+| `.claude/settings.json`、`.cursor/hooks.json` | 项目级安装写入的 harness hooks：只追加 flow 的三类门禁（提示、guard、Stop），按 `.jstack/vendor/plugins/flow` 路径去重，文件里的其它 hooks 保留。guard 在 Claude/Codex 占 shell 与编辑工具两个 matcher，在 Cursor 占 `beforeShellExecution` 和 `preToolUse`；文件里其它 hooks 保留 |
 | 业务仓库自己的 `AGENTS.md` | jstack 不读不写。项目级接入只动 `.jstack/`、生成的 harness 配置和入口链接，不往 `AGENTS.md` 里塞内容 |
 
 ## 示例
