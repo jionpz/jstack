@@ -50,8 +50,9 @@ Pi and OMP carry the gates through the flow extension. A session id or a hook co
 
 | When | Command |
 |---|---|
-| Right after sizing | `stage.sh start <stage>,<stage>,...` with the path in order |
+| Right after sizing | `stage.sh start --size <XS\|S\|M\|L\|XL\|Question> <stage>,<stage>,...` with the path in order |
 | Entering each stage | `stage.sh enter <stage>` |
+| The size changes after start | `stage.sh size <XS\|S\|M\|L\|XL\|Question>` |
 | In `verify`, after running the real check | `stage.sh evidence "<command> -> <what it showed>"` (stage-scoped) |
 | During `review`, for each finding | `stage.sh review finding F1 "<finding>"`, then `stage.sh review resolution F1 fixed|dismissed "<reason>"` |
 | When review is complete | `stage.sh review complete "<conclusion>"` (explicit zero findings if none) |
