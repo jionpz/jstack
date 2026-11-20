@@ -443,4 +443,105 @@ t "verify、review、commit、PR 全齐后可结束" stage end
 t "完成后状态文件被删除" test ! -e "$STATE"
 unset JSTACK_REPO
 
+RECHECK_STATE_DIR="$T/recheck-state"
+new_recheck_fixture() {
+	local repo=$1
+	mkdir -p "$repo/src/one" "$repo/src/two" "$repo/api"
+	git -C "$repo" init -q
+	git -C "$repo" config user.name "jstack fixture"
+	git -C "$repo" config user.email "jstack-fixture@example.test"
+	git -C "$repo" config core.hooksPath /dev/null
+	git -C "$repo" config commit.gpgsign false
+	printf 'one baseline\n' >"$repo/src/one/item.txt"
+	printf 'two baseline\n' >"$repo/src/two/item.txt"
+	printf 'api baseline\n' >"$repo/api/contract.yaml"
+	git -C "$repo" add src api
+	git -C "$repo" commit -qm baseline
+}
+recheck_stage() {
+	local repo=$1 sid=$2
+	shift 2
+	(cd "$repo" && CLAUDE_CODE_SESSION_ID="$sid" JSTACK_STATE_DIR="$RECHECK_STATE_DIR" "$BASH" "$ST" "$@")
+}
+recheck_path_is() {
+	local state_file="$RECHECK_STATE_DIR/$2"
+	[ "$(sed -n 's/^path //p' "$state_file")" = "$3" ]
+}
+recheck_stage_is() {
+	local state_file="$RECHECK_STATE_DIR/$2"
+	[ "$(sed -n 's/^stage //p' "$state_file")" = "$3" ]
+}
+recheck_end_requires_review() {
+	local out
+	if out=$(recheck_stage "$1" "$2" end 2>&1); then return 1; fi
+	printf '%s' "$out" | grep -qF 'review 缺少审查结论'
+}
+recheck_finish() {
+	recheck_stage "$1" "$2" enter archive >/dev/null &&
+		recheck_stage "$1" "$2" end >/dev/null &&
+		[ ! -e "$RECHECK_STATE_DIR/$2" ]
+}
+
+MULTI_REPO="$T/recheck-multi"
+MULTI_SID=recheck-multi
+new_recheck_fixture "$MULTI_REPO"
+recheck_stage "$MULTI_REPO" "$MULTI_SID" start execute,verify,land,archive --recheck-size >/dev/null
+printf 'one task change\n' >"$MULTI_REPO/src/one/item.txt"
+git -C "$MULTI_REPO" add src/one/item.txt
+git -C "$MULTI_REPO" commit -qm 'change src one'
+printf 'two untracked task change\n' >"$MULTI_REPO/src/two/new.txt"
+recheck_stage "$MULTI_REPO" "$MULTI_SID" enter verify >/dev/null
+t "recheck-size：跨 src/one、src/two 的 commit 与 untracked 改动补 review" \
+	recheck_path_is "$MULTI_REPO" "$MULTI_SID" 'execute,verify,review,land,archive'
+t "自动补 review 后仍停在 verify" recheck_stage_is "$MULTI_REPO" "$MULTI_SID" verify
+recheck_stage "$MULTI_REPO" "$MULTI_SID" enter verify >/dev/null
+t "重复进入 verify 不重复插入 review" \
+	recheck_path_is "$MULTI_REPO" "$MULTI_SID" 'execute,verify,review,land,archive'
+rm -f "$MULTI_REPO/src/two/new.txt"
+printf 'one small final change\n' >"$MULTI_REPO/src/one/item.txt"
+recheck_stage "$MULTI_REPO" "$MULTI_SID" enter verify >/dev/null
+t "实际改动缩小后保留已插入的 review" \
+	recheck_path_is "$MULTI_REPO" "$MULTI_SID" 'execute,verify,review,land,archive'
+recheck_stage "$MULTI_REPO" "$MULTI_SID" evidence 'fixture verify -> passed' >/dev/null
+recheck_stage "$MULTI_REPO" "$MULTI_SID" enter review >/dev/null
+t "缺少 review 结论时 stage.sh end 明确拒绝" \
+	recheck_end_requires_review "$MULTI_REPO" "$MULTI_SID"
+recheck_stage "$MULTI_REPO" "$MULTI_SID" review complete '回归检查完成' >/dev/null
+recheck_stage "$MULTI_REPO" "$MULTI_SID" enter land >/dev/null
+MULTI_HEAD=$(git -C "$MULTI_REPO" rev-parse HEAD)
+recheck_stage "$MULTI_REPO" "$MULTI_SID" land commit "$MULTI_HEAD" >/dev/null
+t "补齐 review 结论后可继续 archive 并结束" recheck_finish "$MULTI_REPO" "$MULTI_SID"
+
+PREEXISTING_REPO="$T/recheck-preexisting"
+PREEXISTING_SID=recheck-preexisting
+new_recheck_fixture "$PREEXISTING_REPO"
+printf 'edit made before task\n' >"$PREEXISTING_REPO/src/two/item.txt"
+recheck_stage "$PREEXISTING_REPO" "$PREEXISTING_SID" start execute,verify,land,archive --recheck-size >/dev/null
+printf 'one task change\n' >"$PREEXISTING_REPO/src/one/item.txt"
+recheck_stage "$PREEXISTING_REPO" "$PREEXISTING_SID" enter verify >/dev/null
+t "任务前 src/two 未提交编辑不影响 src/one 单模块短路径" \
+	recheck_path_is "$PREEXISTING_REPO" "$PREEXISTING_SID" 'execute,verify,land,archive'
+
+API_REPO="$T/recheck-api"
+API_SID=recheck-api
+new_recheck_fixture "$API_REPO"
+recheck_stage "$API_REPO" "$API_SID" start execute,verify,land,archive --recheck-size >/dev/null
+printf 'api task change\n' >"$API_REPO/api/contract.yaml"
+git -C "$API_REPO" add api/contract.yaml
+printf 'api baseline\n' >"$API_REPO/api/contract.yaml"
+t "直接进入 land 也复核仅暂存的 API 变动并拒绝跳过 review" \
+	not recheck_stage "$API_REPO" "$API_SID" enter land
+t "仅暂存单个 api/ 路径改动也补 review" \
+	recheck_path_is "$API_REPO" "$API_SID" 'execute,verify,review,land,archive'
+t "未完成 review 时保持原阶段" recheck_stage_is "$API_REPO" "$API_SID" execute
+
+MANY_REPO="$T/recheck-many"
+MANY_SID=recheck-many
+new_recheck_fixture "$MANY_REPO"
+recheck_stage "$MANY_REPO" "$MANY_SID" start execute,verify,land,archive --recheck-size >/dev/null
+for name in a b c d; do printf 'new\n' >"$MANY_REPO/src/one/$name.txt"; done
+recheck_stage "$MANY_REPO" "$MANY_SID" enter verify >/dev/null
+t "同模块超过三个改动路径也补 review" \
+	recheck_path_is "$MANY_REPO" "$MANY_SID" 'execute,verify,review,land,archive'
+
 [ "$fails" -eq 0 ]
