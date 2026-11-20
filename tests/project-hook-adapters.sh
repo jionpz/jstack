@@ -81,6 +81,44 @@ printf '%s' "$claude_stop_out" | jq -e '.decision == "block"' >/dev/null ||
 	die "Claude Stop response has the wrong protocol"
 say "Cursor and imported Claude prompt/Stop produce one response"
 
+# 用户级本地 flow 同时以 Cursor 原生插件和 Claude 兼容导入加载时，导入副本应让原生副本执行。
+plugin="$ROOT/plugins/flow"
+plugin_prompt=$(jq -r '.hooks.UserPromptSubmit[0].hooks[0].command' "$plugin/hooks/hooks.json")
+local_home="$T/local-home"
+local_flow="$local_home/.cursor/plugins/local/flow"
+mkdir -p "$local_flow/hooks"
+cp "$plugin/hooks/hooks.cursor.json" "$local_flow/hooks/"
+imported_duplicate=$(printf '%s' "$prompt_json" |
+	HOME="$local_home" CLAUDE_PLUGIN_ROOT="$plugin" CURSOR_VERSION=1 JSTACK_STATE_DIR="$T/state" bash -c "$plugin_prompt")
+[ -z "$imported_duplicate" ] || die "Imported Claude plugin prompt ran beside the native Cursor plugin"
+rm "$local_flow/hooks/hooks.cursor.json"
+imported_fallback=$(printf '%s' "$prompt_json" |
+	HOME="$local_home" CLAUDE_PLUGIN_ROOT="$plugin" CURSOR_VERSION=1 JSTACK_STATE_DIR="$T/state" bash -c "$plugin_prompt")
+[ -n "$imported_fallback" ] || die "Imported Claude plugin stopped without a native Cursor plugin"
+printf '%s' "$imported_fallback" | jq -e 'has("additional_context")' >/dev/null ||
+	die "Imported Claude plugin fallback has the wrong protocol"
+say "Cursor-native and imported copies of the user plugin produce one prompt response"
+
+# 项目级 Cursor hooks 存在时，同名的用户级插件脚本应退出；项目 vendor 自己仍要执行。
+user_flow="$T/user-flow"
+mkdir -p "$user_flow"
+cp -R "$plugin/hooks" "$user_flow/"
+cp -R "$plugin/skills" "$user_flow/"
+user_prompt_out=$(printf '%s' "$prompt_json" |
+	CURSOR_PROJECT_DIR="$REPO" CURSOR_VERSION=1 CURSOR_CONVERSATION_ID="$SID" JSTACK_STATE_DIR="$T/state" bash "$user_flow/hooks/prompt.sh")
+[ -z "$user_prompt_out" ] || die "User-level prompt ran beside the project-level Cursor hook"
+no_project_prompt=$(printf '%s' "$prompt_json" |
+	CURSOR_VERSION=1 CURSOR_CONVERSATION_ID="$SID" JSTACK_STATE_DIR="$T/state" bash "$user_flow/hooks/prompt.sh")
+[ -n "$no_project_prompt" ] || die "User-level prompt stopped without a project-level hook"
+user_guard_out=$(printf '{"conversation_id":"%s","hook_event_name":"preToolUse","tool_name":"Write","tool_input":{"file_path":"/tmp/.env"}}' "$SID" |
+	CURSOR_PROJECT_DIR="$REPO" CURSOR_VERSION=1 JSTACK_STATE_DIR="$T/state" bash "$user_flow/hooks/guard.sh")
+[ -z "$user_guard_out" ] || die "User-level guard ran beside the project-level Cursor hook"
+project_guard_out=$(printf '{"conversation_id":"%s","hook_event_name":"preToolUse","tool_name":"Write","tool_input":{"file_path":"/tmp/.env"}}' "$SID" |
+	CURSOR_PROJECT_DIR="$REPO" CURSOR_VERSION=1 JSTACK_STATE_DIR="$T/state" bash "$FLOW/hooks/guard.sh")
+printf '%s' "$project_guard_out" | jq -e '.permission == "deny"' >/dev/null ||
+	die "Project guard stopped when it was the active Cursor hook"
+say "Project Cursor hooks suppress user-level copies without suppressing themselves"
+
 jq -n '{version:1,hooks:{}}' >"$REPO/.cursor/hooks.json"
 fallback_out=$(printf '%s' "$prompt_json" |
 	CLAUDE_PROJECT_DIR="$REPO" CURSOR_PROJECT_DIR="$REPO" CURSOR_VERSION=1 JSTACK_STATE_DIR="$T/state" bash -c "$claude_prompt")
