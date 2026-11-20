@@ -117,6 +117,8 @@ JStack 把「应该做什么」和「由哪个 skill 完成」分开管理。`ro
 
 完整的阶段、产出要求和执行者定义，以 [`stages.md`](src/flow/skills/route/stages.md) 为准。
 
+任务收尾时，`stage.sh` 会在用户级状态目录留下一条运行记录：仓库、分支/ticket、规模、阶段路径、证据、默认决定、打断次数、耗时，以及运行器提供时的 premium token。没有正常收尾的任务会保留为“未完成”。用 `./jstack runs` 查看最近的记录，`--repo <dir>` 按仓库筛，`--show <run-id>` 看证据和默认决定明细。记录不写提示词或代码 diff。
+
 ### 为什么分成三个插件？
 
 JStack 的核心是 **flow**，不是把第三方 skills 简单放在一起。流程由 JStack 定义，各阶段再使用合适的执行者：

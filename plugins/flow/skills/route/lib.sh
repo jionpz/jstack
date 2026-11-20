@@ -1,8 +1,10 @@
 # 阶段门禁的共用部分，由同目录的 stage.sh 和插件的 hooks/*.sh source，不单独运行。
 # 状态文件是 <状态目录>/<会话 id>，纯文本，每行一条：
 #   path <逗号分隔的阶段>    stage <当前阶段>    evidence <文本>（可多行）
-#   default <文本>（替用户采用的默认决定）    ask（存在即等人）
+#   default <文本>（替用户采用的默认决定）    ask <问题>（存在即等人）
+#   started / started_epoch / run / repo / ticket / size / asks / base（运行记录用的元数据）
 # 合并后归档的待补清单是 <状态目录的上一级>/pending/<仓库 key>，每行 "<PR URL> <还剩什么>"，按仓库存、跨会话。
+# 运行记录在 <状态目录的上一级>/runs：完成的任务一行一条 JSON；未完成的任务留在 runs/active/<会话 id>.json。
 # JSTACK_NO_JQ 非空时当作没有 jq，只用于测试 sed 退路。
 
 jstack_state_dir() {
@@ -34,6 +36,103 @@ jstack_replace() {
 	if cat >"$tmp" && mv "$tmp" "$1"; then return 0; fi
 	rm -f "$tmp"
 	return 1
+}
+
+# 运行记录根目录。和状态目录放在同一级，不跟随仓库提交。
+jstack_run_root() {
+	printf '%s/runs\n' "$(dirname "$(jstack_state_dir)")"
+}
+
+jstack_run_log() {
+	printf '%s/runs.jsonl\n' "$(dirname "$(jstack_state_dir)")"
+}
+
+jstack_run_active() {
+	case $1 in
+	'' | . | .. | *[!A-Za-z0-9._-]*) return 1 ;;
+	esac
+	printf '%s/active/%s.json\n' "$(jstack_run_root)" "$1"
+}
+
+# JSON 字符串转义；状态里的证据和默认决定已折叠成单行，这里再兜底去掉换行和制表符。
+jstack_run_escape() {
+	printf '%s' "$1" | tr '\r\n\t' '   ' | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+# 状态文件里所有 "<key> <文本>" 行，输出成 JSON 字符串数组。
+jstack_run_json_list() {
+	local key=$1 file=$2 line first=1
+	printf '['
+	while IFS= read -r line; do
+		[ -n "$line" ] || continue
+		[ "$first" -eq 1 ] || printf ','
+		first=0
+		printf '"%s"' "$(jstack_run_escape "${line#"$key "}")"
+	done < <(grep "^$key " "$file" 2>/dev/null || true)
+	printf ']'
+}
+
+# 把状态文件序列化成一行 JSON。$2 是 completed 或 unfinished；$3 是结束时间，未完成时为空。
+jstack_run_json() {
+	local file=$1 status=$2 ended=$3
+	local run started started_epoch duration=null repo ticket size asks needs=false
+	local evidence defaults base head premium=null now
+	run=$(jstack_get run "$file")
+	started=$(jstack_get started "$file")
+	started_epoch=$(jstack_get started_epoch "$file")
+	repo=$(jstack_get repo "$file")
+	ticket=$(jstack_get ticket "$file")
+	size=$(jstack_get size "$file")
+	asks=$(jstack_get asks "$file")
+	base=$(jstack_get base "$file")
+	case $asks in
+	'' | *[!0-9]*) asks=0 ;;
+	esac
+	if [ "$asks" -gt 0 ] || grep -q '^ask ' "$file"; then needs=true; fi
+	case $started_epoch in
+	'' | *[!0-9]*) ;;
+	*)
+		now=$(date +%s)
+		duration=$((now - started_epoch))
+		;;
+	esac
+	if [ -n "$repo" ] && [ "$repo" != - ]; then
+		head=$(git -C "$repo" rev-parse HEAD 2>/dev/null || true)
+	else
+		head=
+	fi
+	case ${JSTACK_PREMIUM_TOKENS:-} in
+	'' | *[!0-9]*) ;;
+	*) premium=$JSTACK_PREMIUM_TOKENS ;;
+	esac
+	evidence=$(jstack_run_json_list evidence "$file")
+	defaults=$(jstack_run_json_list default "$file")
+	printf '{"run_id":"%s","status":"%s","started_at":"%s","ended_at":"%s","duration_s":%s,"repo":"%s","ticket":"%s","size":"%s","path":"%s","stage":"%s","asks":%s,"needs_human":%s,"evidence":%s,"defaults":%s,"base":"%s","head":"%s","premium_tokens":%s}\n' \
+		"$(jstack_run_escape "${run:--}")" "$status" \
+		"$(jstack_run_escape "${started:--}")" "$(jstack_run_escape "$ended")" "$duration" \
+		"$(jstack_run_escape "${repo:--}")" "$(jstack_run_escape "${ticket:--}")" \
+		"$(jstack_run_escape "${size:--}")" \
+		"$(jstack_run_escape "$(jstack_get path "$file")")" \
+		"$(jstack_run_escape "$(jstack_get stage "$file")")" \
+		"$asks" "$needs" "$evidence" "$defaults" \
+		"$(jstack_run_escape "${base:--}")" "$(jstack_run_escape "${head:--}")" "$premium"
+}
+
+# 更新未完成任务的快照；写不进去不影响门禁。
+jstack_run_snapshot() {
+	local file=$1 active
+	active=$(jstack_run_active "$(basename "$file")") || return 0
+	mkdir -p "$(dirname "$active")" 2>/dev/null || return 0
+	jstack_run_json "$file" unfinished "" | jstack_replace "$active" || true
+}
+
+# 任务收尾：追加完成记录，再删掉活动快照。
+jstack_run_finish() {
+	local file=$1 log active
+	log=$(jstack_run_log)
+	mkdir -p "$(dirname "$log")" 2>/dev/null || return 0
+	jstack_run_json "$file" completed "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$log" || true
+	active=$(jstack_run_active "$(basename "$file")") && rm -f "$active"
 }
 
 # stages.md 的 Stages 表，每行"阶段<TAB>产出<TAB>门禁"。

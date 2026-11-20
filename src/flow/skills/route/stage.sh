@@ -13,8 +13,10 @@ stages=${JSTACK_STAGES_FILE:-$here/stages.md}
 
 usage() {
 	cat >&2 <<'EOF'
-用法：stage.sh start <阶段>,<阶段>,...   记录阶段路径并进入第一个阶段
+用法：stage.sh start [--size <XS|S|M|L|XL|Question>] <阶段>,<阶段>,...
+                                      记录阶段路径并进入第一个阶段
       stage.sh enter <阶段>              进入路径上的某个阶段
+      stage.sh size <XS|S|M|L|XL|Question> 更新任务规模
       stage.sh evidence <文本>           记录当前阶段证据；verify 证据写成 "<命令> -> <结果>"
       stage.sh review finding <ID> <说明>      在 review 阶段记录一条发现
       stage.sh review resolution <ID> fixed|dismissed <理由>   记录每条发现的处置
@@ -23,7 +25,7 @@ usage() {
       stage.sh land pr <URL>             在 land 阶段记录 PR URL
       stage.sh default <文本>            记录一个替用户采用的默认决定，写成 "<决定> -> <理由>"
       stage.sh ask <具体问题>            排队一个问题；本轮回复必须包含该问题
-      stage.sh end                       所需阶段产出齐全后才删除记录
+      stage.sh end                       所需阶段产出齐全后写运行记录并删除会话记录
       stage.sh show                      打印当前记录
       stage.sh pending [<PR URL> <文本>]  记一条合并后归档待补（PR 还没合）；不带参数时列出本仓库的待补
       stage.sh settled <PR URL>          合并后归档做完，删掉这条待补
@@ -49,13 +51,23 @@ cmd=${1:-}
 # Extensions and tool hooks can mark a delegated worker. No worker may change
 # the parent session state, even though it may inherit the parent session ID.
 case $cmd in
-start | enter | evidence | review | land | default | ask | end | pending | settled)
+start | enter | size | evidence | review | land | default | ask | end | pending | settled)
     [ -z "${JSTACK_SUBAGENT_ID:-}" ] || die "子代理不能修改主会话阶段记录；请将结果交给主会话"
     ;;
 esac
 case $cmd in
 start)
+	size=${JSTACK_SIZE:--}
+	if [ "${1:-}" = --size ]; then
+		[ $# -ge 3 ] && [ -n "$2" ] || usage
+		size=$2
+		shift 2
+	fi
 	[ $# -eq 1 ] && [ -n "$1" ] || usage
+	case $size in
+	- | XS | S | M | L | XL | Question) ;;
+	*) die "未知任务规模：${size}（可用：XS、S、M、L、XL、Question）" ;;
+	esac
 	[ -f "$stages" ] || die "找不到阶段表 ${stages}"
 	known=$(jstack_stage_rows "$stages" | cut -f1)
 	[ -n "$known" ] || die "阶段表 ${stages} 里没有解析出任何阶段"
@@ -76,7 +88,23 @@ start)
 	fi
 	mkdir -p "$dir"
 	find "$dir" -type f -mmin +10080 -delete 2>/dev/null || true
-	printf 'path %s\nstage %s\n' "$1" "${1%%,*}" | jstack_replace "$file"
+	repo=$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null) || repo=$(pwd -P)
+	repo=$(cd "$repo" 2>/dev/null && pwd -P) || repo=$PWD
+	branch=$(git -C "$PWD" branch --show-current 2>/dev/null || true)
+	ticket=${JSTACK_TICKET:-}
+	if [ -z "$ticket" ]; then
+		ticket=$(printf '%s\n' "$branch" | sed -n 's/.*[Ii]ssue-\([0-9][0-9]*\).*/#\1/p')
+	fi
+	[ -n "$ticket" ] || ticket=${branch:--}
+	ticket=$(printf '%s' "$ticket" | tr '\r\n' '  ')
+	started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+	started_epoch=$(date +%s)
+	run=$(date -u +%Y%m%dT%H%M%SZ)-$sid
+	base=$(git -C "$repo" rev-parse HEAD 2>/dev/null || true)
+	printf 'path %s\nstage %s\nstarted %s\nstarted_epoch %s\nrun %s\nrepo %s\nticket %s\nsize %s\nasks 0\nbase %s\n' \
+		"$1" "${1%%,*}" "$started" "$started_epoch" "$run" "$repo" "$ticket" "$size" "${base:--}" |
+		jstack_replace "$file"
+	jstack_run_snapshot "$file"
 	echo "jstack: 阶段路径 $(printf '%s' "$1" | sed 's/,/ → /g')，当前阶段 ${1%%,*}"
 	# Workloop 没有 Stop hook：状态照记，但不能让人以为门禁在执行。
 	if [ "$sid" = "${WORKLOOP_SESSION_ID:-}" ]; then
@@ -98,7 +126,19 @@ enter)
 	esac
 	# 每次进入 execute 是一个新的工作单元（L 路径的下一张 ticket），之前的证据不再算数。
 	awk -v s="$1" '/^stage / { print "stage " s; next } /^ask / { next } s == "execute" && (/^evidence / || /^review / || /^land /) { next } { print }' "$file" | jstack_replace "$file"
+	jstack_run_snapshot "$file"
 	echo "jstack: 当前阶段 $1"
+	;;
+size)
+	[ $# -eq 1 ] && [ -n "$1" ] || usage
+	case $1 in
+	XS | S | M | L | XL | Question) ;;
+	*) die "未知任务规模：$1（可用：XS、S、M、L、XL、Question）" ;;
+	esac
+	need_state
+	awk -v s="$1" 'BEGIN { done = 0 } /^size / { print "size " s; done = 1; next } { print } END { if (!done) print "size " s }' "$file" | jstack_replace "$file"
+	jstack_run_snapshot "$file"
+	echo "jstack: 任务规模 $1"
 	;;
 evidence)
 	text=$(printf '%s' "$*" | tr '\r\n' '  ' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
@@ -106,6 +146,7 @@ evidence)
 	need_state
 	stage=$(jstack_get stage "$file")
 	{ cat "$file"; printf 'evidence %s %s\n' "$stage" "$text"; } | jstack_replace "$file"
+	jstack_run_snapshot "$file"
 	echo "jstack: 已记录 ${stage} 阶段证据：${text}"
 	;;
 review)
@@ -137,6 +178,7 @@ review)
     complete) entry="review complete $text" ;;
     esac
     { cat "$file"; printf '%s\n' "$entry"; } | jstack_replace "$file"
+    jstack_run_snapshot "$file"
     echo "jstack: 已记录 $entry"
     ;;
 land)
@@ -155,6 +197,7 @@ land)
     *) usage ;;
     esac
     { cat "$file"; printf 'land %s %s\n' "$kind" "$value"; } | jstack_replace "$file"
+    jstack_run_snapshot "$file"
     echo "jstack: 已记录 land ${kind}：${value}"
     ;;
 default)
@@ -162,6 +205,7 @@ default)
 	[ -n "$text" ] || die "默认决定不能为空，写成 \"<决定> -> <理由>\""
 	need_state
 	{ cat "$file"; printf 'default %s\n' "$text"; } | jstack_replace "$file"
+	jstack_run_snapshot "$file"
 	echo "jstack: 已记录默认决定：${text}"
 	;;
 ask)
@@ -169,7 +213,18 @@ ask)
     need_state
     text=$(printf '%s' "$*" | tr '\r\n' '  ' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
     case $text in *\?* | *？*) ;; *) die "ask 必须包含一条具体问句（? 或 ？）" ;; esac
-    grep -qxF "ask $text" "$file" || { cat "$file"; printf 'ask %s\n' "$text"; } | jstack_replace "$file"
+    if ! grep -qxF "ask $text" "$file"; then
+        asks=$(jstack_get asks "$file")
+        case $asks in
+        '' | *[!0-9]*) asks=0 ;;
+        esac
+        asks=$((asks + 1))
+        {
+            awk -v n="$asks" 'BEGIN { done = 0 } /^asks / { if (!done) { print "asks " n; done = 1 } next } { print } END { if (!done) print "asks " n }' "$file"
+            printf 'ask %s\n' "$text"
+        } | jstack_replace "$file"
+        jstack_run_snapshot "$file"
+    fi
     echo "jstack: 已排队问题：${text}"
     ;;
 end)
@@ -177,6 +232,7 @@ end)
     need_state
     missing=$(jstack_gate_missing "$file")
     [ -z "$missing" ] || die "阶段未完成，不能清除记录：$missing"
+    jstack_run_finish "$file"
     rm -f "$file"
     echo "jstack: 已清除阶段记录"
     ;;
