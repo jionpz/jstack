@@ -32,7 +32,7 @@ TICKET_STAGE_PROVIDERS = {
     "execute": "flow:execute",
     "verify": "pstack:principle-prove-it-works",
     "review": "flow:review",
-    "land": "pstack:poteto-mode/playbooks/opening-a-pr.md",
+    "land": "flow:land",
 }
 TICKET_PROVIDER_PATHS = {
     "flow:execute": Path("src/flow/skills/execute/SKILL.md"),
@@ -40,9 +40,7 @@ TICKET_PROVIDER_PATHS = {
         "plugins/pstack/skills/principle-prove-it-works/SKILL.md"
     ),
     "flow:review": Path("src/flow/skills/review/SKILL.md"),
-    "pstack:poteto-mode/playbooks/opening-a-pr.md": Path(
-        "plugins/pstack/skills/poteto-mode/playbooks/opening-a-pr.md"
-    ),
+    "flow:land": Path("src/flow/skills/land/SKILL.md"),
 }
 STAGE_COLUMNS = ("Stage", "Output", "Gate", "Providers", "Tool profile")
 BACKTICK_RE = re.compile(r"`([^`]+)`")

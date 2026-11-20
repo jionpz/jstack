@@ -93,7 +93,7 @@ branch_ready` 改为分支完成。与 ticket 模式一样，它只声明完成�
 | execute | `flow:execute` | `developer` |
 | verify | `pstack:principle-prove-it-works` | `verifier` |
 | review | `flow:review` | `reviewer` |
-| land | `pstack:poteto-mode/playbooks/opening-a-pr.md` | `releaser` |
+| land | `flow:land` | `releaser` |
 
 交互式 XS/S route 默认不含 review；managed 写路径强制加入 review 安全门，这是
 launcher 的安全覆盖，不声称与交互式 route 完全相同。

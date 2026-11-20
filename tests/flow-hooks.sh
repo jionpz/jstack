@@ -389,7 +389,7 @@ cat >"$REPO/.jstack/stages.md" <<'MD'
 | size | One sentence | None | `flow:route` |
 | execute | The change | None | `pstack:poteto-mode` |
 | verify | Evidence | No evidence means not done | `pstack:principle-prove-it-works` |
-| land | Commits | must-stop | `pstack:poteto-mode/playbooks/opening-a-pr.md` |
+| land | Commits | must-stop | `flow:land` |
 MD
 repo_stage() { (cd "$REPO" && CLAUDE_CODE_SESSION_ID=$SID2 "$BASH" "$ST" "$@"); }
 repo_hook() { (cd "$REPO" && printf '%s' "$2" | "$BASH" "$H/$1.sh"); }
