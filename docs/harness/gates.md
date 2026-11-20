@@ -11,7 +11,7 @@ flow 的三个门禁（阶段提示、验证门禁、红线守卫）的判定逻
 | 发布支持 | 一等 | 尽力而为 | 一等 | 尽力而为 | 尽力而为 |
 | 阶段提示（UserPromptSubmit） | 支持（原生 hooks） | 需适配（`beforeSubmitPrompt` → `additional_context`） | 需适配（`before_agent_start` → 隐藏消息） | 需适配（`before_agent_start` → 隐藏消息） | 需适配（原生 `UserPromptSubmit` → `hookSpecificOutput.additionalContext`） |
 | 验证门禁（Stop） | 支持（原生 hooks，`stop_hook_active` 由 harness 维护） | 需适配（`stop` → `followup_message`，`loop_limit` 3） | 需适配（`agent_before_settle`，扩展自己限 3 次） | 需适配（`session_stop` → `decision: block`，`stop_hook_active` 由 harness 维护） | 需适配（原生 `Stop`，`stop_hook_active` 由 harness 维护） |
-| 红线守卫（PreToolUse） | 支持（原生 hooks，`permissionDecision: ask`） | 需适配（`beforeShellExecution` → `permission: ask`；`preToolUse` 降级 `deny`） | 需适配（`tool_call` → 确认框或 `block`） | 需适配（`tool_call` → 确认框或 `block`） | 需适配（`PreToolUse` → `permissionDecision: deny`；不支持 ask，降级为 deny） |
+| 红线守卫（PreToolUse） | 支持（shell 与编辑工具的原生 hooks，`permissionDecision: ask`） | 需适配（shell 走 `beforeShellExecution` → `permission: ask`；编辑工具走 `preToolUse` 并降级 `deny`） | 需适配（`tool_call(bash|write|edit)` → 确认框或 `block`） | 需适配（`tool_call(bash|write|edit)` → 确认框或 `block`） | 需适配（原生 `PreToolUse` 接 `Bash` 和 `apply_patch`；不支持 ask，降级为 deny） |
 
 “需适配”不是没实现：三个门禁在 Pi、OMP 和 Codex 上都已实现，只是需要各自的事件/协议翻译，并有下面的降级。
 
@@ -25,7 +25,7 @@ flow 的三个门禁（阶段提示、验证门禁、红线守卫）的判定逻
 - **OMP**：OMP 的插件清单只收 skills / agents，不收 flow 的 Claude 格式 hooks。用户级 `./jstack install` 把 `plugins/flow/extensions/omp.ts` 写成 `~/.omp/agent/extensions/jstack-flow-gates.ts`；项目级安装写 `.omp/extensions/jstack-flow-gates.ts`，相对路径转出 `.jstack/vendor/plugins/flow/extensions/omp.ts`。OMP 的对应 extension 目录加载入口文件。
 - **Codex**：项目级安装写 `.codex/hooks.json`。命令从会话目录解析 Git 根并执行该 checkout 的 vendor 脚本。交互式会话在审查并信任 hooks 后执行。已审查来源的自动化测试可使用 `--dangerously-bypass-hook-trust`。
 
-三个门禁都只读状态文件、不调模型；状态文件的路径和格式见 `lib.sh`。任务正常收尾时 `stage.sh` 在同一级的 `runs.jsonl` 追加一行运行记录；没有收尾的任务留在 `runs/active/`，`./jstack runs` 会把它标成未完成。记录只含仓库、规模、阶段路径、证据、默认决定、打断次数和耗时等元数据，不含提示词或代码 diff。
+三个门禁都只读状态文件、不调模型；状态文件的路径和格式见 `lib.sh`。红线守卫除了 shell 命令，也检查编辑/写入工具的目标路径和补丁里的目标文件；它按路径规则拦 `.env`、凭据和 provider/auth 配置，不读取文件内容。任务正常收尾时 `stage.sh` 在同一级的 `runs.jsonl` 追加一行运行记录；没有收尾的任务留在 `runs/active/`，`./jstack runs` 会把它标成未完成。记录只含仓库、规模、阶段路径、证据、默认决定、打断次数和耗时等元数据，不含提示词或代码 diff。
 
 提示 hook 每轮输出 `jstack 提示门禁注入：session=<id>`，尚未执行 `stage.sh start` 时也输出，供 agent 核对本会话确实收到过 harness 注入。看到源码中的字符串、配置存在或手动运行 hook 都不算收到注入；这个标记只证明提示 hook 运行，不能代替 Stop/guard 的实际拦截证据。
 
@@ -56,12 +56,12 @@ flow 的三个门禁（阶段提示、验证门禁、红线守卫）的判定逻
 
 ## 降级
 
-1. **没有 UI 时“先问”变“拦下”**（Cursor 的 `preToolUse`、Pi / OMP 的 print / JSON 运行）：没有人能回答确认框，`guard.sh` 命中的命令直接拒绝执行，不会先运行。交互式会话（包括 Claude Code 的 `bypassPermissions`）仍弹确认框。
+1. **没有 UI 时“先问”变“拦下”**（Cursor 的 `preToolUse`、Pi / OMP 的 print / JSON 运行）：没有人能回答确认框，`guard.sh` 命中的命令或文件写入直接拒绝执行，不会先运行。交互式会话（包括 Claude Code 的 `bypassPermissions`）仍弹确认框。
 2. **Pi 的 Stop 门禁每条用户消息最多拦 3 次**：Pi 没有 Claude Code / Cursor / OMP 那种由 harness 维护的 `stop_hook_active`，`agent_before_settle` 的 `continue` 只对本次结算有效。扩展自己计数，模型硬顶着不记证据时第 4 次放行；用户发新消息或门禁满足时清零。代价是模型坚持不记证据时会溜过去，收益是不会无限续跑。
 3. **Cursor 的 Stop 门禁拿不到最后一条回复**：标了 `ask` 时直接放行，无法核对回复里是否真的提了问题；`loop_limit` 3 兜底。
 4. **OMP 扩展缺失时门禁不生效**：用户级检查 `~/.omp/agent/extensions/jstack-flow-gates.ts`；项目级检查 `.omp/extensions/jstack-flow-gates.ts`。用户级入口仍引用安装时 checkout 的绝对路径，移动 checkout 后需重跑用户级 install。若当前作用域的入口文件缺失或未加载，`stage.sh` 打印“这个 harness 没有会话 id”。
 5. **子 agent 状态隔离是有限保护，不是沙箱**：Pi / OMP 的扩展跳过 `parentSession` 非空会话的提示和 Stop 门禁；在识别到子代理的 `tool_call(bash)` 中，扩展拒绝直接调用会修改主状态的 `stage.sh` 命令。Claude Code 的 `PreToolUse` 提供 `agent_id` 时，`guard.sh` 同样拒绝直接修改状态的命令。`stage.sh` 收到 `JSTACK_SUBAGENT_ID` 也直接拒绝写入。**但是**子代理 shell 可能继承根会话 id，经过 wrapper/间接脚本、无 hook 或未受信任的 hook 仍可能绕过普通命令匹配；不能将此机制称为 OS 级权限隔离。主会话必须亲自读取子代理结果、重新验证并记录阶段凭据；真正防篡改需要独立可验证的子代理身份或文件访问隔离。
-6. **Codex 的 ask 降级为 deny，hooks 要先信任**：Codex 的 `PreToolUse` 只认 deny，返回 `permissionDecision: ask` 会被忽略、命令照跑（0.166.0 实测），所以 `guard.sh` 在 Codex 输入下直接 deny，和 Cursor 的 `preToolUse` 同规则，交互式会话里也没有“先问”这一步。另外 Codex 的 hooks 默认要落过信任才执行：交互式会话首次会要求同意；`codex exec` 不加 `--dangerously-bypass-hook-trust` 就静默跳过未信任的 hooks。
+6. **Codex 的 ask 降级为 deny，hooks 要先信任**：Codex 的 `PreToolUse` 只认 deny，返回 `permissionDecision: ask` 会被忽略、命令照跑（0.166.0 实测），所以 `guard.sh` 在 Codex 输入下对 `Bash` 和 `apply_patch` 都直接 deny，和 Cursor 的 `preToolUse` 同规则，交互式会话里也没有“先问”这一步。另外 Codex 的 hooks 默认要落过信任才执行：交互式会话首次会要求同意；`codex exec` 不加 `--dangerously-bypass-hook-trust` 就静默跳过未信任的 hooks。
 7. **Workloop 三个门禁都不强制**：Workloop 是第三方云端编码平台，没有 Stop hook，也没有已知的扩展点。`stage.sh start` 会打印未强制提示；agent 结束前自己运行 `stage.sh show` 核对证据，收尾摘要的门禁一行写明未强制。这是自检，不是门禁。本地 `./jstack smoke` 跑不到 Workloop，只能在它的沙箱里手动验收。
 
 ## 收尾报告
@@ -76,6 +76,6 @@ route 的收尾摘要（`src/flow/skills/route/SKILL.md` 第 5 节）始终包�
 
 ## 验证
 
-- `bash tests/flow-hooks.sh`：三个 hook 的协议、会话 id 回退、仓库配置；不依赖 harness。
+- `bash tests/flow-hooks.sh`：三个 hook 的协议、shell 与编辑工具的红线守卫、会话 id 回退、仓库配置；不依赖 harness。
 - `./jstack smoke pi` / `./jstack smoke omp` / `./jstack smoke codex`：在真机上跑非交互会话，断言 `rm -rf` 被拦（`GUARD-SEEN`）、`stage.sh start execute,verify` 后停止被 Stop 门禁拦回（`GATE-SEEN`）。没装对应 harness 自动跳过。
 - 手工：交互式会话里跑一次命中 must-stop 的命令，确认弹确认框；Codex 的 hooks 信任与 deny 行为按 `docs/testing/codex.md` 核对。`stage.sh show` 看状态落在 `~/.local/state/jstack/sessions/<id>`。
