@@ -1,12 +1,12 @@
 ---
 name: execute
-description: "jstack's lean execute-stage provider. One task or one ticket done in the main session: inspect, change, verify, review the diff, commit. Route reads this file by path; do not model-invoke it."
+description: "jstack's lean execute-stage provider. One task or one ticket done in the main session: inspect, change, run author checks, review the diff, commit. Route reads this file by path; do not model-invoke it."
 disable-model-invocation: true
 ---
 
 # Execute
 
-You own one task or one ticket from the first edit to the committed change. Work in the main session. This stage also covers verify and a self-review; the land gate is checked after you finish.
+You own one task or one ticket from the first edit to the committed change. Work in the main session. Run author checks and a self-review before handing the candidate back to route; independent verification happens in the verify stage.
 
 ## Do the work
 
@@ -15,7 +15,7 @@ You own one task or one ticket from the first edit to the committed change. Work
 3. Change in small units. After each unit, run the real check for what changed: the repo's test command, or the command the task names. Read the failure before editing again. Fix the root cause, then rerun.
 4. Review your own diff before committing: debug leftovers, unrelated edits, error handling at boundaries, and tests that assert observable behavior.
 5. Commit each verified unit with a message that says why. Branch first when the repo works on branches. Never push to a repo the user did not point you at, and never rewrite a pushed branch.
-6. Keep the command outputs from each check. When the route enters `verify`, record the actual verification with `../route/stage.sh evidence "<command> -> <what it showed>"`. An `evidence` entry written while still in `execute` is useful context but **does not satisfy** the `verify` gate. If gates are unavailable, report that honestly and keep the real results.
+6. Return the base revision, candidate revision, and run instructions to route. Report what your author checks showed. The verify stage records its own acceptance evidence in fresh contexts.
 
 ## Delegation
 

@@ -91,7 +91,7 @@ branch_ready` 改为分支完成。与 ticket 模式一样，它只声明完成�
 | 阶段 | provider | tool profile |
 |---|---|---|
 | execute | `flow:execute` | `developer` |
-| verify | `pstack:principle-prove-it-works` | `verifier` |
+| verify | `flow:verify` | `verifier` |
 | review | `flow:review` | `reviewer` |
 | land | `pstack:poteto-mode/playbooks/opening-a-pr.md` | `releaser` |
 
