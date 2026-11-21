@@ -1114,7 +1114,7 @@ cat >"$r/.jstack/stages.md" <<'MD'
 | size | One sentence | None | `flow:route` |
 | execute | The change | None | `pstack:poteto-mode` |
 | verify | Evidence | No evidence means not done | `pstack:principle-prove-it-works` |
-| land | Commits | must-stop | `pstack:poteto-mode/playbooks/opening-a-pr.md` |
+| land | Commits | must-stop | `flow:land` |
 MD
 	if ! errs=$(repo_config_errors "$r"); then
 		say "✗ 仓库级配置的正例被误判："
