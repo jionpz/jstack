@@ -29,6 +29,9 @@ usage() {
                                       所需阶段产出齐全后写运行记录并删除会话记录；
                                       有报告时同时尝试发布到 ticket / PR
       stage.sh show                      打印当前记录
+      stage.sh resume --ticket <引用>    查找本仓库未结束的运行
+      stage.sh resume <运行 ID> --from-session <旧会话 ID> --ticket <当前引用>
+                                      接管未结束的运行，清除当前票的旧门禁证据
       stage.sh pending [<PR URL> <文本>]  记一条合并后归档待补（PR 还没合）；不带参数时列出本仓库的待补
       stage.sh settled <PR URL>          合并后归档做完，删掉这条待补
 EOF
@@ -53,7 +56,7 @@ cmd=${1:-}
 # Extensions and tool hooks can mark a delegated worker. No worker may change
 # the parent session state, even though it may inherit the parent session ID.
 case $cmd in
-start | enter | size | evidence | review | land | default | ask | end | pending | settled)
+start | enter | size | evidence | review | land | default | ask | end | pending | settled | resume)
     [ -z "${JSTACK_SUBAGENT_ID:-}" ] || die "子代理不能修改主会话阶段记录；请将结果交给主会话"
     ;;
 esac
@@ -157,18 +160,27 @@ enter)
 	if [ -n "$ticket" ]; then
 		ticket=$(printf '%s' "$ticket" | tr '\r\n' '  ')
 		awk -v t="$ticket" '
-			BEGIN { ticket_done = 0; explicit_done = 0 }
-			/^ticket / { if (!ticket_done) { print "ticket " t; ticket_done = 1 } next }
+			BEGIN { explicit_done = 0 }
+			$0 == "ticket " t { next }
 			/^ticket_explicit / { if (!explicit_done) { print "ticket_explicit 1"; explicit_done = 1 } next }
 			{ print }
 			END {
-				if (!ticket_done) print "ticket " t
 				if (!explicit_done) print "ticket_explicit 1"
+				print "ticket " t
 			}
 		' "$file" | jstack_replace "$file"
 	fi
-	# 每次进入 execute 是一个新的工作单元（L 路径的下一张 ticket），之前的证据不再算数。
-	awk -v s="$stage_name" '/^stage / { print "stage " s; next } /^ask / { next } s == "execute" && (/^evidence / || /^review / || /^land /) { next } { print }' "$file" | jstack_replace "$file"
+	# 每次进入 execute 是一个新的工作单元（L 路径的下一张 ticket）。
+	# 旧证据不再满足门禁，但保留成 prior 历史，续跑和收尾摘要仍能看到已经开过的 PR。
+	{
+		awk -v s="$stage_name" '
+			/^stage / { print "stage " s; next }
+			/^ask / { next }
+			s == "execute" && (/^evidence / || /^review / || /^land /) { print "prior " $0; next }
+			{ print }
+		' "$file"
+		printf 'visited %s\n' "$stage_name"
+	} | jstack_replace "$file"
 	jstack_run_snapshot "$file"
 	echo "jstack: 当前阶段 $stage_name"
 	;;
@@ -310,6 +322,25 @@ end)
 show)
 	[ $# -eq 0 ] || usage
 	if [ -f "$file" ]; then cat "$file"; else echo none; fi
+	;;
+resume)
+	command -v python3 >/dev/null 2>&1 || die "续跑需要 Python 3.9 或更新版本"
+	state_dir=$(jstack_state_dir)
+	repo=${JSTACK_REPO:-$PWD}
+	case $# in
+	2)
+		[ "$1" = --ticket ] && [ -n "$2" ] || usage
+		python3 -IB "$here/resume.py" find "$state_dir" "$repo" "$2"
+		;;
+	5)
+		[ -n "$1" ] && [ "$2" = --from-session ] && [ -n "$3" ] &&
+			[ "$4" = --ticket ] && [ -n "$5" ] || usage
+		jstack_state_file "$3" >/dev/null || die "旧会话 ID 不能用作文件名"
+		python3 -IB "$here/resume.py" take-over "$state_dir" "$1" "$3" "$5" "$sid" "$repo"
+		jstack_run_snapshot "$file"
+		;;
+	*) usage ;;
+	esac
 	;;
 pending)
 	if [ $# -eq 0 ]; then

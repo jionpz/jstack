@@ -2619,6 +2619,13 @@ cmd_check() {
 		cat "$WORK/reports"
 		rc=1
 	fi
+	if bash "$ROOT/tests/flow-resume.sh" >"$WORK/resume" 2>&1; then
+		say "✓ flow 跨会话续跑测试通过（$(grep -c '^✓' "$WORK/resume") 项）"
+	else
+		say "✗ flow 跨会话续跑测试未通过："
+		cat "$WORK/resume"
+		rc=1
+	fi
 	if command -v claude >/dev/null; then
 		claude plugin validate "$ROOT" >"$WORK/validate" 2>&1 || failed=1
 		for p in $PLUGINS; do

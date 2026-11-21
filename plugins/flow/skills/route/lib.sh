@@ -29,6 +29,9 @@ jstack_pending_file() {
 # 状态文件里键 $1 的第一个值。
 jstack_get() { sed -n "s/^$1 //p" "$2" | head -1; }
 
+# 状态文件里键 $1 的最后一个值（ticket 历史里最后一条就是当前票）。
+jstack_get_last() { sed -n "s/^$1 //p" "$2" | tail -1; }
+
 # 用 stdin 替换文件 $1：先写同目录的临时文件再 mv，读的一方不会看到半截文件。
 jstack_replace() {
 	local tmp
@@ -90,16 +93,18 @@ jstack_run_report_json() {
 jstack_run_json() {
 	local file=$1 status=$2 ended=$3 report_file=${4:-}
 	local run started started_epoch duration=null repo ticket ticket_explicit=false size asks needs=false
-	local evidence defaults prs report=null base head premium=null now
+	local evidence defaults prs report=null base head premium=null now tickets session worktree
 	run=$(jstack_get run "$file")
 	started=$(jstack_get started "$file")
 	started_epoch=$(jstack_get started_epoch "$file")
 	repo=$(jstack_get repo "$file")
-	ticket=$(jstack_get ticket "$file")
+	ticket=$(jstack_get_last ticket "$file")
 	case $(jstack_get ticket_explicit "$file") in 1 | true) ticket_explicit=true ;; esac
 	size=$(jstack_get size "$file")
 	asks=$(jstack_get asks "$file")
 	base=$(jstack_get base "$file")
+	session=$(basename "$file")
+	worktree=$repo
 	case $asks in
 	'' | *[!0-9]*) asks=0 ;;
 	esac
@@ -123,13 +128,16 @@ jstack_run_json() {
 	evidence=$(jstack_run_json_list evidence "$file")
 	defaults=$(jstack_run_json_list default "$file")
 	prs=$(jstack_run_json_list 'land pr' "$file")
+	tickets=$(jstack_run_json_list ticket "$file")
 	if [ "$status" = completed ] && [ -n "$report_file" ]; then
 		report=$(jstack_run_report_json "$report_file")
 	fi
-	printf '{"run_id":"%s","status":"%s","started_at":"%s","ended_at":"%s","duration_s":%s,"repo":"%s","ticket":"%s","ticket_explicit":%s,"size":"%s","path":"%s","stage":"%s","asks":%s,"needs_human":%s,"evidence":%s,"defaults":%s,"prs":%s,"report":%s,"base":"%s","head":"%s","premium_tokens":%s}\n' \
+	printf '{"run_id":"%s","status":"%s","started_at":"%s","ended_at":"%s","duration_s":%s,"repo":"%s","ticket":"%s","ticket_explicit":%s,"current_ticket":"%s","tickets":%s,"session":"%s","worktree":"%s","size":"%s","path":"%s","stage":"%s","asks":%s,"needs_human":%s,"evidence":%s,"defaults":%s,"prs":%s,"report":%s,"base":"%s","head":"%s","premium_tokens":%s}\n' \
 		"$(jstack_run_escape "${run:--}")" "$status" \
 		"$(jstack_run_escape "${started:--}")" "$(jstack_run_escape "$ended")" "$duration" \
 		"$(jstack_run_escape "${repo:--}")" "$(jstack_run_escape "${ticket:--}")" "$ticket_explicit" \
+		"$(jstack_run_escape "${ticket:--}")" "$tickets" \
+		"$(jstack_run_escape "$session")" "$(jstack_run_escape "${worktree:--}")" \
 		"$(jstack_run_escape "${size:--}")" \
 		"$(jstack_run_escape "$(jstack_get path "$file")")" \
 		"$(jstack_run_escape "$(jstack_get stage "$file")")" \

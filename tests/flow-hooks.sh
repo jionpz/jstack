@@ -19,7 +19,7 @@ t() {
 	shift
 	if "$@" >/dev/null 2>&1; then echo "✓ $name"; else echo "✗ $name"; fails=$((fails + 1)); fi
 }
-state_body() { sed -E '/^(started|started_epoch|run|repo|ticket|ticket_explicit|size|asks|base) /d' "$STATE"; }
+state_body() { sed -E '/^(started|started_epoch|run|repo|ticket|ticket_explicit|size|asks|base|visited) /d' "$STATE"; }
 state_is() { [ "$(state_body)" = "$(printf '%s\n' "$@")" ]; }
 stage() { CLAUDE_CODE_SESSION_ID=$SID "$BASH" "$ST" "$@"; }
 hook() { printf '%s' "$2" | "$BASH" "$H/$1.sh"; }
@@ -221,7 +221,7 @@ t "stage.sh evidence 把参数拼成一行追加" state_is 'path clarify,execute
 t "execute 的证据不能替代 verify" blocks "$(stop_in)"
 stage enter verify >/dev/null
 stage enter execute >/dev/null
-t "stage.sh 再次进入 execute 时清掉旧证据" state_is 'path clarify,execute,verify,land' 'stage execute'
+t "stage.sh 再次进入 execute 时把旧证据标成历史" state_is 'path clarify,execute,verify,land' 'stage execute' 'prior evidence execute ./run-tests -> 12 passed 0 failed'
 t "stop.sh 下一张 ticket 没有新证据时拦下" blocks "$(stop_in)"
 SID=second-case-0002; STATE="$JSTACK_STATE_DIR/$SID"
 stage start execute >/dev/null
