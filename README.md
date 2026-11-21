@@ -179,6 +179,8 @@ JStack 支持把模型按职责分成两层：`premium` 负责架构判断、关
 
 真实 smoke 需要模型和网络。全量 smoke 会报告 OMP、Cursor 和 Codex 的结果，这三者缺失或未通过时仍可通过发布检查。发布前还需通过 Claude Code 和 Pi 的评测。
 
+Claude Code 的注意力题（`*-attention-*`）分别记录打断、漏停、误停和被推翻的默认决定。每次答复只算一次打断，漏停按待决事项计数。有需要时，runner 用同一会话发送一次预置的用户答复，`nudges` 仍只记录催促。计分按题目约定识别答复里的问题和默认决定，并检查回复前的仓库状态。只有完成首轮并拿到答复的样本才进入注意力统计。Pi 运行整套评测时跳过这些题。
+
 项目源码与构建产物分开管理：`src/flow/` 是 JStack 自有工作流的源码；`upstream/` 保留第三方上游副本，`patches/` 保存本地补丁，`plugins/` 是生成后的插件目录。修改功能时请改源码或补丁，不要直接编辑构建产物。
 
 - **架构与配置**：[阶段定义](src/flow/skills/route/stages.md) · [工具能力映射](docs/harness/tools.md) · [配置字段](docs/agents/jstack-config.md) · [设计决策](docs/adr/)
