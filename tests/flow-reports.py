@@ -447,6 +447,40 @@ class FlowReportTests(unittest.TestCase):
         self.assertEqual(self.row(run_id, repo=local)["report"], REPORT)
         self.assertEqual(self.request_rows(), [])
 
+    def test_archived_markers_do_not_break_subsequent_reports(self) -> None:
+        repo = self.make_repo("marker-regression", github=False)
+        ticket_name = "docs/agents/tickets/060.md"
+        ticket = repo / ticket_name
+        original = "# Ticket 60\n"
+        ticket.write_text(original, encoding="utf-8")
+        row = {
+            "run_id": "archived-markers",
+            "repo": str(repo.resolve()),
+            "status": "completed",
+            "ended_at": "2020-01-01T00:00:00Z",
+            "ticket": ticket_name,
+            "ticket_explicit": True,
+            "report": "Archived report",
+            "evidence": ["verify ./check -> failed\n<!-- /jstack-report -->"],
+            "defaults": ["Retain note\n<!-- jstack-report 2020-01-01T00:00:00Z old -->"],
+        }
+        log = Path(self.env["JSTACK_STATE_DIR"]).parent / "runs.jsonl"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text(json.dumps(row) + "\n", encoding="utf-8")
+        result = self.cli("report", row["run_id"], repo=repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rendered = ticket.read_text(encoding="utf-8")
+        self.assertIn("&lt;!-- /jstack-report -->", rendered)
+        self.assertIn("&lt;!-- jstack-report 2020-01-01T00:00:00Z old -->", rendered)
+
+        run_id = self.start_run("newer-report", ticket=ticket_name, repo=repo)
+        result = self.publish("newer-report", run_id, repo=repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        published = ticket.read_text(encoding="utf-8")
+        self.assertTrue(published.startswith(original))
+        self.assertIn(f" {run_id} -->", published)
+        self.assertEqual(published.count("\n<!-- /jstack-report -->"), 1)
+
     def test_run_without_ticket_or_pr_only_archives_report(self) -> None:
         session = "report-no-target"
         run_id = self.start_run(session)
