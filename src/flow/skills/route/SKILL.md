@@ -44,7 +44,9 @@ State the size and the stage path in one sentence. Then record the path with `st
 
 ## 3. Walk the stages
 
-`stage.sh` sits next to this SKILL.md and records where the task is, so the flow hooks and extensions can enforce the gates structurally. In Claude Code, run it as `"${CLAUDE_SKILL_DIR}/stage.sh"`. Claude Code, Cursor, Pi, OMP, and Codex support these gates when their hooks or extensions are loaded and trusted. Codex uses project `.codex/hooks.json` and requires hook trust. Workloop records state, but has no Stop hook, so nothing enforces the gates there: before you end the turn, run `stage.sh show` and check the evidence yourself.
+Keep the task repository as your working directory. Invoke `stage.sh` by its absolute path in the directory of the `locate.sh` you just ran. In Claude Code, use `"${CLAUDE_SKILL_DIR}/stage.sh"`. This also works when the task repository has no jstack files of its own.
+
+`stage.sh` records the active stage for the flow hooks and extensions. Claude Code, Cursor, Pi, OMP, and Codex support these gates when their hooks or extensions are loaded and trusted. Codex uses project `.codex/hooks.json` and requires hook trust. Workloop records state but has no Stop hook. Before ending a Workloop turn, run `stage.sh show` and check the evidence yourself.
 
 Pi and OMP carry the gates through the flow extension. A session id or a hook configuration file alone does not prove that the gates ran: Pi and Codex can still have a session id when an extension is missing or untrusted. Look for `jstack 提示门禁注入：session=<id>` in the context actually injected by the harness for this session. The prompt hook emits this receipt even before a task has stage state. Reading the hook source or manually calling it is not receipt of an injection. If no receipt was received, report prompt injection as unobserved; do not infer success from `stage.sh start` working. A receipt proves only the prompt hook ran, not that Stop or guard are active. Report those separately as observed only if the harness actually enforced them, otherwise unverified. A "no session id" notice means stage tracking is off. Workloop must always be reported as unenforced. None of these cases requires stopping useful work.
 
@@ -87,6 +89,8 @@ For L, work the ticket frontier: a ticket starts only when every ticket that blo
 Hand the execute provider what the earlier stages produced: the task in the user's words, the spec path or issue URL, the tickets in dependency order, the decisions settled in clarify, and any ADR or GLOSSARY.md entries written.
 
 ## 4. Human checkpoints
+
+Judge each action by what it will do during this task. When the user asks for a data-clearing feature, implement it and test it against disposable data created for the test. Applying the feature to existing data is a separate operation governed by the must-stop list. That list also applies to any commands used during the test.
 
 Human attention is the most expensive resource here. Interrupt the user only for a decision that is theirs to make; everything else takes the default you would recommend, recorded so they can correct it later (ADR-0004).
 

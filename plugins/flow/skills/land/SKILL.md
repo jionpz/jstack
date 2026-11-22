@@ -16,11 +16,11 @@ Run `git status --short`, `git diff --check`, and inspect every changed path. A 
 
 ## 2. Branch and commit
 
-Work on a branch, never the default branch. Reuse the task branch when it already exists; otherwise create a short branch name for the task, such as `codex/<slug>` in Codex.
+Check the current branch with `git branch --show-current`. Reuse the task branch when it already exists. If HEAD is detached or on the default branch, create a task branch at the current HEAD, such as `codex/<slug>` in Codex. Preserve any existing commits on the default branch.
 
 Commit only the intended files, in small verified units. Use a Conventional Commits subject that says what changed and a body that says why. Keep unrelated user changes out of the commit. Never rewrite a pushed branch: force push is a must-stop action.
 
-Leave the working tree clean and record the head SHA. In a repository with no remote, the branch commit is the land output: run `../route/stage.sh land commit <SHA>` and stop without pushing or opening a PR.
+Leave the working tree clean. Before recording the head SHA or pushing, confirm that HEAD is on the task branch. In a repository with no remote, the branch commit is the land output: run `../route/stage.sh land commit <SHA>` and stop without pushing or opening a PR.
 
 ## 3. Open or update the PR
 
