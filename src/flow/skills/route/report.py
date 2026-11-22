@@ -128,11 +128,11 @@ def render(row):
     if not excerpt:
         raise ValueError("运行记录里没有摘要")
     text = (
-        f"## 运行摘要\n\n{neutralise_markers(excerpt)}\n\n"
+        f"## 运行摘要\n\n{excerpt}\n\n"
         f"## 验证\n\n{checks}\n\n"
         f"## 默认决定\n\n{defaults}"
     )
-    return text
+    return neutralise_markers(text)
 
 
 def section_for(original, row, summary):
