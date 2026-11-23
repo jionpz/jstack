@@ -117,6 +117,12 @@ JStack 把「应该做什么」和「由哪个 skill 完成」分开管理。`ro
 
 完整的阶段、产出要求和执行者定义，以 [`stages.md`](src/flow/skills/route/stages.md) 为准。
 
+任务收尾时，`stage.sh` 会在用户级状态目录留下一条运行记录：仓库、分支/ticket、规模、阶段路径、证据、默认决定、打断次数、耗时，以及运行器提供时的 premium token。没有正常收尾的任务会保留为“未完成”。用 `./jstack runs` 查看最近的记录，`--repo <dir>` 按仓库筛，`--show <run-id>` 看证据和默认决定明细。记录不写提示词或代码 diff。
+
+带摘要收尾时，`stage.sh end --report-file -` 先把摘要存进本地运行记录，再发布到显式登记的 GitHub issue、PR 正文的定界段落，或仓库配置的本地 Markdown ticket。Issue 评论按 run ID 去重，PR 和本地 ticket 保留摘要段落之外的正文；没有登记目标时只留本地记录。发布失败不会丢摘要，可在同一仓库用 `./jstack report <run-id>` 重试。
+
+同一台机器换会话时，`route` 用 `stage.sh resume --ticket <引用>` 查找本仓库未结束的运行，再用 `stage.sh resume <run-id> --from-session <旧会话> --ticket <当前引用>` 接管。只有确认旧会话已经退出或收到明确交接后才能接管；命令会核对仓库和原 Git 工作树，保留 run ID、ticket 历史和已有 PR 凭据，把当前票的旧门禁证据标成历史，并从 verify 重新开始。接管后还要重新核对 Git 状态、tracker 和已有 PR，不能重复开 PR 或重复关票。
+
 ### 为什么分成三个插件？
 
 JStack 的核心是 **flow**，不是把第三方 skills 简单放在一起。流程由 JStack 定义，各阶段再使用合适的执行者：

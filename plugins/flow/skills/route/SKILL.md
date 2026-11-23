@@ -50,15 +50,17 @@ Pi and OMP carry the gates through the flow extension. A session id or a hook co
 
 | When | Command |
 |---|---|
-| Right after sizing | `stage.sh start <stage>,<stage>,...` with the path in order. For a Git checkout with Python 3.9+ and an XS/S route containing `execute,verify,land` with a `review` provider available, append `--recheck-size` before the first edit. |
-| Entering each stage | `stage.sh enter <stage>` |
+| Right after sizing | `stage.sh start --size <XS\|S\|M\|L\|XL\|Question> [--ticket <ref>] <stage>,<stage>,...` with the path in order. For a Git checkout with Python 3.9+ and an XS/S route containing `execute,verify,land` with a `review` provider available, append `--recheck-size` before the first edit. |
+| Entering each stage | `stage.sh enter <stage> [--ticket <ref>]`; pass `--ticket` when picking up a ticket not known at start |
+| Starting a known ticket in a new session | `stage.sh resume --ticket <ref>` before `start`, then `stage.sh resume <run-id> --from-session <old-session> --ticket <current-ticket>` after the worktree and ownership check |
+| The size changes after start | `stage.sh size <XS\|S\|M\|L\|XL\|Question>` |
 | In `verify`, after running the real check | `stage.sh evidence "<command> -> <what it showed>"` (stage-scoped) |
 | During `review`, for each finding | `stage.sh review finding F1 "<finding>"`, then `stage.sh review resolution F1 fixed|dismissed "<reason>"` |
 | When review is complete | `stage.sh review complete "<conclusion>"` (explicit zero findings if none) |
 | During `land` | `stage.sh land commit <SHA>`; if the repo has a remote, also `stage.sh land pr <PR URL>` |
 | A decision you settled with a default instead of asking | `stage.sh default "<decision> -> <why>"` |
 | Right before a real interruption | `stage.sh ask "<exact question?>"`; ask the same question in the reply |
-| After the finish report | `stage.sh end` |
+| When the task is ready for its finish report | `stage.sh end --report-file <markdown or ->`; plain `stage.sh end` is only for a user-requested local-only finish |
 | The task stops at PR-ready with the after-merge archive still owed | `stage.sh pending "<PR URL> <what is left>"` |
 | The after-merge archive for a merged PR is done | `stage.sh settled <PR URL>` |
 
@@ -69,6 +71,8 @@ A repo's `.jstack/config.json` can replace the stage table (`stages_file`) and a
 On a short route with size recheck enabled, `stage.sh enter verify` compares the candidate against the checkout before execution. Crossing directory modules, changing more than three paths, or touching standard interface, hook, or policy paths adds `review` between `verify` and `land`. Treat the expanded path as at least M, update the todo list, and run the review provider before land. Re-entering execute or shrinking the diff keeps the added review. Repository-specific API boundaries and must-stop actions still follow the repository's rules. When Git, Python, or a configured review stage is unavailable, report that automatic recheck is unavailable.
 
 Once execute has started, the Stop gate checks **each stage on the selected path**: `verify` needs evidence recorded *after entering verify*, `review` needs a completed conclusion and a fixed/dismissed disposition for every recorded finding, and `land` needs a commit SHA plus a PR URL if the repository has a remote. The CLI `stage.sh end` applies the same gate before deleting state. A free-form evidence entry from `execute` cannot satisfy later stages. Entering execute for the next ticket invalidates older evidence/review/land receipts. Record actual results, not placeholders. To interrupt for a human decision, queue a concrete question with `stage.sh ask "<exact question?>"` and include that question verbatim in the final reply; a random question mark does not suffice. Cursor cannot inspect the reply and therefore relies only on a queued question; report that degradation. Never drop verify just because the user asks to skip tests.
+
+For a known ticket in a new session, run the `resume --ticket` query before `start`. It lists unfinished runs with their session, worktree, current ticket, stage, and saved evidence; an unfinished record alone does not prove its owner is gone. Take over only after an explicit handoff or after confirming the old session exited. In the recorded worktree, inspect Git HEAD and status, the tracker, and any PR URLs or branches already used; do not reopen or re-close completed work. Then run `resume <run-id> --from-session <old-session> --ticket <current-ticket>`. The takeover keeps the run ID and prior receipts, marks old gate evidence as historical, and returns to `verify` when the old stage was verify or later. Run the real check again before continuing.
 
 Take the stages in path order. For each one, read its providers from the locate output and follow them, then check the stage's gate. Mark a stage done only when its gate is met, and write its output into the todo item: a decision list, a spec path, a commit, the verification command and what it showed.
 
@@ -101,7 +105,7 @@ Clarification rounds follow the same rule: only decisions reach the user, and a 
 
 ## 5. Finish
 
-End with one summary the user can read on a phone, in this order, then run `stage.sh end`:
+End with one summary the user can read on a phone, in this order:
 
 ```
 目标：<one line>
@@ -114,6 +118,8 @@ End with one summary the user can read on a phone, in this order, then run `stag
 ```
 
 Every adopted default and every queued question must appear; they are how the user corrects you later. Do not restate the code or the ticket. Never write PR-ready for a PR whose CI is red, still running, or not checked, and never write done while the PR is open or the after-merge archive is still pending.
+
+Before replying, write a short Markdown excerpt with `## 目标`, `## 状态`, `## 改动`, and `## 需要你处理`, then pass it to `stage.sh end --report-file -` with a quoted heredoc. The command adds `## 验证` and `## 默认决定`, archives the run locally, then posts an issue comment, updates the bounded summary section in its PR body, or appends that section to the local Markdown ticket. Use the run ID in the command output to retry a failed publish with `./jstack report <run-id>` from the same repository; the local record stays available when the network or tracker write fails. When returning to a ticket, read its latest run-report comment: a plain reply there can override a default.
 
 ## Never
 

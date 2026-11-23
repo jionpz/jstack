@@ -36,6 +36,9 @@
 #   ./jstack models apply [--dry-run] [--yes]      写入四个 harness 的模型规则；--dry-run 只打印
 #   ./jstack models status                         premium 今日 token 用量与预算
 #   ./jstack doctor [--json] [--no-fail] [--repo <dir>]  只读列出各 harness × 作用域的安装、版本、来源与 lock 状态
+#   ./jstack runs [--repo <dir>] [--limit N] [--json] [--show <run-id>]
+#                                                  列出任务运行记录；完成和未完成的都有路径、证据与默认决定
+#   ./jstack report <run-id>                        在当前仓库重试发布已保存的收尾摘要
 #   ./jstack retire trellis [--repo <dir>] [--task-map <file>] [--json] [--apply]
 #                                                  先预览 Trellis 清退，--apply 应用已通过检查的项目变更
 #   ./jstack managed-export [--root <dir>] [--route] [--ticket-id ID ...]
@@ -2609,6 +2612,20 @@ cmd_check() {
 		grep -v '^✓' "$WORK/hooks" | sed 's/^/  /'
 		rc=1
 	fi
+	if python3 -I "$ROOT/tests/flow-reports.py" >"$WORK/reports" 2>&1; then
+		say "✓ flow 收尾摘要通过 GitHub 和本地 Markdown 发布测试"
+	else
+		say "✗ flow 收尾摘要发布测试未通过："
+		cat "$WORK/reports"
+		rc=1
+	fi
+	if bash "$ROOT/tests/flow-resume.sh" >"$WORK/resume" 2>&1; then
+		say "✓ flow 跨会话续跑测试通过（$(grep -c '^✓' "$WORK/resume") 项）"
+	else
+		say "✗ flow 跨会话续跑测试未通过："
+		cat "$WORK/resume"
+		rc=1
+	fi
 	if command -v claude >/dev/null; then
 		claude plugin validate "$ROOT" >"$WORK/validate" 2>&1 || failed=1
 		for p in $PLUGINS; do
@@ -4576,6 +4593,71 @@ cmd_install_pi() {
 	say "重开 Pi 会话；用 /skill:poteto-mode 验证。"
 }
 
+# 运行记录：stage.sh 在用户级状态目录写活动快照和完成记录，这里只读。
+cmd_runs() {
+	local repo= limit=20 json=0 show= state root log active f files=()
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--repo) [ -n "${2:-}" ] || die "--repo 后面要跟目录"; repo=$2; shift 2 ;;
+		--limit) [ -n "${2:-}" ] || die "--limit 后面要跟正整数"; limit=$2; shift 2 ;;
+		--limit=*) limit=${1#*=}; shift ;;
+		--json) json=1; shift ;;
+		--show) [ -n "${2:-}" ] || die "--show 后面要跟 run id"; show=$2; shift 2 ;;
+		*) die "未知参数：$1（用法：./jstack runs [--repo <dir>] [--limit N] [--json] [--show <run-id>]）" ;;
+		esac
+	done
+	case $limit in '' | *[!0-9]*) die "--limit 需要正整数" ;; esac
+	[ "$limit" -gt 0 ] || die "--limit 需要正整数"
+	command -v jq >/dev/null || die "jstack runs 需要 jq"
+	state=${JSTACK_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/jstack/sessions}
+	root=$(dirname "${state%/}")
+	log=$root/runs.jsonl
+	active=$root/runs/active
+	[ -f "$log" ] && files+=("$log")
+	if [ -d "$active" ]; then
+		for f in "$active"/*.json; do [ -f "$f" ] && files+=("$f"); done
+	fi
+	[ ${#files[@]} -gt 0 ] || { say "没有运行记录"; return 0; }
+	if [ -n "$repo" ]; then
+		repo=$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null || (cd "$repo" 2>/dev/null && pwd -P)) ||
+			die "找不到仓库：$repo"
+		repo=$(cd "$repo" 2>/dev/null && pwd -P) || die "找不到仓库：$repo"
+	fi
+	local filter='.' data count sep
+	if [ -n "$repo" ]; then
+		filter='select(.repo == $repo)'
+	fi
+	data=$(jq -s --arg repo "$repo" "map($filter) | sort_by(.started_at // \"\") | reverse" "${files[@]}") ||
+		die "运行记录格式损坏"
+	count=$(printf '%s' "$data" | jq 'length')
+	[ "$count" -gt 0 ] || { say "没有匹配的运行记录"; return 0; }
+	if [ -n "$show" ]; then
+		data=$(printf '%s' "$data" | jq --arg id "$show" '.[] | select(.run_id == $id)')
+		[ -n "$data" ] || die "没有运行记录：$show"
+		printf '%s\n' "$data"
+		return 0
+	fi
+	if [ "$json" -eq 1 ]; then
+		printf '%s' "$data" | jq -c --argjson limit "$limit" '.[:$limit][]'
+		return 0
+	fi
+	sep=$(printf '\t')
+	{
+		printf 'ENDED\tSTATUS\tSIZE\tREPO\tTICKET\tPATH\tEVID\tDEFAULTS\tASKS\tDURATION\tRUN\n'
+		printf '%s' "$data" | jq -r --argjson limit "$limit" '
+			.[:$limit][] |
+			[ (.ended_at // "unfinished"), .status, .size,
+			  (.repo | split("/") | last), .ticket,
+			  (.path | gsub(","; "→")),
+			  ((.evidence | length) | tostring),
+			  ((.defaults | length) | tostring),
+			  (.asks | tostring),
+			  ((.duration_s // "-") | tostring),
+			  .run_id ] | @tsv
+		'
+	} | if command -v column >/dev/null; then column -t -s "$sep"; else cat; fi
+}
+
 case "${1:-}" in
 managed-export) shift; exec python3 "$ROOT/scripts/managed-export.py" "$@" ;;
 tools) shift; exec python3 "$ROOT/scripts/tool-policy.py" "$@" ;;
@@ -4589,6 +4671,8 @@ check) shift; cmd_check "$@" ;;
 smoke) shift; cmd_smoke "$@" ;;
 models) shift; cmd_models "$@" ;;
 doctor) shift; cmd_doctor "$@" ;;
+runs) shift; cmd_runs "$@" ;;
+report) shift; exec python3 -IB "$ROOT/plugins/flow/skills/route/report.py" "$@" ;;
 retire)
 	shift
 	[ "${1:-}" = trellis ] || die "用法：./jstack retire trellis [--repo <dir>] [--task-map <file>] [--json] [--apply]"
