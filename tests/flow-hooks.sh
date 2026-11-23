@@ -368,7 +368,8 @@ t "guard.sh 在插件目录不完整时放行" sh -c 'printf "%s" "$1" | CLAUDE_
 # 仓库级配置：.jstack/config.json 追加 must-stop、替换阶段表、注入提示。
 REPO="$T/repo"
 SID2=test-session-0002
-mkdir -p "$REPO/.jstack" "$REPO/.git"
+mkdir -p "$REPO/.jstack" "$REPO/scripts"
+git -C "$REPO" init -q
 cat >"$REPO/.jstack/config.json" <<'JSON'
 {
   "tracker": { "type": "local" },
@@ -391,6 +392,20 @@ cat >"$REPO/.jstack/stages.md" <<'MD'
 | verify | Evidence | No evidence means not done | `pstack:principle-prove-it-works` |
 | land | Commits | must-stop | `pstack:poteto-mode/playbooks/opening-a-pr.md` |
 MD
+export VERIFY_COUNTER="$T/verify-count"
+cat >"$REPO/scripts/verify.sh" <<'SH'
+#!/bin/bash
+printf 'run\n' >>"$VERIFY_COUNTER"
+case "$(cat verify-input)" in
+pass) ;;
+slow) sleep 5 ;;
+fail) printf 'fixture failure\twith details\n'; exit 23 ;;
+esac
+SH
+chmod +x "$REPO/scripts/verify.sh"
+printf 'pass\n' >"$REPO/verify-input"
+git -C "$REPO" add .
+git -C "$REPO" -c user.name=Fixture -c user.email=fixture@example.invalid commit -qm fixture
 repo_stage() { (cd "$REPO" && CLAUDE_CODE_SESSION_ID=$SID2 "$BASH" "$ST" "$@"); }
 repo_hook() { (cd "$REPO" && printf '%s' "$2" | "$BASH" "$H/$1.sh"); }
 repo_state="$JSTACK_STATE_DIR/$SID2"
@@ -418,8 +433,84 @@ if command -v jq >/dev/null; then
 		printf "%s\n" "$out" | grep -qF "must-stop 追加=1 条"' \
 		_ "$REPO" "$(repo_prompt_in)" "$BASH" "$H/prompt.sh"
 	repo_stage enter verify >/dev/null
-	repo_stage evidence './scripts/verify.sh -> ok' >/dev/null
-	repo_stage end >/dev/null
+	repo_stage evidence './scripts/verify.sh -> claimed pass' >/dev/null
+	verify_receipt="$repo_state.verify.json"
+	verify_count() { test "$(wc -l <"$VERIFY_COUNTER" | tr -d ' ')" = "$1"; }
+	verify_reply() {
+		local result
+		result=$(repo_hook stop "$1")
+		printf '%s' "$result" | jq -e --arg property "$2" --arg detail "$3" \
+			'.[$property] | strings | contains($detail)' >/dev/null
+	}
+	t "Stop 直接执行配置的命令并通过" silent repo_hook stop "$(stop_in false "$SID2")"
+	t "执行器回执包含退出码、提交、耗时和干净状态" jq -e --arg commit "$(git -C "$REPO" rev-parse HEAD)" \
+		'.exit_code == 0 and .commit == $commit and .dirty == false and (.duration_ms | type) == "number"' "$verify_receipt"
+	t "相同快照在 Cursor 协议中复用成功回执" silent repo_hook stop "$(cursor_stop_in completed "$SID2")"
+	t "同一快照只执行过一次" verify_count 1
+
+	printf 'fail\n' >"$REPO/verify-input"
+	t "Claude Stop 执行脏工作区验证并返回失败输出" verify_reply "$(stop_in false "$SID2")" reason '退出码 23'
+	t "Cursor Stop 不能用文本证据越过失败" verify_reply "$(cursor_stop_in completed "$SID2")" followup_message 'fixture failure'
+	verify_from_other_repo() {
+		local event result
+		mkdir -p "$T/other"
+		git -C "$T/other" init -q
+		event=$(stop_in false "$SID2" | jq --arg cwd "$T/other" '.cwd = $cwd')
+		result=$(printf '%s' "$event" | "$BASH" "$H/stop.sh")
+		jq -e '.decision == "block" and (.reason | contains("退出码 23"))' <<<"$result"
+	}
+	t "Stop 更换当前目录后仍验证任务启动时的仓库" verify_from_other_repo
+	t "失败回执也可复用" verify_count 2
+	t "验证失败时 CLI 同样拒绝清除状态" not repo_stage end
+	t "CLI 拒绝后阶段记录仍在" test -f "$repo_state"
+	t "显式重试再次执行命令" not repo_stage verify --retry
+	t "重试产生第三次执行" verify_count 3
+
+	printf 'pass\n' >"$REPO/verify-input"
+	printf 'one\n' >"$REPO/untracked"
+	t "修正内容后通过重新验证" repo_stage verify
+	printf 'two\n' >"$REPO/untracked"
+	t "未跟踪文件内容变化使回执失效" silent repo_hook stop "$(stop_in false "$SID2")"
+	t "修改未跟踪文件会重新执行" verify_count 5
+	git -C "$REPO" -c user.name=Fixture -c user.email=fixture@example.invalid \
+		commit --allow-empty -qm next
+	t "提交变化后运行新验证" silent repo_hook stop "$(stop_in false "$SID2")"
+	t "新提交产生第六次执行" verify_count 6
+
+	printf 'slow\n' >"$REPO/verify-input"
+	t "长验证令 Stop 暂缓结束，命令在后台继续" verify_reply "$(stop_in false "$SID2")" reason '仍在运行'
+	t "CLI 等待同一次验证完成" repo_stage verify
+	t "Stop 和 CLI 只执行一次长验证" verify_count 7
+
+	jq '.verify.timeout_s = 0.25' "$REPO/.jstack/config.json" >"$T/config"
+	mv "$T/config" "$REPO/.jstack/config.json"
+	t "配置超时后 Cursor 阻止结束" verify_reply "$(cursor_stop_in completed "$SID2")" followup_message '超时'
+	t "超时有结构化失败回执" jq -e '.timed_out and .exit_code == 124' "$verify_receipt"
+
+	jq '.verify.command = "./deploy.sh"' "$REPO/.jstack/config.json" >"$T/config"
+	mv "$T/config" "$REPO/.jstack/config.json"
+	printf '#!/bin/bash\nprintf unexpected >>"$VERIFY_COUNTER"\n' >"$REPO/deploy.sh"
+	chmod +x "$REPO/deploy.sh"
+	t "命中仓库 must-stop 的验证命令被拒绝" verify_reply "$(stop_in false "$SID2")" reason 'must-stop'
+	t "被拒绝的命令未执行" sh -c '! grep -q unexpected "$1"' _ "$VERIFY_COUNTER"
+
+	mv "$REPO/.jstack/config.json" "$T/verify-config"
+	t "运行中移除配置文件时文本证据无法通过 Stop" \
+		verify_reply "$(stop_in false "$SID2")" reason '请恢复 verify.command'
+	t "运行中移除配置文件时 CLI 仍拒绝收尾" not repo_stage end
+	jq 'del(.verify)' "$T/verify-config" >"$REPO/.jstack/config.json"
+	t "仅移除 verify.command 时 Cursor 同样拒绝结束" \
+		verify_reply "$(cursor_stop_in completed "$SID2")" followup_message '请恢复 verify.command'
+	jq '.verify = {"command":"./scripts/verify.sh"}' "$T/verify-config" >"$REPO/.jstack/config.json"
+	printf 'pass\n' >"$REPO/verify-input"
+	t "恢复验证配置并重验后可以收尾" repo_stage end
+
+	jq 'del(.verify)' "$REPO/.jstack/config.json" >"$T/config"
+	mv "$T/config" "$REPO/.jstack/config.json"
+	repo_stage start execute,verify >/dev/null
+	repo_stage enter verify >/dev/null
+	repo_stage evidence 'fixture -> passed' >/dev/null
+	t "初始未配置命令时保留分阶段文本证据行为" repo_stage end
 fi
 BAD="$T/badrepo"
 mkdir -p "$BAD/.jstack" "$BAD/.git"

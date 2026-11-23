@@ -254,4 +254,22 @@ resume_after_land() {
 
 t "handoff from land rechecks gates and retains both PR receipts" resume_after_land
 
+resume_requires_verification() {
+	local verification_repo="$T/verify-repo" verification_run
+	make_repo "$verification_repo" verify-repo &&
+		stage before-verify "$verification_repo" start --size S --ticket '#57' execute,verify &&
+		stage before-verify "$verification_repo" enter verify &&
+		printf '{"verify":{"command":"exit 23"}}\n' >"$verification_repo/.jstack/config.json" &&
+		! stage before-verify "$verification_repo" verify &&
+		test -f "$JSTACK_STATE_DIR/before-verify.verify.json" || return 1
+	mv "$verification_repo/.jstack/config.json" "$T/previous-verification.json" || return 1
+	verification_run=$(run_id_from_state "$JSTACK_STATE_DIR/before-verify")
+	resume after-verify "$verification_repo" "$verification_run" before-verify '#57' &&
+		stage after-verify "$verification_repo" evidence 'fixture -> passed' &&
+		! stage after-verify "$verification_repo" end || return 1
+	printf '{"verify":{"command":"exit 0"}}\n' >"$verification_repo/.jstack/config.json" &&
+		stage after-verify "$verification_repo" end
+}
+t "resumed run requires revalidation when its old execution had a receipt" resume_requires_verification
+
 exit "$FAILS"
