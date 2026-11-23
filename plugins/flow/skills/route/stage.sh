@@ -13,7 +13,7 @@ stages=${JSTACK_STAGES_FILE:-$here/stages.md}
 
 usage() {
 	cat >&2 <<'EOF'
-用法：stage.sh start [--size <XS|S|M|L|XL|Question>] [--ticket <引用>] <阶段>,<阶段>,...
+用法：stage.sh start [--size <XS|S|M|L|XL|Question>] [--ticket <引用>] <阶段>,<阶段>,... [--recheck-size]
                                       记录阶段路径并进入第一个阶段
       stage.sh enter <阶段> [--ticket <引用>] 进入路径上的某个阶段
       stage.sh size <XS|S|M|L|XL|Question> 更新任务规模
@@ -84,7 +84,7 @@ start)
 		*) break ;;
 		esac
 	done
-	[ $# -eq 1 ] && [ -n "$1" ] || usage
+	{ [ $# -eq 1 ] || { [ $# -eq 2 ] && [ "$2" = --recheck-size ]; }; } && [ -n "$1" ] || usage
 	case $size in
 	- | XS | S | M | L | XL | Question) ;;
 	*) die "未知任务规模：${size}（可用：XS、S、M、L、XL、Question）" ;;
@@ -107,6 +107,15 @@ start)
 		[ "$(jstack_get path "$file")" != "$1" ] || { echo "jstack: 此路径已经启动，保留当前阶段与证据"; exit 0; }
 		die "本会话已有未结束的阶段记录；先 stage.sh show，完成或处理原任务，不能 start 覆盖"
 	fi
+	baseline=
+	if [ $# -eq 2 ]; then
+		printf '%s\n' "$known" | grep -qx review || die "配置的阶段表里没有可追加的 review"
+		case ",$1," in
+		*,execute,verify,land,*) ;;
+		*) die "--recheck-size 需要 execute,verify,land 连续相邻的短路径" ;;
+		esac
+		baseline=$(python3 "$here/recheck.py" capture "${JSTACK_REPO:-$PWD}") || die "无法记录改动范围基线"
+	fi
 	mkdir -p "$dir"
 	find "$dir" -type f -mmin +10080 -delete 2>/dev/null || true
 	repo=$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null) || repo=$(pwd -P)
@@ -126,6 +135,7 @@ start)
 	{
 		printf 'path %s\nstage %s\nstarted %s\nstarted_epoch %s\nrun %s\nrepo %s\nticket %s\nticket_explicit %s\nsize %s\nasks 0\nbase %s\n' \
 			"$1" "${1%%,*}" "$started" "$started_epoch" "$run" "$repo" "$ticket" "$ticket_explicit" "$size" "${base:--}"
+		[ -z "$baseline" ] || printf 'scope-baseline %s\n' "$baseline"
 		[ "$verify_repo" = "$repo" ] || printf 'verify_repo %s\n' "$verify_repo"
 		verify_status=0
 		if [ -f "$verify_repo/.jstack/config.json" ]; then
@@ -162,10 +172,26 @@ enter)
 	done
 	need_state
 	path=$(jstack_get path "$file")
+	if { [ "$stage_name" = verify ] || [ "$stage_name" = land ]; } &&
+		grep -q '^scope-baseline ' "$file" && [[ ",$path," != *,review,* ]]; then
+		reason=$(python3 "$here/recheck.py" compare "${JSTACK_REPO:-$PWD}" "$file") || die "未完成范围复核"
+		if [ -n "$reason" ]; then
+			path=${path/verify,land/verify,review,land}
+			{ printf 'path %s\n' "$path"; sed '/^path /d' "$file"; } | jstack_replace "$file"
+			echo "jstack: 范围复核追加 review（${reason}）"
+		fi
+	fi
 	case ",$path," in
 	*",$stage_name,"*) ;;
 	*) die "阶段 $stage_name 不在路径 ${path} 上" ;;
 	esac
+	if [ "$stage_name" = land ] && grep -q '^scope-baseline ' "$file" && [[ ",$path," = *,review,* ]]; then
+		missing=$(jstack_gate_missing "$file" | sed -n '/^review /p')
+		if [ -n "$missing" ]; then
+			jstack_run_snapshot "$file"
+			die "$missing"
+		fi
+	fi
 	if [ -n "$ticket" ]; then
 		ticket=$(printf '%s' "$ticket" | tr '\r\n' '  ')
 		awk -v t="$ticket" '
@@ -350,7 +376,7 @@ end)
 show)
 	[ $# -eq 0 ] || usage
 	if [ -f "$file" ]; then
-		cat "$file"
+		sed '/^scope-baseline /d' "$file"
 		if [ -s "$file.verify.json" ]; then
 			printf 'verify receipt '
 			cat "$file.verify.json"

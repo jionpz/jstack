@@ -83,3 +83,9 @@ route 的收尾摘要（`src/flow/skills/route/SKILL.md` 第 5 节）始终包�
 - `bash tests/flow-hooks.sh`：三个 hook 的协议、会话 id 回退、仓库配置；不依赖 harness。
 - `./jstack smoke pi` / `./jstack smoke omp` / `./jstack smoke codex`：在真机上跑非交互会话，断言 `rm -rf` 被拦（`GUARD-SEEN`）、`stage.sh start execute,verify` 后停止被 Stop 门禁拦回（`GATE-SEEN`）。没装对应 harness 自动跳过。
 - 手工：交互式会话里跑一次命中 must-stop 的命令，确认弹确认框；Codex 的 hooks 信任与 deny 行为按 `docs/testing/codex.md` 核对。`stage.sh show` 看状态落在 `~/.local/state/jstack/sessions/<id>`。
+
+## 短路径的改动范围复核
+
+在 Git 工作树中，route 给含 `execute,verify,land` 的 XS/S 路径加上 `--recheck-size`，前提是有效阶段表提供 `review` 且可使用 Python 3.9 及以上。它在编辑前记录 Git 基线和已有编辑的内容摘要。进入 verify 时比较实际改动，直接进入 land 时也会复核。已有编辑如果内容未变，不计入本次工作范围。
+
+跨目录模块、超过三个变动路径，或触及 `api`、`schemas`、`hooks` 等边界路径时，路径扩展为 `execute → verify → review → land`。同一个模块的少量改动沿用原路径。目录规则用 `src/<模块>`、`packages/<包>` 等目录作为模块近似值，测试和文档仍计入文件数。路径一旦扩展，本任务保留 review，审查结论和发现处置齐全后才进入 land。实际 API 兼容性和 must-stop 授权仍按项目约定取证。
