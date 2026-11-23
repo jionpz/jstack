@@ -48,6 +48,7 @@ main() {
 	}
 	if grep -q '^ask [^ ]' "$file"; then
 		grep -v '^ask ' "$file" | jstack_replace "$file" || return 0
+		jstack_run_snapshot "$file"
 	fi
 	path=$(jstack_get path "$file")
 	stage=$(jstack_get stage "$file")

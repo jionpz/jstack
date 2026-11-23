@@ -8,15 +8,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+from stage_table import NAME_RE, StageTableError, parse_stage_table
+
 
 REQUIRED_CAPABILITIES = ("read", "grep", "find", "ls", "edit", "write", "bash", "delegate")
 OPTIONAL_CAPABILITIES = ("web_search", "web_fetch")
 CAPABILITIES = REQUIRED_CAPABILITIES + OPTIONAL_CAPABILITIES
 HARNESSES = ("pi", "claude-code")
-STAGE_COLUMNS = ("Stage", "Output", "Gate", "Providers", "Tool profile")
-NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 TOOL_RE = re.compile(r"^[A-Za-z0-9_.:/-]+$")
-BACKTICK_RE = re.compile(r"`([^`]+)`")
 
 
 class ToolPolicyError(Exception):
@@ -86,53 +85,6 @@ def source_commit(root: Path) -> str:
     except (OSError, subprocess.SubprocessError):
         return "unversioned"
     return result.stdout.strip() or "unversioned"
-
-
-def parse_stages(text: str) -> dict[str, str]:
-    in_section = False
-    header: tuple[str, ...] | None = None
-    rows: dict[str, str] = {}
-    for number, raw in enumerate(text.splitlines(), start=1):
-        line = raw.strip()
-        if line.startswith("## "):
-            if in_section and header is not None:
-                break
-            in_section = line == "## Stages"
-            continue
-        if not in_section or not line.startswith("|"):
-            if in_section and header is not None and line:
-                break
-            continue
-        cells = tuple(cell.strip() for cell in line.strip("|").split("|"))
-        if header is None:
-            if not cells or cells[0] != "Stage":
-                fail(f"Stages 表头必须以 Stage 开头：第 {number} 行")
-            if cells != STAGE_COLUMNS:
-                fail("Stages 表头必须是：" + " | ".join(STAGE_COLUMNS))
-            header = cells
-            continue
-        if all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells):
-            continue
-        if len(cells) != len(header):
-            fail(f"Stages 表第 {number} 行有 {len(cells)} 列，表头有 {len(header)} 列")
-        row = dict(zip(header, cells))
-        stage = row["Stage"]
-        if not NAME_RE.fullmatch(stage):
-            fail(f"Stages 表第 {number} 行的阶段名不合法：{stage}")
-        if stage in rows:
-            fail(f"Stages 表重复定义阶段：{stage}")
-        match = BACKTICK_RE.findall(row["Tool profile"])
-        if len(match) != 1:
-            fail(f"阶段 {stage} 的 Tool profile 必须是一个反引号括起来的 profile 名")
-        profile = match[0]
-        if not NAME_RE.fullmatch(profile):
-            fail(f"阶段 {stage} 的 profile 名不合法：{profile}")
-        rows[stage] = profile
-    if header is None:
-        fail("找不到 ## Stages 表")
-    if not rows:
-        fail("Stages 表里没有阶段")
-    return rows
 
 
 def check_string_list(value: object, label: str, allowed: tuple[str, ...], *, allow_empty: bool = False) -> list[str]:
@@ -247,7 +199,7 @@ def load(root: Path) -> tuple[dict[str, str], dict[str, object], Path]:
         fail(f"tool-policy.json 不是合法 JSON：{exc}")
     policy = validate_policy(policy)
     stages_text = read_text(root, route_dir / "stages.md", "stages.md")
-    stages = parse_stages(stages_text)
+    stages = {name: row["tool_profile"] for name, row in parse_stage_table(stages_text).items()}
     profiles = policy["profiles"]
     assert isinstance(profiles, dict)
     for stage, profile in stages.items():
@@ -448,7 +400,7 @@ def main(argv: list[str] | None = None) -> int:
                 inventory_path=args.inventory,
                 allow_shell_fallback=args.allow_shell_fallback,
             )
-    except ToolPolicyError as exc:
+    except (ToolPolicyError, StageTableError) as exc:
         print(f"tool-policy: 错误：{exc}", file=sys.stderr)
         return 1
     if args.pretty:

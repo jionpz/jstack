@@ -13,6 +13,7 @@ import unittest
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "scripts/managed-export.py"
+STAGE_TABLE = REPO / "scripts/stage_table.py"
 ROUTE = "src/flow/skills/route/SKILL.md"
 STAGES = "src/flow/skills/route/stages.md"
 EXECUTE = "src/managed/investigate.md"
@@ -21,7 +22,7 @@ MUST_STOP = "src/flow/skills/route/must-stop.md"
 TOOL_POLICY = "src/flow/skills/route/tool-policy.json"
 PROVIDERS = {
     "execute": "src/flow/skills/execute/SKILL.md",
-    "verify": "src/flow/skills/verify/SKILL.md",
+    "verify": "plugins/pstack/skills/principle-prove-it-works/SKILL.md",
     "review": "src/flow/skills/review/SKILL.md",
     "land": "plugins/pstack/skills/poteto-mode/playbooks/opening-a-pr.md",
 }
@@ -34,6 +35,7 @@ class ManagedExportTests(unittest.TestCase):
         (root / "src/flow/skills/route").mkdir(parents=True)
         (root / "src/managed").mkdir(parents=True)
         (root / "scripts/managed-export.py").write_text(SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+        (root / "scripts/stage_table.py").write_text(STAGE_TABLE.read_text(encoding="utf-8"), encoding="utf-8")
         (root / ROUTE).write_text("# route\n| Question | investigation | execute only |\n", encoding="utf-8")
         (root / STAGES).write_text("| Stage |\n| execute |\n", encoding="utf-8")
         (root / EXECUTE).write_text("只读调查。\n", encoding="utf-8")
@@ -47,7 +49,7 @@ class ManagedExportTests(unittest.TestCase):
             "| Stage | Output | Gate | Providers | Tool profile |\n"
             "|---|---|---|---|---|\n"
             "| execute | change | none | `flow:execute` | `developer` |\n"
-            "| verify | evidence | evidence required | `flow:verify` | `verifier` |\n"
+            "| verify | evidence | evidence required | `pstack:principle-prove-it-works` | `verifier` |\n"
             "| review | findings | no open findings | `flow:review` | `reviewer` |\n"
             "| land | commit | no must-stop | `pstack:poteto-mode/playbooks/opening-a-pr.md` | `releaser` |\n"
             "| archive | closed | evidence | `flow:archive` | `archivist` |\n",
@@ -112,6 +114,33 @@ class ManagedExportTests(unittest.TestCase):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(f"provider {path}\n", encoding="utf-8")
         return root
+
+    def add_tier_column(self, root: Path, values: dict[str, str] | None = None) -> None:
+        values = values or {
+            "execute": "bulk / -",
+            "verify": "bulk / premium",
+            "review": "bulk / bulk",
+            "land": "bulk / premium",
+            "archive": "bulk / -",
+        }
+        path = root / STAGES
+        lines = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip().startswith("|"):
+                cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+                if cells[0] == "Stage":
+                    if "Tier" not in cells:
+                        cells.append("Tier")
+                elif cells[0] in values or cells[0] == "execute":
+                    if cells[0] == "execute" and "execute" not in values:
+                        cells = cells[:5]
+                    else:
+                        cells = cells[:5] + [values[cells[0]]]
+                elif all(set(cell) <= {":", "-"} for cell in cells):
+                    cells = cells[:5] + ["---"]
+                line = "| " + " | ".join(cells) + " |"
+            lines.append(line)
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def run_export(
         self, root: Path, cwd: Path | None = None, *, use_default_root: bool = False
@@ -235,6 +264,130 @@ class ManagedExportTests(unittest.TestCase):
                 )
                 self.assertEqual(source["bytes"], len(content.encode("utf-8")))
 
+    def test_stage_tiers_are_opt_in_for_route_and_ticket_exports(self) -> None:
+        expected = {
+            "execute": {"work": "bulk", "gate": None},
+            "verify": {"work": "bulk", "gate": "premium"},
+            "review": {"work": "bulk", "gate": "bulk"},
+            "land": {"work": "bulk", "gate": "premium"},
+            "archive": {"work": "bulk", "gate": None},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.ticket_fixture(Path(directory))
+            self.add_tier_column(root)
+            script = root / "scripts/managed-export.py"
+            for mode_args in (["--route"], ["--ticket-id", "JT-101"]):
+                default = subprocess.run(
+                    [sys.executable, str(script), "--root", str(root), *mode_args],
+                    text=True, capture_output=True, check=False,
+                )
+                self.assertEqual(default.returncode, 0, default.stderr)
+                default_payload = json.loads(default.stdout)
+                self.assertNotIn("stage_tiers", default_payload)
+                self.assertIn("| Tier |", default_payload["instructions"]["stages"])
+
+                opted_in = subprocess.run(
+                    [
+                        sys.executable, str(script), "--root", str(root),
+                        *mode_args, "--with-stage-tiers",
+                    ],
+                    text=True, capture_output=True, check=False,
+                )
+                self.assertEqual(opted_in.returncode, 0, opted_in.stderr)
+                payload = json.loads(opted_in.stdout)
+                self.assertEqual(payload["stage_tiers"], expected)
+                body = {key: value for key, value in payload.items() if key != "content_digest"}
+                canonical = json.dumps(
+                    body, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+                ).encode("utf-8")
+                self.assertEqual(
+                    payload["content_digest"], hashlib.sha256(canonical).hexdigest()
+                )
+
+    def test_stage_tiers_flag_requires_tier_table_and_managed_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.ticket_fixture(Path(directory))
+            script = root / "scripts/managed-export.py"
+            for mode_args in (["--route"], ["--ticket-id", "JT-101"], []):
+                result = subprocess.run(
+                    [
+                        sys.executable, str(script), "--root", str(root),
+                        *mode_args, "--with-stage-tiers",
+                    ],
+                    text=True, capture_output=True, check=False,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, "")
+
+    def test_managed_path_and_tiers_come_from_same_table(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.ticket_fixture(Path(directory))
+            self.add_tier_column(root)
+            stages = root / STAGES
+            text = stages.read_text(encoding="utf-8")
+            text = text.replace("| Tool profile | Tier |", "| Tool profile | Managed ticket | Tier |")
+            text = text.replace("|---|---|---|---|---|---|", "|---|---|---|---|---|---|---|")
+            for profile in ("developer", "verifier", "releaser"):
+                text = text.replace(f"`{profile}` | bulk", f"`{profile}` | required | bulk")
+            for profile in ("reviewer", "archivist"):
+                text = text.replace(f"`{profile}` | bulk", f"`{profile}` | - | bulk")
+            text = text.replace("`flow:execute` |", "`flow:managed-execute` `flow:execute` |")
+            text = text.replace("`pstack:principle-prove-it-works` |", "`flow:verify` |")
+            stages.write_text(text, encoding="utf-8")
+            provider = root / "src/flow/skills/managed-execute/SKILL.md"
+            provider.parent.mkdir()
+            provider.write_text("managed execute\n", encoding="utf-8")
+            verifier = root / "src/flow/skills/verify/SKILL.md"
+            verifier.parent.mkdir()
+            verifier.write_text("independent verification\n", encoding="utf-8")
+            command = [
+                sys.executable, str(root / "scripts/managed-export.py"),
+                "--root", str(root), "--with-stage-tiers",
+            ]
+            ticket = json.loads(subprocess.check_output([*command, "--ticket-id", "JT-101"]))
+            route = json.loads(subprocess.check_output([*command, "--route"]))
+            expected = ["execute", "verify", "land"]
+            self.assertEqual(ticket["route"]["stages"], expected)
+            self.assertEqual([rule["stage_path"] for rule in route["route_rules"]], [expected] * 5)
+            self.assertEqual(route["stage_templates"], ticket["stages"])
+            self.assertEqual(ticket["stages"][0]["provider"], "flow:managed-execute")
+            self.assertEqual(ticket["stages"][1]["provider"], "flow:verify")
+            self.assertEqual(route["stage_tiers"], ticket["stage_tiers"])
+            self.assertEqual(route["stage_tiers"]["review"], {"work": "bulk", "gate": "bulk"})
+
+    def test_invalid_or_missing_tier_cells_are_rejected_in_both_export_modes(self) -> None:
+        invalid_values = {
+            "execute": "bulk / -",
+            "verify": "premium / bulk",
+            "review": "bulk / bulk",
+            "land": "bulk / premium",
+            "archive": "bulk / -",
+        }
+        missing_values = {
+            "review": "bulk / bulk",
+            "land": "bulk / premium",
+            "archive": "bulk / -",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.ticket_fixture(Path(directory))
+            script = root / "scripts/managed-export.py"
+            for values in (invalid_values, missing_values):
+                for mode_args in (["--route"], ["--ticket-id", "JT-101"]):
+                    for with_flag in (False, True):
+                        with self.subTest(values=values, mode=mode_args, with_flag=with_flag):
+                            self.add_tier_column(root, values)
+                            command = [
+                                sys.executable, str(script), "--root", str(root),
+                                *mode_args,
+                            ]
+                            if with_flag:
+                                command.append("--with-stage-tiers")
+                            result = subprocess.run(
+                                command, text=True, capture_output=True, check=False
+                            )
+                            self.assertNotEqual(result.returncode, 0)
+                            self.assertEqual(result.stdout, "")
+                            self.add_tier_column(root)
     def test_ticket_exports_optional_description(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = self.ticket_fixture(Path(directory))
