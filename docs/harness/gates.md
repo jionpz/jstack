@@ -25,7 +25,7 @@ flow 的三个门禁（阶段提示、验证门禁、红线守卫）的判定逻
 - **OMP**：OMP 的插件清单只收 skills / agents，不收 flow 的 Claude 格式 hooks。用户级 `./jstack install` 把 `plugins/flow/extensions/omp.ts` 写成 `~/.omp/agent/extensions/jstack-flow-gates.ts`；项目级安装写 `.omp/extensions/jstack-flow-gates.ts`，相对路径转出 `.jstack/vendor/plugins/flow/extensions/omp.ts`。OMP 的对应 extension 目录加载入口文件。
 - **Codex**：项目级安装写 `.codex/hooks.json`。命令从会话目录解析 Git 根并执行该 checkout 的 vendor 脚本。交互式会话在审查并信任 hooks 后执行。已审查来源的自动化测试可使用 `--dangerously-bypass-hook-trust`。
 
-验证门禁可执行仓库配置的验证命令并写入回执。状态文件的路径和格式见 `lib.sh`。
+验证门禁可执行仓库配置的验证命令并写入回执。状态文件的路径和格式见 `lib.sh`。任务正常收尾时 `stage.sh` 在同一级的 `runs.jsonl` 追加一行运行记录。没有收尾的任务留在 `runs/active/`，`./jstack runs` 将其标为未完成。记录包含仓库、规模、阶段路径、证据、默认决定、打断次数和耗时等元数据。
 
 提示 hook 每轮输出 `jstack 提示门禁注入：session=<id>`，尚未执行 `stage.sh start` 时也输出，供 agent 核对本会话确实收到过 harness 注入。看到源码中的字符串、配置存在或手动运行 hook 都不算收到注入；这个标记只证明提示 hook 运行，不能代替 Stop/guard 的实际拦截证据。
 

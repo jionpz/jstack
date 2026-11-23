@@ -23,7 +23,10 @@ OUTPUT_TAIL_BYTES = 2048
 
 
 def settings(repo):
-    config = json.loads((repo / ".jstack/config.json").read_text(encoding="utf-8"))
+    try:
+        config = json.loads((repo / ".jstack/config.json").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
     verify = config.get("verify") or {}
     command = verify.get("command")
     if command is None or command == "":
@@ -39,6 +42,16 @@ def settings(repo):
         if os.environ.get("JSTACK_NO_JQ") or shutil.which("jq") is None:
             raise ValueError("验证命令需要 jq 才能检查仓库的 must-stop 模式")
     return command, timeout
+
+
+def verification_request(repo, state):
+    request = settings(repo)
+    if request is None and (
+        state.with_name(state.name + ".verify.json").is_file()
+        or "verify_required yes" in state.read_text(encoding="utf-8").splitlines()
+    ):
+        raise ValueError("当前任务要求验证命令，请恢复 verify.command 后重新验证")
+    return request
 
 
 def snapshot(repo, command, timeout):
@@ -138,7 +151,7 @@ def verify(repo, state, mode):
 
         if not state.is_file():
             raise ValueError("阶段记录已清除")
-        request = settings(repo)
+        request = verification_request(repo, state)
         if request is None:
             return NO_COMMAND
         key, commit, dirty = snapshot(repo, *request)
@@ -165,7 +178,9 @@ def main():
     mode, root, state_path = sys.argv[1:]
     repo, state = Path(root).resolve(), Path(state_path).resolve()
     try:
-        if settings(repo) is None:
+        if mode == "configured":
+            return 0 if settings(repo) is not None else NO_COMMAND
+        if verification_request(repo, state) is None:
             return NO_COMMAND
         if mode != "stop":
             return verify(repo, state, mode)

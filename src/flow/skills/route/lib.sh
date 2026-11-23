@@ -1,8 +1,10 @@
 # 阶段门禁的共用部分，由同目录的 stage.sh 和插件的 hooks/*.sh source，不单独运行。
 # 状态文件是 <状态目录>/<会话 id>，纯文本，每行一条：
 #   path <逗号分隔的阶段>    stage <当前阶段>    evidence <文本>（可多行）
-#   default <文本>（替用户采用的默认决定）    ask（存在即等人）
+#   default <文本>（替用户采用的默认决定）    ask <问题>（存在即等人）
+#   started / started_epoch / run / repo / ticket / ticket_explicit / size / asks / base（运行记录用的元数据）
 # 合并后归档的待补清单是 <状态目录的上一级>/pending/<仓库 key>，每行 "<PR URL> <还剩什么>"，按仓库存、跨会话。
+# 运行记录在 <状态目录的上一级>/runs：完成的任务一行一条 JSON；未完成的任务留在 runs/active/<会话 id>.json。
 # JSTACK_NO_JQ 非空时当作没有 jq，只用于测试 sed 退路。
 
 jstack_state_dir() {
@@ -27,6 +29,9 @@ jstack_pending_file() {
 # 状态文件里键 $1 的第一个值。
 jstack_get() { sed -n "s/^$1 //p" "$2" | head -1; }
 
+# 状态文件里键 $1 的最后一个值（ticket 历史里最后一条就是当前票）。
+jstack_get_last() { sed -n "s/^$1 //p" "$2" | tail -1; }
+
 # 用 stdin 替换文件 $1：先写同目录的临时文件再 mv，读的一方不会看到半截文件。
 jstack_replace() {
 	local tmp
@@ -34,6 +39,129 @@ jstack_replace() {
 	if cat >"$tmp" && mv "$tmp" "$1"; then return 0; fi
 	rm -f "$tmp"
 	return 1
+}
+
+# 运行记录根目录。和状态目录放在同一级，不跟随仓库提交。
+jstack_run_root() {
+	printf '%s/runs\n' "$(dirname "$(jstack_state_dir)")"
+}
+
+jstack_run_log() {
+	printf '%s/runs.jsonl\n' "$(dirname "$(jstack_state_dir)")"
+}
+
+jstack_run_active() {
+	case $1 in
+	'' | . | .. | *[!A-Za-z0-9._-]*) return 1 ;;
+	esac
+	printf '%s/active/%s.json\n' "$(jstack_run_root)" "$1"
+}
+
+# JSON 字符串转义；状态里的证据和默认决定已折叠成单行，这里再兜底去掉换行和制表符。
+jstack_run_escape() {
+	printf '%s' "$1" | tr '\r\n\t' '   ' | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+# 状态文件里所有 "<key> <文本>" 行，输出成 JSON 字符串数组。
+jstack_run_json_list() {
+	local key=$1 file=$2 line first=1
+	printf '['
+	while IFS= read -r line; do
+		[ -n "$line" ] || continue
+		[ "$first" -eq 1 ] || printf ','
+		first=0
+		printf '"%s"' "$(jstack_run_escape "${line#"$key "}")"
+	done < <(grep "^$key " "$file" 2>/dev/null || true)
+	printf ']'
+}
+
+# 把 Markdown 报告编码成 JSON 字符串；换行写成 \n，保证运行记录仍是一行一个对象。
+jstack_run_report_json() {
+	local file=$1
+	[ -f "$file" ] || { printf 'null'; return 0; }
+	awk 'BEGIN { printf "\"" } {
+		gsub(/\\/, "\\\\")
+		gsub(/"/, "\\\"")
+		gsub(/\t/, "\\t")
+		gsub(/\r/, "\\r")
+		printf "%s\\n", $0
+	} END { printf "\"" }' "$file"
+}
+
+# 把状态文件序列化成一行 JSON。$2 是 completed 或 unfinished；$3 是结束时间，未完成时为空；
+# $4 是可选 Markdown 报告文件，只在 completed 时读取。
+jstack_run_json() {
+	local file=$1 status=$2 ended=$3 report_file=${4:-}
+	local run started started_epoch duration=null repo ticket ticket_explicit=false size asks needs=false
+	local evidence defaults prs report=null base head premium=null now tickets session worktree
+	run=$(jstack_get run "$file")
+	started=$(jstack_get started "$file")
+	started_epoch=$(jstack_get started_epoch "$file")
+	repo=$(jstack_get repo "$file")
+	ticket=$(jstack_get_last ticket "$file")
+	case $(jstack_get ticket_explicit "$file") in 1 | true) ticket_explicit=true ;; esac
+	size=$(jstack_get size "$file")
+	asks=$(jstack_get asks "$file")
+	base=$(jstack_get base "$file")
+	session=$(basename "$file")
+	worktree=$repo
+	case $asks in
+	'' | *[!0-9]*) asks=0 ;;
+	esac
+	if [ "$asks" -gt 0 ] || grep -q '^ask ' "$file"; then needs=true; fi
+	case $started_epoch in
+	'' | *[!0-9]*) ;;
+	*)
+		now=$(date +%s)
+		duration=$((now - started_epoch))
+		;;
+	esac
+	if [ -n "$repo" ] && [ "$repo" != - ]; then
+		head=$(git -C "$repo" rev-parse HEAD 2>/dev/null || true)
+	else
+		head=
+	fi
+	case ${JSTACK_PREMIUM_TOKENS:-} in
+	'' | *[!0-9]*) ;;
+	*) premium=$JSTACK_PREMIUM_TOKENS ;;
+	esac
+	evidence=$(jstack_run_json_list evidence "$file")
+	defaults=$(jstack_run_json_list default "$file")
+	prs=$(jstack_run_json_list 'land pr' "$file")
+	tickets=$(jstack_run_json_list ticket "$file")
+	if [ "$status" = completed ] && [ -n "$report_file" ]; then
+		report=$(jstack_run_report_json "$report_file")
+	fi
+	printf '{"run_id":"%s","status":"%s","started_at":"%s","ended_at":"%s","duration_s":%s,"repo":"%s","ticket":"%s","ticket_explicit":%s,"current_ticket":"%s","tickets":%s,"session":"%s","worktree":"%s","size":"%s","path":"%s","stage":"%s","asks":%s,"needs_human":%s,"evidence":%s,"defaults":%s,"prs":%s,"report":%s,"base":"%s","head":"%s","premium_tokens":%s}\n' \
+		"$(jstack_run_escape "${run:--}")" "$status" \
+		"$(jstack_run_escape "${started:--}")" "$(jstack_run_escape "$ended")" "$duration" \
+		"$(jstack_run_escape "${repo:--}")" "$(jstack_run_escape "${ticket:--}")" "$ticket_explicit" \
+		"$(jstack_run_escape "${ticket:--}")" "$tickets" \
+		"$(jstack_run_escape "$session")" "$(jstack_run_escape "${worktree:--}")" \
+		"$(jstack_run_escape "${size:--}")" \
+		"$(jstack_run_escape "$(jstack_get path "$file")")" \
+		"$(jstack_run_escape "$(jstack_get stage "$file")")" \
+		"$asks" "$needs" "$evidence" "$defaults" "$prs" "$report" \
+		"$(jstack_run_escape "${base:--}")" "$(jstack_run_escape "${head:--}")" "$premium"
+}
+
+# 更新未完成任务的快照；写不进去不影响门禁。
+jstack_run_snapshot() {
+	local file=$1 active
+	active=$(jstack_run_active "$(basename "$file")") || return 0
+	mkdir -p "$(dirname "$active")" 2>/dev/null || return 0
+	jstack_run_json "$file" unfinished "" | jstack_replace "$active" || true
+}
+
+# 任务收尾：追加完成记录，再删掉活动快照，最后打印运行 ID。
+jstack_run_finish() {
+	local file=$1 report_file=${2:-} log active run
+	log=$(jstack_run_log)
+	run=$(jstack_get run "$file")
+	mkdir -p "$(dirname "$log")" 2>/dev/null || return 1
+	jstack_run_json "$file" completed "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$report_file" >>"$log" || return 1
+	active=$(jstack_run_active "$(basename "$file")") && rm -f "$active"
+	printf '%s\n' "${run:--}"
 }
 
 # stages.md 的 Stages 表，每行"阶段<TAB>产出<TAB>门禁"。
@@ -169,19 +297,24 @@ jstack_cfg_patterns() {
 jstack_run_verify() {
     local cfg repo
     repo=$(jstack_get verify_repo "$1")
+    [ -n "$repo" ] || repo=$(jstack_get repo "$1")
     if [ -n "$repo" ]; then
         if [ ! -d "$repo" ]; then
             echo "无法找到任务启动时的验证仓库：$repo"
             return 1
         fi
         cfg="$repo/.jstack/config.json"
-        [ -f "$cfg" ] || return 10
     else
         cfg=$(jstack_repo_config) || return 10
     fi
+    if [ ! -f "$cfg" ] && ! grep -qx 'verify_required yes' "$1" && [ ! -f "$1.verify.json" ]; then
+        return 10
+    fi
     if ! command -v python3 >/dev/null; then
-        if jstack_has_jq && ! jq -e '.verify.command // empty | strings | select(length>0)' "$cfg" >/dev/null; then
-            return 10
+        if ! grep -qx 'verify_required yes' "$1" && [ ! -f "$1.verify.json" ]; then
+            if jstack_has_jq && jq -e 'type == "object" and ((.verify.command // "") == "")' "$cfg" >/dev/null; then
+                return 10
+            fi
         fi
         echo "验证命令需要 python3"
         return 1

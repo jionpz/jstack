@@ -36,7 +36,7 @@
 
 | 字段 | 类型 | 默认 | 读取方 | 说明 |
 |---|---|---|---|---|
-| `tracker.type` | `"github"` \| `"local"` | 有 remote 时 `github`，否则 `local` | `route`、`flow:archive`、`stage.sh` | 任务账本类型；与 `docs/agents/issue-tracker.md` 的描述应一致 |
+| `tracker.type` | `"github"` \| `"local"` | 有 GitHub remote 时 `github`，否则 `local` | `route`、`flow:archive`、`stage.sh`、`report.py` | 任务账本类型；与 `docs/agents/issue-tracker.md` 的描述应一致 |
 | `tracker.local_dir` | string | `docs/agents/tickets` | `flow:archive` | `local` 时的 ticket 目录 |
 | `tracker.label` | string | `ready-for-agent` | `flow:archive`、`route` | 可派给 agent 的标签 |
 | `domain_docs.glossary` | string | `GLOSSARY.md` | `flow:archive`、`spec:domain-modeling` | 领域词表位置 |

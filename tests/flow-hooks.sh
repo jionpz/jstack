@@ -19,9 +19,10 @@ t() {
 	shift
 	if "$@" >/dev/null 2>&1; then echo "✓ $name"; else echo "✗ $name"; fails=$((fails + 1)); fi
 }
+state_body() { sed -E '/^(started|started_epoch|run|repo|ticket|ticket_explicit|size|asks|base|visited) /d' "$STATE"; }
+state_is() { [ "$(state_body)" = "$(printf '%s\n' "$@")" ]; }
 stage() { CLAUDE_CODE_SESSION_ID=$SID "$BASH" "$ST" "$@"; }
 hook() { printf '%s' "$2" | "$BASH" "$H/$1.sh"; }
-state_is() { [ "$(cat "$STATE")" = "$(printf '%s\n' "$@")" ]; }
 silent() { [ -z "$("$@")" ]; }
 not() { ! "$@"; }
 prints() { [ "$("${@:2}")" = "$1" ]; }
@@ -165,10 +166,14 @@ t "stage.sh start 失败时不写状态" test ! -e "$STATE"
 t "stage.sh enter 没有状态时失败" not stage enter execute
 stage start clarify,execute,verify,land >/dev/null
 t "stage.sh start 的状态文件" state_is 'path clarify,execute,verify,land' 'stage clarify'
+t "stage.sh start 记录运行元数据" sh -c '
+	grep -q "^started " "$1" && grep -q "^repo " "$1" && grep -q "^ticket " "$1" &&
+	grep -qx "size -" "$1" && grep -qx "asks 0" "$1"' _ "$STATE"
 t "stop.sh 在 clarify 阶段放行" silent hook stop "$(stop_in)"
 stage ask '排序按 due 还是按标题？' >/dev/null
 stage ask '排序按 due 还是按标题？' >/dev/null
 t "stage.sh ask 只加一行 ask" state_is 'path clarify,execute,verify,land' 'stage clarify' 'ask 排序按 due 还是按标题？'
+t "stage.sh ask 记录打断次数" grep -qx 'asks 1' "$STATE"
 stage enter execute >/dev/null
 t "stage.sh enter 更新阶段并清掉 ask" state_is 'path clarify,execute,verify,land' 'stage execute'
 t "stage.sh enter 不在路径上的阶段时失败" not stage enter review
@@ -216,7 +221,7 @@ t "stage.sh evidence 把参数拼成一行追加" state_is 'path clarify,execute
 t "execute 的证据不能替代 verify" blocks "$(stop_in)"
 stage enter verify >/dev/null
 stage enter execute >/dev/null
-t "stage.sh 再次进入 execute 时清掉旧证据" state_is 'path clarify,execute,verify,land' 'stage execute'
+t "stage.sh 再次进入 execute 时把旧证据标成历史" state_is 'path clarify,execute,verify,land' 'stage execute' 'prior evidence execute ./run-tests -> 12 passed 0 failed'
 t "stop.sh 下一张 ticket 没有新证据时拦下" blocks "$(stop_in)"
 SID=second-case-0002; STATE="$JSTACK_STATE_DIR/$SID"
 stage start execute >/dev/null
@@ -299,6 +304,42 @@ t "待补清完后 start 不再提示" sh -c '
 (cd "$PEND_REPO" && CLAUDE_CODE_SESSION_ID=other-session-9 "$BASH" "$ST" enter verify >/dev/null &&
   CLAUDE_CODE_SESSION_ID=other-session-9 "$BASH" "$ST" evidence "test -> ok" >/dev/null &&
   CLAUDE_CODE_SESSION_ID=other-session-9 "$BASH" "$ST" end >/dev/null)
+
+# 运行记录：完成的任务落到 runs.jsonl，没 end 的任务留在 runs/active 里，jstack runs 两种都列。
+if command -v jq >/dev/null; then
+	RUN_STATE="$T/run-state/sessions"
+	RUN_REPO="$T/run-repo"
+	RUN_SID=run-log-session-0001
+	mkdir -p "$RUN_REPO" && git -C "$RUN_REPO" init -q
+	run_stage() { (cd "$RUN_REPO" && JSTACK_STATE_DIR="$RUN_STATE" CLAUDE_CODE_SESSION_ID=$RUN_SID "$BASH" "$ST" "$@"); }
+	run_stage start --size S execute,verify >/dev/null
+	t "stage.sh start --size 记录任务规模" grep -qx 'size S' "$RUN_STATE/$RUN_SID"
+	run_stage evidence './author-check -> ok' >/dev/null
+	run_stage default '按标题排序 -> 任务只要求排序' >/dev/null
+	run_stage ask '排序按 due 还是按标题？' >/dev/null
+	t "未完成任务出现在 jstack runs" sh -c '
+		JSTACK_STATE_DIR="$3" "$1" runs --repo "$2" --json |
+		jq -e "select(.status == \"unfinished\" and .size == \"S\" and .asks == 1 and .needs_human == true and (.evidence | length) == 1 and (.defaults | length) == 1)"' _ "$ROOT/jstack" "$RUN_REPO" "$RUN_STATE"
+	t "jstack runs 表格列出未完成任务" sh -c '
+		JSTACK_STATE_DIR="$3" "$1" runs --repo "$2" | grep -q "unfinished.*execute→verify"' _ "$ROOT/jstack" "$RUN_REPO" "$RUN_STATE"
+	run_stage enter verify >/dev/null
+	run_stage evidence './verify-check -> ok' >/dev/null
+	run_stage end >/dev/null
+	RUN_ID=$(JSTACK_STATE_DIR="$RUN_STATE" "$ROOT/jstack" runs --repo "$RUN_REPO" --json | jq -r 'select(.status == "completed") | .run_id')
+	t "完成任务写入 jstack runs" sh -c '
+		JSTACK_STATE_DIR="$3" "$1" runs --repo "$2" --json |
+		jq -e "select(.status == \"completed\" and .size == \"S\" and (.evidence | length) == 2 and (.defaults | length) == 1)"' _ "$ROOT/jstack" "$RUN_REPO" "$RUN_STATE"
+	t "jstack runs --show 能查到证据和默认决定" sh -c '
+		JSTACK_STATE_DIR="$3" "$1" runs --show "$4" --json |
+		jq -e "select((.evidence | any(. == \"verify ./verify-check -> ok\")) and (.defaults | any(. == \"按标题排序 -> 任务只要求排序\")))"' _ "$ROOT/jstack" "$RUN_REPO" "$RUN_STATE" "$RUN_ID"
+	RUN_SID=run-log-abandoned-0002
+	run_stage start --size M execute,verify >/dev/null
+	t "未 end 的任务在 jstack runs 中标为未完成" sh -c '
+		JSTACK_STATE_DIR="$3" "$1" runs --repo "$2" --json |
+		jq -e "select(.status == \"unfinished\" and .size == \"M\")"' _ "$ROOT/jstack" "$RUN_REPO" "$RUN_STATE"
+else
+	echo "- 没有 jq，跳过 jstack runs 测试"
+fi
 
 for mode in jq nojq; do
 	if [ $mode = nojq ]; then export JSTACK_NO_JQ=1; else command -v jq >/dev/null || continue; fi
@@ -453,9 +494,23 @@ if command -v jq >/dev/null; then
 	t "命中仓库 must-stop 的验证命令被拒绝" verify_reply "$(stop_in false "$SID2")" reason 'must-stop'
 	t "被拒绝的命令未执行" sh -c '! grep -q unexpected "$1"' _ "$VERIFY_COUNTER"
 
+	mv "$REPO/.jstack/config.json" "$T/verify-config"
+	t "运行中移除配置文件时文本证据无法通过 Stop" \
+		verify_reply "$(stop_in false "$SID2")" reason '请恢复 verify.command'
+	t "运行中移除配置文件时 CLI 仍拒绝收尾" not repo_stage end
+	jq 'del(.verify)' "$T/verify-config" >"$REPO/.jstack/config.json"
+	t "仅移除 verify.command 时 Cursor 同样拒绝结束" \
+		verify_reply "$(cursor_stop_in completed "$SID2")" followup_message '请恢复 verify.command'
+	jq '.verify = {"command":"./scripts/verify.sh"}' "$T/verify-config" >"$REPO/.jstack/config.json"
+	printf 'pass\n' >"$REPO/verify-input"
+	t "恢复验证配置并重验后可以收尾" repo_stage end
+
 	jq 'del(.verify)' "$REPO/.jstack/config.json" >"$T/config"
 	mv "$T/config" "$REPO/.jstack/config.json"
-	t "未配置命令时保留分阶段文本证据行为" repo_stage end
+	repo_stage start execute,verify >/dev/null
+	repo_stage enter verify >/dev/null
+	repo_stage evidence 'fixture -> passed' >/dev/null
+	t "初始未配置命令时保留分阶段文本证据行为" repo_stage end
 fi
 BAD="$T/badrepo"
 mkdir -p "$BAD/.jstack" "$BAD/.git"
