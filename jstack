@@ -1030,7 +1030,7 @@ repo_config_errors() {
 		(if has("api_key") then "仓库级不能有 api_key" else empty end),
 		(if (.tracker.type? != null) and ((.tracker.type | type) != "string" or ((.tracker.type == "github" or .tracker.type == "local") | not)) then "tracker.type 只能是 github 或 local" else empty end),
 		(if (.verify.command? != null) and ((.verify.command | type) != "string") then "verify.command 必须是字符串" else empty end),
-		(if (.verify.timeout_s? != null) and ((.verify.timeout_s | type) != "number") then "verify.timeout_s 必须是数字" else empty end),
+		(if (.verify.timeout_s? != null) and (((.verify.timeout_s | type) != "number") or (.verify.timeout_s <= 0)) then "verify.timeout_s 必须是正数" else empty end),
 		(if (.stages_file? != null) and ((.stages_file | type) != "string") then "stages_file 必须是字符串" else empty end),
 		(if (.must_stop? != null) and ((.must_stop | type) != "array") then "must_stop 必须是数组" else empty end),
 		((.must_stop // [])[] | select((.action? // "") == "") | "must_stop 的每一项都要有非空 action")

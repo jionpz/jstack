@@ -37,7 +37,7 @@ main() {
     # Deny only stage state mutations; read-only stage.sh show remains available.
     # This protects ordinary tool calls; it is not a shell sandbox.
     if [ -n "$(jstack_json_str agent_id "$input")" ] &&
-        printf '%s\n' "$cmd" | grep -Eq 'stage\.sh[^;&|]*(start|enter|evidence|review|land|default|ask|end|pending|settled)([[:space:]]|$)'; then
+        printf '%s\n' "$cmd" | grep -Eq 'stage\.sh[^;&|]*(start|enter|evidence|verify|review|land|default|ask|end|pending|settled)([[:space:]]|$)'; then
         reason="jstack: 子代理不可修改主会话阶段记录；将验证、审查和落地结果交还主会话记录。"
         case $evt in
         beforeShellExecution | preToolUse)
