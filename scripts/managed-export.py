@@ -11,6 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from stage_table import BACKTICK_RE, StageTableError, parse_stage_table, stage_tiers
 
 ROUTE_PATH = Path("src/flow/skills/route/SKILL.md")
 STAGES_PATH = Path("src/flow/skills/route/stages.md")
@@ -18,7 +19,6 @@ EXECUTE_PATH = Path("src/managed/investigate.md")
 PLAN_PATH = Path("src/managed/plan.md")
 MUST_STOP_PATH = Path("src/flow/skills/route/must-stop.md")
 TOOL_POLICY_PATH = Path("src/flow/skills/route/tool-policy.json")
-TICKET_STAGES = ("execute", "verify", "review", "land")
 TICKET_SIZES = ("XS", "S")
 ROUTE_SIZES = ("XS", "S", "M", "L", "XL")
 ROUTE_GRAPH_LIMITS = {
@@ -28,24 +28,13 @@ ROUTE_GRAPH_LIMITS = {
     "L": (2, 12),
     "XL": (2, 20),
 }
-TICKET_STAGE_PROVIDERS = {
+LEGACY_TICKET_PROVIDERS = {
     "execute": "flow:execute",
     "verify": "pstack:principle-prove-it-works",
     "review": "flow:review",
     "land": "pstack:poteto-mode/playbooks/opening-a-pr.md",
 }
-TICKET_PROVIDER_PATHS = {
-    "flow:execute": Path("src/flow/skills/execute/SKILL.md"),
-    "pstack:principle-prove-it-works": Path(
-        "plugins/pstack/skills/principle-prove-it-works/SKILL.md"
-    ),
-    "flow:review": Path("src/flow/skills/review/SKILL.md"),
-    "pstack:poteto-mode/playbooks/opening-a-pr.md": Path(
-        "plugins/pstack/skills/poteto-mode/playbooks/opening-a-pr.md"
-    ),
-}
-STAGE_COLUMNS = ("Stage", "Output", "Gate", "Providers", "Tool profile")
-BACKTICK_RE = re.compile(r"`([^`]+)`")
+PROVIDER_RE = re.compile(r"(flow|pstack|spec):([a-z0-9-]+)((?:/[a-zA-Z0-9_-][a-zA-Z0-9_.-]*)*)")
 
 
 class ExportError(Exception):
@@ -117,50 +106,6 @@ def read_source(root: Path, relative: Path) -> tuple[str, dict[str, object]]:
     }
 
 
-def parse_stage_table(text: str) -> dict[str, dict[str, object]]:
-    in_section = False
-    header: tuple[str, ...] | None = None
-    rows: dict[str, dict[str, object]] = {}
-    for number, raw in enumerate(text.splitlines(), start=1):
-        line = raw.strip()
-        if line.startswith("## "):
-            if in_section and header is not None:
-                break
-            in_section = line == "## Stages"
-            continue
-        if not in_section or not line.startswith("|"):
-            if in_section and header is not None and line:
-                break
-            continue
-        cells = tuple(cell.strip() for cell in line.strip("|").split("|"))
-        if header is None:
-            if cells != STAGE_COLUMNS:
-                raise ExportError("Stages 表头必须是：" + " | ".join(STAGE_COLUMNS))
-            header = cells
-            continue
-        if all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells):
-            continue
-        if len(cells) != len(header):
-            raise ExportError(f"Stages 表第 {number} 行列数不匹配")
-        row = dict(zip(header, cells))
-        stage = row["Stage"]
-        if stage in rows:
-            raise ExportError(f"Stages 表重复定义阶段：{stage}")
-        providers = BACKTICK_RE.findall(row["Providers"])
-        profiles = BACKTICK_RE.findall(row["Tool profile"])
-        if len(profiles) != 1:
-            raise ExportError(f"阶段 {stage} 必须声明一个 tool profile")
-        rows[stage] = {
-            "output": row["Output"],
-            "gate": row["Gate"],
-            "providers": providers,
-            "tool_profile": profiles[0],
-        }
-    if header is None or not rows:
-        raise ExportError("找不到非空 Stages 表")
-    return rows
-
-
 def parse_must_stop(text: str) -> list[dict[str, str]]:
     actions: list[dict[str, str]] = []
     header: tuple[str, ...] | None = None
@@ -192,7 +137,7 @@ def parse_must_stop(text: str) -> list[dict[str, str]]:
     return actions
 
 
-def parse_route_rules(route_text: str) -> list[dict[str, object]]:
+def parse_route_rules(route_text: str, stage_path: list[object]) -> list[dict[str, object]]:
     """从 jstack route 的 size 表提取五档规模；阶段路径由固定 ticket 安全门给出。"""
     rules: dict[str, dict[str, object]] = {}
     in_sizes = False
@@ -240,7 +185,7 @@ def parse_route_rules(route_text: str) -> list[dict[str, object]]:
             low, high = ROUTE_GRAPH_LIMITS[size]
             rules[size] = {
                 "size": size,
-                "stage_path": list(TICKET_STAGES),
+                "stage_path": stage_path,
                 "min_tickets": low,
                 "max_tickets": high,
                 "description": f"{signals}；{path}"[:2000],
@@ -249,6 +194,54 @@ def parse_route_rules(route_text: str) -> list[dict[str, object]]:
     if missing:
         raise ExportError("route size 表缺少规模：" + ",".join(missing))
     return [rules[size] for size in ROUTE_SIZES]
+
+
+def managed_stages(
+    root: Path, stage_table: dict[str, dict[str, object]], sources: list[dict[str, object]]
+) -> list[dict[str, object]]:
+    if "managed" in next(iter(stage_table.values())):
+        providers = {}
+        for stage, row in stage_table.items():
+            if row["managed"]:
+                if not row["providers"]:
+                    raise ExportError(f"托管阶段 {stage} 必须声明 provider")
+                providers[stage] = row["providers"][0]
+    else:
+        providers = LEGACY_TICKET_PROVIDERS
+    if not providers:
+        raise ExportError("Stages 表没有 Managed ticket 阶段")
+
+    stages = []
+    for stage, provider in providers.items():
+        row = stage_table.get(stage)
+        if row is None:
+            raise ExportError(f"Stages 表缺少 ticket 阶段：{stage}")
+        if provider not in row["providers"]:
+            raise ExportError(f"阶段 {stage} 没有声明 provider {provider}")
+        match = PROVIDER_RE.fullmatch(provider)
+        if match is None:
+            raise ExportError(f"阶段 {stage} 的 provider 不合法：{provider}")
+        plugin, skill, filename = match.groups()
+        plugin_root = Path("src/flow") if plugin == "flow" else Path("plugins") / plugin
+        skills = plugin_root / "skills"
+        if plugin == "spec":
+            for category in ("engineering", "productivity"):
+                if (root / skills / category / skill).is_dir():
+                    skills /= category
+                    break
+        provider_path = skills / skill / (filename.lstrip("/") or "SKILL.md")
+        content, manifest = read_source(root, provider_path)
+        sources.append(manifest)
+        stages.append({
+            "stage": stage,
+            "provider": provider,
+            "provider_path": provider_path.as_posix(),
+            "gate": row["gate"],
+            "tool_profile": row["tool_profile"],
+            "instructions": content,
+            "content_digest": digest_text(content),
+        })
+    return stages
 
 
 def build_tool_policy(
@@ -314,6 +307,8 @@ def export_ticket(
     ticket_description: str | None,
     size: str,
     completion_target: str = "branch_ready",
+    *,
+    include_stage_tiers: bool = False,
 ) -> dict[str, object]:
     root = root.resolve(strict=True)
     if not ticket_id.strip() or len(ticket_id) > 200:
@@ -332,38 +327,17 @@ def export_ticket(
     route, route_manifest = read_source(root, ROUTE_PATH)
     stages_text, stages_manifest = read_source(root, STAGES_PATH)
     must_stop_text, must_stop_manifest = read_source(root, MUST_STOP_PATH)
-    stage_table = parse_stage_table(stages_text)
+    stage_table = parse_stage_table(stages_text, require_tiers=include_stage_tiers)
     must_stop_actions = parse_must_stop(must_stop_text)
     tool_policy, policy_manifest = build_tool_policy(root, stage_table)
 
-    stages: list[dict[str, object]] = []
     sources = [
         route_manifest,
         stages_manifest,
         must_stop_manifest,
         policy_manifest,
     ]
-    for stage in TICKET_STAGES:
-        row = stage_table.get(stage)
-        if row is None:
-            raise ExportError(f"Stages 表缺少 ticket 阶段：{stage}")
-        provider = TICKET_STAGE_PROVIDERS[stage]
-        if provider not in row["providers"]:
-            raise ExportError(f"阶段 {stage} 没有声明 provider {provider}")
-        provider_path = TICKET_PROVIDER_PATHS[provider]
-        content, manifest = read_source(root, provider_path)
-        sources.append(manifest)
-        stages.append(
-            {
-                "stage": stage,
-                "provider": provider,
-                "provider_path": provider_path.as_posix(),
-                "gate": row["gate"],
-                "tool_profile": row["tool_profile"],
-                "instructions": content,
-                "content_digest": digest_text(content),
-            }
-        )
+    stages = managed_stages(root, stage_table, sources)
 
     ticket: dict[str, object] = {"id": ticket_id.strip(), "title": ticket_title.strip()}
     if ticket_description is not None:
@@ -375,7 +349,7 @@ def export_ticket(
         "mode": "ticket",
         "source_commit": source_commit(root),
         "ticket": ticket,
-        "route": {"size": size, "stages": list(TICKET_STAGES)},
+        "route": {"size": size, "stages": [stage["stage"] for stage in stages]},
         "stages": stages,
         "instructions": {
             "route": route,
@@ -391,11 +365,13 @@ def export_ticket(
         "completion_target": completion_target,
         "sources": sources,
     }
+    if include_stage_tiers:
+        package["stage_tiers"] = stage_tiers(stage_table)
     package["content_digest"] = digest_payload(package)
     return package
 
 
-def export_route(root: Path, completion_target: str) -> dict[str, object]:
+def export_route(root: Path, completion_target: str, *, include_stage_tiers: bool = False) -> dict[str, object]:
     """导出 jstack 的五档路线、阶段模板与规划说明，供 Keel 接纳 ticket 图。"""
     root = root.resolve(strict=True)
     if completion_target not in ("branch_ready", "pr_ready"):
@@ -405,10 +381,9 @@ def export_route(root: Path, completion_target: str) -> dict[str, object]:
     stages_text, stages_manifest = read_source(root, STAGES_PATH)
     plan, plan_manifest = read_source(root, PLAN_PATH)
     must_stop_text, must_stop_manifest = read_source(root, MUST_STOP_PATH)
-    stage_table = parse_stage_table(stages_text)
+    stage_table = parse_stage_table(stages_text, require_tiers=include_stage_tiers)
     must_stop_actions = parse_must_stop(must_stop_text)
     tool_policy, policy_manifest = build_tool_policy(root, stage_table)
-    route_rules = parse_route_rules(route)
 
     archive = stage_table.get("archive")
     if archive is None:
@@ -417,7 +392,6 @@ def export_route(root: Path, completion_target: str) -> dict[str, object]:
     if not isinstance(archive_gate, str) or not archive_gate.strip():
         raise ExportError("archive 阶段缺少 gate")
 
-    stage_templates: list[dict[str, object]] = []
     sources = [
         route_manifest,
         stages_manifest,
@@ -425,27 +399,8 @@ def export_route(root: Path, completion_target: str) -> dict[str, object]:
         must_stop_manifest,
         policy_manifest,
     ]
-    for stage in TICKET_STAGES:
-        row = stage_table.get(stage)
-        if row is None:
-            raise ExportError(f"Stages 表缺少 ticket 阶段：{stage}")
-        provider = TICKET_STAGE_PROVIDERS[stage]
-        if provider not in row["providers"]:
-            raise ExportError(f"阶段 {stage} 没有声明 provider {provider}")
-        provider_path = TICKET_PROVIDER_PATHS[provider]
-        content, manifest = read_source(root, provider_path)
-        sources.append(manifest)
-        stage_templates.append(
-            {
-                "stage": stage,
-                "provider": provider,
-                "provider_path": provider_path.as_posix(),
-                "gate": row["gate"],
-                "tool_profile": row["tool_profile"],
-                "instructions": content,
-                "content_digest": digest_text(content),
-            }
-        )
+    stage_templates = managed_stages(root, stage_table, sources)
+    route_rules = parse_route_rules(route, [stage["stage"] for stage in stage_templates])
 
     package: dict[str, object] = {
         "protocol_version": "1.0",
@@ -470,6 +425,8 @@ def export_route(root: Path, completion_target: str) -> dict[str, object]:
         "archive_gate": archive_gate,
         "sources": sources,
     }
+    if include_stage_tiers:
+        package["stage_tiers"] = stage_tiers(stage_table)
     package["content_digest"] = digest_payload(package)
     return package
 
@@ -478,6 +435,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="导出 jstack managed 工作流包 JSON")
     parser.add_argument("--root", type=Path, help="jstack 仓库根目录；默认使用本脚本所属仓库")
     parser.add_argument("--route", action="store_true", help="导出 XS/S/M/L/XL 路线包")
+    parser.add_argument("--with-stage-tiers", action="store_true", help="在路线包或单 ticket 包中附加结构化层级")
     parser.add_argument("--ticket-id", help="导出 XS/S 单 ticket 工程包")
     parser.add_argument("--ticket-title", help="ticket 标题；缺省使用 ticket id")
     parser.add_argument("--ticket-description", help="ticket 正文；可选，最多 20000 字符")
@@ -500,8 +458,11 @@ def main(argv: list[str] | None = None) -> int:
                 raise ExportError("--ticket-description 只能与 --ticket-id 一起使用")
             if args.size is not None:
                 raise ExportError("--route 不能与 --size 一起使用")
-            payload = export_route(root, args.completion_target or "pr_ready")
+            payload = export_route(root, args.completion_target or "pr_ready",
+                                   include_stage_tiers=args.with_stage_tiers)
         elif args.ticket_id is None:
+            if args.with_stage_tiers:
+                raise ExportError("--with-stage-tiers 需要 --route 或 --ticket-id")
             if args.ticket_title is not None:
                 raise ExportError("--ticket-title 只能与 --ticket-id 一起使用")
             if args.ticket_description is not None:
@@ -517,8 +478,9 @@ def main(argv: list[str] | None = None) -> int:
                 args.ticket_description,
                 args.size or "S",
                 args.completion_target or "branch_ready",
+                include_stage_tiers=args.with_stage_tiers,
             )
-    except (ExportError, OSError) as exc:
+    except (ExportError, StageTableError, OSError) as exc:
         print(f"managed-export: 错误：{exc}", file=sys.stderr)
         return 1
 

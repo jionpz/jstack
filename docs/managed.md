@@ -19,6 +19,8 @@
   --completion-target pr_ready > /tmp/jstack-ticket-pr-ready.json
 ```
 
+路线包和单 ticket 工程包的 `instructions.stages` 包含完整阶段表及 `Tier` 列。支持结构化层级的调用方可以加 `--with-stage-tiers`，在包顶层得到 `stage_tiers`，其中每个阶段都对应 `{"work": "bulk", "gate": null}` 或一个有裁决层级的对象。该字段参与 `content_digest`。当前 Keel 1.0 的 schema 只接受默认包格式。
+
 ## 调查包
 
 导出器读取 `src/flow/skills/route/SKILL.md` 的 Question 路线、阶段表和 `src/managed/investigate.md`，确认只走 execute 后输出 `protocol_version=1.0` 的包。`--root` 只用于显式选择导出来源和测试；不运行该目录的脚本。缺文件、空文件、越界软链或不兼容路线均拒绝。
@@ -53,11 +55,11 @@ L/XL/pstack/land/archive 路线。现有交互式 route、must-stop 与插件安
 的节点；引用必须存在，图必须无环，独立 ticket 不能互相依赖。等待人工的 ticket 不
 阻塞其他独立节点。Keel 校验通过后才提交这张图，并按依赖前沿推进。
 
-managed route 不照搬交互式 route 的每档阶段差：五档都固定为
-`execute → verify → review → land`，`route_rules[].stage_path` 和
-`stage_templates` 都绑定这条安全路径。即使交互式 XS/S 默认省略 review，managed
-写路径仍强制 review。四个阶段的 provider、门禁、tool profile、完整指令与
-`content_digest` 都在包内，Keel 不从工作区临时读取最新 provider。
+managed route 按阶段表的 `Managed ticket` 列生成
+`route_rules[].stage_path` 和 `stage_templates`。当前协议 1.0 的五档均走
+`execute → verify → review → land`。阶段的 provider、门禁、tool profile、完整指令与
+`content_digest` 都在包内，Keel 按该版本执行。托管边界见
+[ADR-0008](adr/0008-managed-workflow-boundary.md)。
 
 `archive_gate` 原样携带阶段表的 archive 门禁：ticket 只有证据齐全才能关闭；有未提交
 工作的 worktree 不得删除；每条教训必须有去向。route 包只携带这道门禁文本，不包含
@@ -86,7 +88,7 @@ branch_ready` 改为分支完成。与 ticket 模式一样，它只声明完成�
 
 ## 单 ticket 工程包
 
-`--ticket-id` 模式固定导出 `execute → verify → review → land`：
+`--ticket-id` 模式读取同一份阶段表。协议 1.0 的导出如下。
 
 | 阶段 | provider | tool profile |
 |---|---|---|
@@ -95,8 +97,7 @@ branch_ready` 改为分支完成。与 ticket 模式一样，它只声明完成�
 | review | `flow:review` | `reviewer` |
 | land | `pstack:poteto-mode/playbooks/opening-a-pr.md` | `releaser` |
 
-交互式 XS/S route 默认不含 review；managed 写路径强制加入 review 安全门，这是
-launcher 的安全覆盖，不声称与交互式 route 完全相同。
+阶段表将 review 标记为托管写入的必经阶段。交互式 XS/S 按 route 的分级规则运行。
 
 包会嵌入 route、阶段表、must-stop、四个 provider 的完整内容，读取
 `tool-policy.json` 并生成 stage/profile/harness 映射及 `content_digest`。`sources`
