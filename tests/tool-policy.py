@@ -11,6 +11,7 @@ import unittest
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "scripts/tool-policy.py"
+STAGE_TABLE = REPO / "scripts/stage_table.py"
 ROUTE = Path("src/flow/skills/route")
 STAGES = ROUTE / "stages.md"
 POLICY = ROUTE / "tool-policy.json"
@@ -23,9 +24,40 @@ class ToolPolicyTests(unittest.TestCase):
         route.mkdir(parents=True)
         (root / "scripts").mkdir()
         (root / "scripts/tool-policy.py").write_text(SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+        (root / "scripts/stage_table.py").write_text(STAGE_TABLE.read_text(encoding="utf-8"), encoding="utf-8")
         (root / STAGES).write_text((REPO / STAGES).read_text(encoding="utf-8"), encoding="utf-8")
         (root / POLICY).write_text((REPO / POLICY).read_text(encoding="utf-8"), encoding="utf-8")
         return root
+
+    def set_tier_table(self, root: Path, *, enabled: bool, invalid: bool = False, missing: bool = False) -> None:
+        path = root / STAGES
+        values = {
+            "size": "bulk / -",
+            "clarify": "bulk / premium",
+            "plan": "bulk / premium",
+            "investigate": "bulk / -",
+            "execute": "bulk / bulk",
+            "verify": "bulk / -",
+            "review": "bulk / premium",
+            "land": "bulk / premium",
+            "archive": "bulk / -",
+        }
+        lines = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip().startswith("|"):
+                lines.append(line)
+                continue
+            cells = [cell.strip() for cell in line.strip().strip("|").split("|")[:5]]
+            if enabled:
+                stage = cells[0]
+                if stage == "Stage":
+                    cells.append("Tier")
+                elif all(set(cell) <= {":", "-"} for cell in cells):
+                    cells.append("---")
+                elif not (missing and stage == "execute"):
+                    cells.append("premium / bulk" if invalid and stage == "execute" else values[stage])
+            lines.append("| " + " | ".join(cells) + " |")
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def run_script(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -80,6 +112,28 @@ class ToolPolicyTests(unittest.TestCase):
             body = {key: value for key, value in payload.items() if key != "content_digest"}
             canonical = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
             self.assertEqual(payload["content_digest"], hashlib.sha256(canonical).hexdigest())
+
+    def test_export_keeps_shape_for_legacy_and_tier_tables(self) -> None:
+        expected_keys = {
+            "protocol_version", "source_commit", "stages", "profiles",
+            "harnesses", "content_digest",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.fixture(Path(directory))
+            for enabled in (False, True):
+                with self.subTest(tier_column=enabled):
+                    self.set_tier_table(root, enabled=enabled)
+                    payload = self.export(root)
+                    self.assertEqual(set(payload), expected_keys)
+                    self.assertEqual(payload["stages"]["execute"], "developer")
+
+            for invalid, missing in ((True, False), (False, True)):
+                with self.subTest(invalid=invalid, missing=missing):
+                    self.set_tier_table(root, enabled=True, invalid=invalid, missing=missing)
+                    result = self.run_script("export", "--root", str(root))
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(result.stdout, "")
+                    self.set_tier_table(root, enabled=True)
 
     def test_repeated_export_is_byte_stable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -164,7 +164,7 @@ JStack 支持把模型按职责分成两层：`premium` 负责架构判断、关
 ./jstack models init             # 配置模型
 ./jstack models apply --dry-run  # 先检查将要修改的文件
 ./jstack models apply            # 确认后应用
-./jstack models status           # 查看当前预算状态
+./jstack models status           # 查看当前预算和各 harness 的 premium flow 角色
 ```
 
 模型配置写在 `~/.jstack/config.json`。**更换模型提供商可能改变代码和上下文的数据流向**，运行 `apply` 前应检查配置。项目自身的任务跟踪、验证命令和必须暂停事项则放在 `<repo>/.jstack/config.json`；不要在项目配置里存放模型凭据。具体规则见[配置字段](docs/agents/jstack-config.md)及 [ADR-0003](docs/adr/0003-two-tier-models.md)。
