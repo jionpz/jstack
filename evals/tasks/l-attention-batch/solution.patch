@@ -1,0 +1,18 @@
+diff --git a/src/cli.js b/src/cli.js
+--- a/src/cli.js
++++ b/src/cli.js
+@@ -51,11 +51,12 @@ function run(command, args) {
+       return;
+     }
+     case 'list': {
+-      if (tasks.length === 0) {
++      const visible = args.includes('--open') ? tasks.filter(task => !task.done) : tasks;
++      if (visible.length === 0) {
+         console.log('Nothing to do.');
+         return;
+       }
+-      for (const task of tasks) console.log(formatTask(task));
++      for (const task of visible) console.log(formatTask(task));
+       return;
+     }
+     case 'done': {

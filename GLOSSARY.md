@@ -16,6 +16,21 @@ _Avoid_: phase, step
 The skill or script currently bound to a stage; upstream skills are providers and can be swapped.
 _Avoid_: backend, implementation
 
+**launcher**:
+The system that drives a jstack workflow and controls where it runs and which tools it can use. An interactive session and Keel are launchers.
+
+**managed package**:
+A versioned workflow definition that jstack exports for Keel to run.
+
+**tool profile**:
+A set of required and optional tool capabilities assigned to a workflow role.
+
+**completion target**:
+The delivery boundary declared for a managed run, such as a verified branch or a PR that meets the PR-ready gate.
+
+**天问 (tianwen)**:
+Keel's read-only reasoning role for independent checks in a managed run.
+
 **gate**:
 A condition a stage must meet before the workflow moves on, enforced by structure (hook or script) where the harness allows.
 _Avoid_: check, checkpoint
