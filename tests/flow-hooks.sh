@@ -131,7 +131,9 @@ prompt_shows() {
 		[ "$(printf '%s\n' "$out" | grep -Fo -- "\"$ST\"" | wc -l | tr -d ' ')" -eq 1 ] &&
 		[ "$(printf '%s' "$out" | LC_ALL=en_US.UTF-8 wc -m | tr -d ' ')" -lt 1500 ]
 }
-prompt_gate() { hook prompt "$(prompt_in)" | grep -qF '本阶段门禁：No evidence means not done'; }
+prompt_gate() {
+	hook prompt "$(prompt_in)" | grep -qF 'Stop and `stage.sh end` check the configured command receipt or stage-scoped evidence'
+}
 prompt_defaults() { hook prompt "$(prompt_in)" | grep -qF '已采用的默认决定：1 条'; }
 
 for f in "$ST" "$H/prompt.sh" "$H/stop.sh" "$H/guard.sh"; do
@@ -368,7 +370,8 @@ t "guard.sh 在插件目录不完整时放行" sh -c 'printf "%s" "$1" | CLAUDE_
 # 仓库级配置：.jstack/config.json 追加 must-stop、替换阶段表、注入提示。
 REPO="$T/repo"
 SID2=test-session-0002
-mkdir -p "$REPO/.jstack" "$REPO/.git"
+mkdir -p "$REPO/.jstack" "$REPO/scripts"
+git -C "$REPO" init -q
 cat >"$REPO/.jstack/config.json" <<'JSON'
 {
   "tracker": { "type": "local" },
@@ -391,6 +394,20 @@ cat >"$REPO/.jstack/stages.md" <<'MD'
 | verify | Evidence | No evidence means not done | `pstack:principle-prove-it-works` |
 | land | Commits | must-stop | `pstack:poteto-mode/playbooks/opening-a-pr.md` |
 MD
+export VERIFY_COUNTER="$T/verify-count"
+cat >"$REPO/scripts/verify.sh" <<'SH'
+#!/bin/bash
+printf 'run\n' >>"$VERIFY_COUNTER"
+case "$(cat verify-input)" in
+pass) ;;
+slow) sleep 5 ;;
+fail) printf 'fixture failure\twith details\n'; exit 23 ;;
+esac
+SH
+chmod +x "$REPO/scripts/verify.sh"
+printf 'pass\n' >"$REPO/verify-input"
+git -C "$REPO" add .
+git -C "$REPO" -c user.name=Fixture -c user.email=fixture@example.invalid commit -qm fixture
 repo_stage() { (cd "$REPO" && CLAUDE_CODE_SESSION_ID=$SID2 "$BASH" "$ST" "$@"); }
 repo_hook() { (cd "$REPO" && printf '%s' "$2" | "$BASH" "$H/$1.sh"); }
 repo_state="$JSTACK_STATE_DIR/$SID2"
@@ -418,8 +435,84 @@ if command -v jq >/dev/null; then
 		printf "%s\n" "$out" | grep -qF "must-stop 追加=1 条"' \
 		_ "$REPO" "$(repo_prompt_in)" "$BASH" "$H/prompt.sh"
 	repo_stage enter verify >/dev/null
-	repo_stage evidence './scripts/verify.sh -> ok' >/dev/null
-	repo_stage end >/dev/null
+	repo_stage evidence './scripts/verify.sh -> claimed pass' >/dev/null
+	verify_receipt="$repo_state.verify.json"
+	verify_count() { test "$(wc -l <"$VERIFY_COUNTER" | tr -d ' ')" = "$1"; }
+	verify_reply() {
+		local result
+		result=$(repo_hook stop "$1")
+		printf '%s' "$result" | jq -e --arg property "$2" --arg detail "$3" \
+			'.[$property] | strings | contains($detail)' >/dev/null
+	}
+	t "Stop 直接执行配置的命令并通过" silent repo_hook stop "$(stop_in false "$SID2")"
+	t "执行器回执包含退出码、提交、耗时和干净状态" jq -e --arg commit "$(git -C "$REPO" rev-parse HEAD)" \
+		'.exit_code == 0 and .commit == $commit and .dirty == false and (.duration_ms | type) == "number"' "$verify_receipt"
+	t "相同快照在 Cursor 协议中复用成功回执" silent repo_hook stop "$(cursor_stop_in completed "$SID2")"
+	t "同一快照只执行过一次" verify_count 1
+
+	printf 'fail\n' >"$REPO/verify-input"
+	t "Claude Stop 执行脏工作区验证并返回失败输出" verify_reply "$(stop_in false "$SID2")" reason '退出码 23'
+	t "Cursor Stop 不能用文本证据越过失败" verify_reply "$(cursor_stop_in completed "$SID2")" followup_message 'fixture failure'
+	verify_from_other_repo() {
+		local event result
+		mkdir -p "$T/other"
+		git -C "$T/other" init -q
+		event=$(stop_in false "$SID2" | jq --arg cwd "$T/other" '.cwd = $cwd')
+		result=$(printf '%s' "$event" | "$BASH" "$H/stop.sh")
+		jq -e '.decision == "block" and (.reason | contains("退出码 23"))' <<<"$result"
+	}
+	t "Stop 更换当前目录后仍验证任务启动时的仓库" verify_from_other_repo
+	t "失败回执也可复用" verify_count 2
+	t "验证失败时 CLI 同样拒绝清除状态" not repo_stage end
+	t "CLI 拒绝后阶段记录仍在" test -f "$repo_state"
+	t "显式重试再次执行命令" not repo_stage verify --retry
+	t "重试产生第三次执行" verify_count 3
+
+	printf 'pass\n' >"$REPO/verify-input"
+	printf 'one\n' >"$REPO/untracked"
+	t "修正内容后通过重新验证" repo_stage verify
+	printf 'two\n' >"$REPO/untracked"
+	t "未跟踪文件内容变化使回执失效" silent repo_hook stop "$(stop_in false "$SID2")"
+	t "修改未跟踪文件会重新执行" verify_count 5
+	git -C "$REPO" -c user.name=Fixture -c user.email=fixture@example.invalid \
+		commit --allow-empty -qm next
+	t "提交变化后运行新验证" silent repo_hook stop "$(stop_in false "$SID2")"
+	t "新提交产生第六次执行" verify_count 6
+
+	printf 'slow\n' >"$REPO/verify-input"
+	t "长验证令 Stop 暂缓结束，命令在后台继续" verify_reply "$(stop_in false "$SID2")" reason '仍在运行'
+	t "CLI 等待同一次验证完成" repo_stage verify
+	t "Stop 和 CLI 只执行一次长验证" verify_count 7
+
+	jq '.verify.timeout_s = 0.25' "$REPO/.jstack/config.json" >"$T/config"
+	mv "$T/config" "$REPO/.jstack/config.json"
+	t "配置超时后 Cursor 阻止结束" verify_reply "$(cursor_stop_in completed "$SID2")" followup_message '超时'
+	t "超时有结构化失败回执" jq -e '.timed_out and .exit_code == 124' "$verify_receipt"
+
+	jq '.verify.command = "./deploy.sh"' "$REPO/.jstack/config.json" >"$T/config"
+	mv "$T/config" "$REPO/.jstack/config.json"
+	printf '#!/bin/bash\nprintf unexpected >>"$VERIFY_COUNTER"\n' >"$REPO/deploy.sh"
+	chmod +x "$REPO/deploy.sh"
+	t "命中仓库 must-stop 的验证命令被拒绝" verify_reply "$(stop_in false "$SID2")" reason 'must-stop'
+	t "被拒绝的命令未执行" sh -c '! grep -q unexpected "$1"' _ "$VERIFY_COUNTER"
+
+	mv "$REPO/.jstack/config.json" "$T/verify-config"
+	t "运行中移除配置文件时文本证据无法通过 Stop" \
+		verify_reply "$(stop_in false "$SID2")" reason '请恢复 verify.command'
+	t "运行中移除配置文件时 CLI 仍拒绝收尾" not repo_stage end
+	jq 'del(.verify)' "$T/verify-config" >"$REPO/.jstack/config.json"
+	t "仅移除 verify.command 时 Cursor 同样拒绝结束" \
+		verify_reply "$(cursor_stop_in completed "$SID2")" followup_message '请恢复 verify.command'
+	jq '.verify = {"command":"./scripts/verify.sh"}' "$T/verify-config" >"$REPO/.jstack/config.json"
+	printf 'pass\n' >"$REPO/verify-input"
+	t "恢复验证配置并重验后可以收尾" repo_stage end
+
+	jq 'del(.verify)' "$REPO/.jstack/config.json" >"$T/config"
+	mv "$T/config" "$REPO/.jstack/config.json"
+	repo_stage start execute,verify >/dev/null
+	repo_stage enter verify >/dev/null
+	repo_stage evidence 'fixture -> passed' >/dev/null
+	t "初始未配置命令时保留分阶段文本证据行为" repo_stage end
 fi
 BAD="$T/badrepo"
 mkdir -p "$BAD/.jstack" "$BAD/.git"
@@ -483,5 +576,112 @@ t "verify、review、commit、PR 全齐后 Stop 放行" silent hook stop "$(stop
 t "verify、review、commit、PR 全齐后可结束" stage end
 t "完成后状态文件被删除" test ! -e "$STATE"
 unset JSTACK_REPO
+
+RECHECK_STATE_DIR="$T/recheck-state"
+new_recheck_fixture() {
+	local repo=$1
+	mkdir -p "$repo/src/one" "$repo/src/two" "$repo/api"
+	git -C "$repo" init -q
+	git -C "$repo" config user.name "jstack fixture"
+	git -C "$repo" config user.email "jstack-fixture@example.test"
+	git -C "$repo" config core.hooksPath /dev/null
+	git -C "$repo" config commit.gpgsign false
+	printf 'one baseline\n' >"$repo/src/one/item.txt"
+	printf 'two baseline\n' >"$repo/src/two/item.txt"
+	printf 'api baseline\n' >"$repo/api/contract.yaml"
+	git -C "$repo" add src api
+	git -C "$repo" commit -qm baseline
+}
+recheck_stage() {
+	local repo=$1 sid=$2
+	shift 2
+	(cd "$repo" && CLAUDE_CODE_SESSION_ID="$sid" JSTACK_STATE_DIR="$RECHECK_STATE_DIR" "$BASH" "$ST" "$@")
+}
+recheck_path_is() {
+	local state_file="$RECHECK_STATE_DIR/$2"
+	[ "$(sed -n 's/^path //p' "$state_file")" = "$3" ]
+}
+recheck_stage_is() {
+	local state_file="$RECHECK_STATE_DIR/$2"
+	[ "$(sed -n 's/^stage //p' "$state_file")" = "$3" ]
+}
+recheck_end_requires_review() {
+	local out
+	if out=$(recheck_stage "$1" "$2" end 2>&1); then return 1; fi
+	printf '%s' "$out" | grep -qF 'review 缺少审查结论'
+}
+recheck_finish() {
+	recheck_stage "$1" "$2" enter archive >/dev/null &&
+		recheck_stage "$1" "$2" end >/dev/null &&
+		[ ! -e "$RECHECK_STATE_DIR/$2" ]
+}
+
+MULTI_REPO="$T/recheck-multi"
+MULTI_SID=recheck-multi
+new_recheck_fixture "$MULTI_REPO"
+recheck_stage "$MULTI_REPO" "$MULTI_SID" start --size S --ticket '#72' execute,verify,land,archive --recheck-size >/dev/null
+printf 'one task change\n' >"$MULTI_REPO/src/one/item.txt"
+git -C "$MULTI_REPO" add src/one/item.txt
+git -C "$MULTI_REPO" commit -qm 'change src one'
+printf 'two untracked task change\n' >"$MULTI_REPO/src/two/new.txt"
+recheck_stage "$MULTI_REPO" "$MULTI_SID" enter verify --ticket '#72' >/dev/null
+t "recheck-size：跨 src/one、src/two 的 commit 与 untracked 改动补 review" \
+	recheck_path_is "$MULTI_REPO" "$MULTI_SID" 'execute,verify,review,land,archive'
+t "自动补 review 后仍停在 verify" recheck_stage_is "$MULTI_REPO" "$MULTI_SID" verify
+t "范围复核后运行记录保留 ticket 和新阶段路径" jq -e \
+	'.current_ticket == "#72" and .path == "execute,verify,review,land,archive"' \
+	"$T/runs/active/$MULTI_SID.json"
+recheck_stage "$MULTI_REPO" "$MULTI_SID" enter verify >/dev/null
+t "重复进入 verify 不重复插入 review" \
+	recheck_path_is "$MULTI_REPO" "$MULTI_SID" 'execute,verify,review,land,archive'
+rm -f "$MULTI_REPO/src/two/new.txt"
+printf 'one small final change\n' >"$MULTI_REPO/src/one/item.txt"
+recheck_stage "$MULTI_REPO" "$MULTI_SID" enter verify >/dev/null
+t "实际改动缩小后保留已插入的 review" \
+	recheck_path_is "$MULTI_REPO" "$MULTI_SID" 'execute,verify,review,land,archive'
+recheck_stage "$MULTI_REPO" "$MULTI_SID" evidence 'fixture verify -> passed' >/dev/null
+recheck_stage "$MULTI_REPO" "$MULTI_SID" enter review >/dev/null
+t "缺少 review 结论时 stage.sh end 明确拒绝" \
+	recheck_end_requires_review "$MULTI_REPO" "$MULTI_SID"
+recheck_stage "$MULTI_REPO" "$MULTI_SID" review complete '回归检查完成' >/dev/null
+recheck_stage "$MULTI_REPO" "$MULTI_SID" enter land >/dev/null
+MULTI_HEAD=$(git -C "$MULTI_REPO" rev-parse HEAD)
+recheck_stage "$MULTI_REPO" "$MULTI_SID" land commit "$MULTI_HEAD" >/dev/null
+t "补齐 review 结论后可继续 archive 并结束" recheck_finish "$MULTI_REPO" "$MULTI_SID"
+
+PREEXISTING_REPO="$T/recheck-preexisting"
+PREEXISTING_SID=recheck-preexisting
+new_recheck_fixture "$PREEXISTING_REPO"
+printf 'edit made before task\n' >"$PREEXISTING_REPO/src/two/item.txt"
+recheck_stage "$PREEXISTING_REPO" "$PREEXISTING_SID" start execute,verify,land,archive --recheck-size >/dev/null
+printf 'one task change\n' >"$PREEXISTING_REPO/src/one/item.txt"
+recheck_stage "$PREEXISTING_REPO" "$PREEXISTING_SID" enter verify >/dev/null
+t "任务前 src/two 未提交编辑不影响 src/one 单模块短路径" \
+	recheck_path_is "$PREEXISTING_REPO" "$PREEXISTING_SID" 'execute,verify,land,archive'
+
+API_REPO="$T/recheck-api"
+API_SID=recheck-api
+new_recheck_fixture "$API_REPO"
+recheck_stage "$API_REPO" "$API_SID" start execute,verify,land,archive --recheck-size >/dev/null
+printf 'api task change\n' >"$API_REPO/api/contract.yaml"
+git -C "$API_REPO" add api/contract.yaml
+printf 'api baseline\n' >"$API_REPO/api/contract.yaml"
+t "直接进入 land 也复核仅暂存的 API 变动并拒绝跳过 review" \
+	not recheck_stage "$API_REPO" "$API_SID" enter land
+t "仅暂存单个 api/ 路径改动也补 review" \
+	recheck_path_is "$API_REPO" "$API_SID" 'execute,verify,review,land,archive'
+t "未完成 review 时保持原阶段" recheck_stage_is "$API_REPO" "$API_SID" execute
+t "land 被拒绝后运行记录仍保留新增的 review" jq -e \
+	'.stage == "execute" and .path == "execute,verify,review,land,archive"' \
+	"$T/runs/active/$API_SID.json"
+
+MANY_REPO="$T/recheck-many"
+MANY_SID=recheck-many
+new_recheck_fixture "$MANY_REPO"
+recheck_stage "$MANY_REPO" "$MANY_SID" start execute,verify,land,archive --recheck-size >/dev/null
+for name in a b c d; do printf 'new\n' >"$MANY_REPO/src/one/$name.txt"; done
+recheck_stage "$MANY_REPO" "$MANY_SID" enter verify >/dev/null
+t "同模块超过三个改动路径也补 review" \
+	recheck_path_is "$MANY_REPO" "$MANY_SID" 'execute,verify,review,land,archive'
 
 [ "$fails" -eq 0 ]
