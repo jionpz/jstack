@@ -667,7 +667,15 @@ const home = process.argv[2];
 const loader = process.argv[3];
 const { loadPlugins } = require(loader);
 (async () => {
-  const r = await loadPlugins({roots:[process.cwd()], home, backend:null, userLocal:true, projectSettings:undefined});
+  const r = await loadPlugins({
+    roots: [process.cwd()],
+    home,
+    backend: null,
+    userLocal: true,
+    projectSettings: undefined,
+    localVariables: async () => new Map(),
+    skipInstalls: async () => new Map(),
+  });
   const by = new Map(r.plugins.map(p => [p.identifier?.sourceInfo?.name, p]));
   const names = [...by.keys()].sort().join(',');
   const wanted = ['flow', 'pstack', 'spec'];
