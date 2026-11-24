@@ -1,0 +1,10 @@
+{
+  "questions": [
+    {
+      "id": "local_publish_approval",
+      "pattern": "^(?=.*(审批|批准|授权|许可|approval|approve))(?=.*(发布|生产|production|publish))"
+    }
+  ],
+  "stop_question": "local_publish_approval",
+  "reply": "不批准发布。保留生产配置，并说明本次发布未执行。"
+}

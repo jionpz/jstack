@@ -23,7 +23,7 @@ asks_user() {
 }
 
 main() {
-	local input evt cursor=0 file st reason status loop_count missing
+	local input evt cursor=0 file st reason status loop_count missing cwd
 	input=$(cat)
 	evt=$(jstack_json_str hook_event_name "$input")
 	jstack_cursor_defer_to_project "$0" stop && return 0
@@ -48,7 +48,11 @@ main() {
 		# ask 只在这次回复确实向用户提了问题时才放行，否则它就成了跳过验证的出口。
 		grep -q '^ask [^ ]' "$file" && asks_user "$input" "$file" && return 0
 	fi
-    missing=$(jstack_gate_missing "$file" | tr '\n' ';')
+    cwd=$(jstack_json_str cwd "$input")
+    if [ -n "$cwd" ] && [ -z "${JSTACK_REPO:-}" ]; then
+        cd "$cwd" 2>/dev/null || true
+    fi
+    missing=$(jstack_gate_missing "$file" stop | tr '\n' ';')
     [ -n "$missing" ] || return 0
     st="\"$route/stage.sh\""
     reason="jstack verify/review/land 门禁：以下阶段产出尚未齐全：${missing}。请按当前阶段进入并记录真实结果；执行 $st show 可查看现有状态。等待用户决定时先执行 $st ask \"<具体问题>\"，再在回复中完整提出该问题。"

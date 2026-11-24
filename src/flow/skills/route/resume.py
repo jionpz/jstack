@@ -157,6 +157,8 @@ def take_over(state_dir, run_id, old_session, ticket, new_session, repo):
             raise ValueError("原会话的运行快照已损坏") from None
 
         lines = source.read_text(encoding="utf-8").rstrip("\n").split("\n")
+        if "verify_required yes" not in lines and source.with_name(source.name + ".verify.json").is_file():
+            lines.append("verify_required yes")
         values = fields(lines)
         path = values.get("path", [None])[0]
         stage = values.get("stage", [None])[0]

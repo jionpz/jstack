@@ -20,12 +20,12 @@ flow 的三个门禁（阶段提示、验证门禁、红线守卫）的判定逻
 ## 接入方式
 
 - **Claude Code**：`src/flow/hooks/hooks.json`，插件清单的 `hooks` 字段。
-- **Cursor**：`src/flow/hooks/hooks.cursor.json`，由 `.cursor-plugin/plugin.json` 的 `hooks` 字段指向；`./jstack install-cursor` 复制插件树。项目级安装使用 `.cursor/hooks.json`，从 `.claude/settings.json` 导入的 jstack 项目 hooks 在 Cursor 中退出。所有权优先级是项目 vendor > 用户级 Cursor 本地插件 > Claude 兼容导入；脚本发现更高优先级的同名原生 hook 时自己退出。`preToolUse` 不处理 shell，shell 只走 `beforeShellExecution`，避免同一命令被两个事件调用两次。
+- **Cursor**：`src/flow/hooks/hooks.cursor.json`，由 `.cursor-plugin/plugin.json` 的 `hooks` 字段指向；`./jstack install-cursor` 复制插件树。项目级安装使用 `.cursor/hooks.json`，从 `.claude/settings.json` 导入的 jstack 项目 hooks 在 Cursor 中退出。所有权优先级是项目 vendor > 用户级 Cursor 本地插件 > Claude 兼容导入；脚本发现更高优先级的同名原生 hook 时自己退出。用户级副本用 jq 或 Python 3 核对项目配置中的事件和命令，无法解析时继续执行。`preToolUse` 不处理 shell，shell 只走 `beforeShellExecution`，避免同一命令被两个事件调用两次。
 - **Pi**：根 `package.json` 的 `pi.extensions` → `plugins/flow/extensions/pi.ts`，`./jstack install-pi`（或 `install --all`）安装 package 后自动加载。项目级安装在 `.pi/extensions/jstack-flow-gates.ts` 写相对路径入口，转出 `.jstack/vendor/plugins/flow/extensions/pi.ts`。扩展用 `import.meta.url` 找到 flow 根，脚本从对应安装树的 `hooks/` 执行。Pi 的项目扩展需要信任；项目 smoke 对临时安装使用 `--approve`。
 - **OMP**：OMP 的插件清单只收 skills / agents，不收 flow 的 Claude 格式 hooks。用户级 `./jstack install` 把 `plugins/flow/extensions/omp.ts` 写成 `~/.omp/agent/extensions/jstack-flow-gates.ts`；项目级安装写 `.omp/extensions/jstack-flow-gates.ts`，相对路径转出 `.jstack/vendor/plugins/flow/extensions/omp.ts`。OMP 的对应 extension 目录加载入口文件。
 - **Codex**：项目级安装写 `.codex/hooks.json`。命令从会话目录解析 Git 根并执行该 checkout 的 vendor 脚本。交互式会话在审查并信任 hooks 后执行。已审查来源的自动化测试可使用 `--dangerously-bypass-hook-trust`。
 
-三个门禁都只读状态文件、不调模型；状态文件的路径和格式见 `lib.sh`。红线守卫除了 shell 命令，也检查编辑/写入工具的目标路径和补丁里的目标文件；它按路径规则拦 `.env`、凭据和 provider/auth 配置，不读取文件内容。任务正常收尾时 `stage.sh` 在同一级的 `runs.jsonl` 追加一行运行记录；没有收尾的任务留在 `runs/active/`，`./jstack runs` 会把它标成未完成。记录只含仓库、规模、阶段路径、证据、默认决定、打断次数和耗时等元数据，不含提示词或代码 diff。
+验证门禁可执行仓库配置的验证命令并写入回执。红线守卫检查 shell 命令、编辑工具和补丁的目标路径，按路径规则拦截 `.env`、凭据和 provider/auth 配置。状态文件的路径和格式见 `lib.sh`。任务正常收尾时 `stage.sh` 在同一级的 `runs.jsonl` 追加一行运行记录。没有收尾的任务留在 `runs/active/`，`./jstack runs` 将其标为未完成。记录包含仓库、规模、阶段路径、证据、默认决定、打断次数和耗时等元数据。
 
 提示 hook 每轮输出 `jstack 提示门禁注入：session=<id>`，尚未执行 `stage.sh start` 时也输出，供 agent 核对本会话确实收到过 harness 注入。看到源码中的字符串、配置存在或手动运行 hook 都不算收到注入；这个标记只证明提示 hook 运行，不能代替 Stop/guard 的实际拦截证据。
 
@@ -56,7 +56,11 @@ flow 的三个门禁（阶段提示、验证门禁、红线守卫）的判定逻
 
 ## 降级
 
-1. **没有 UI 时“先问”变“拦下”**（Cursor 的 `preToolUse`、Pi / OMP 的 print / JSON 运行）：没有人能回答确认框，`guard.sh` 命中的命令或文件写入直接拒绝执行，不会先运行。交互式会话（包括 Claude Code 的 `bypassPermissions`）仍弹确认框。
+配置 `verify.command` 的仓库需要 Python 3。Stop 启动验证并最多等待 4 秒，长命令继续执行至仓库配置的 `verify.timeout_s`。用 `stage.sh verify` 等待同一次验证，或用 `--retry` 重试瞬时失败。`stage.sh end` 同样检查结果。回执包含提交、Git 工作区是否有改动、退出码和耗时。提交、暂存区、受 Git 跟踪的工作区内容、非忽略的未跟踪文件或验证配置变化时，重新执行验证。结果复用范围限于同一会话的 Git 快照。没有验证命令的仓库仍使用分阶段的文本证据。
+
+Stop 超出宿主的续跑次数后可能放行对话，`stage.sh end` 仍要求当前验证通过。Workloop 可显式执行 `stage.sh verify`。
+
+1. **没有 UI 时“先问”变“拦下”**（Cursor 的 `preToolUse`、Pi / OMP 的 print / JSON 运行）：没有人能回答确认框，`guard.sh` 命中的命令或文件写入直接拒绝执行。交互式会话（包括 Claude Code 的 `bypassPermissions`）仍弹确认框。
 2. **Pi 的 Stop 门禁每条用户消息最多拦 3 次**：Pi 没有 Claude Code / Cursor / OMP 那种由 harness 维护的 `stop_hook_active`，`agent_before_settle` 的 `continue` 只对本次结算有效。扩展自己计数，模型硬顶着不记证据时第 4 次放行；用户发新消息或门禁满足时清零。代价是模型坚持不记证据时会溜过去，收益是不会无限续跑。
 3. **Cursor 的 Stop 门禁拿不到最后一条回复**：标了 `ask` 时直接放行，无法核对回复里是否真的提了问题；`loop_limit` 3 兜底。
 4. **OMP 扩展缺失时门禁不生效**：用户级检查 `~/.omp/agent/extensions/jstack-flow-gates.ts`；项目级检查 `.omp/extensions/jstack-flow-gates.ts`。用户级入口仍引用安装时 checkout 的绝对路径，移动 checkout 后需重跑用户级 install。若当前作用域的入口文件缺失或未加载，`stage.sh` 打印“这个 harness 没有会话 id”。
@@ -79,3 +83,9 @@ route 的收尾摘要（`src/flow/skills/route/SKILL.md` 第 5 节）始终包�
 - `bash tests/flow-hooks.sh`：三个 hook 的协议、shell 与编辑工具的红线守卫、会话 id 回退、仓库配置；不依赖 harness。
 - `./jstack smoke pi` / `./jstack smoke omp` / `./jstack smoke codex`：在真机上跑非交互会话，断言 `rm -rf` 被拦（`GUARD-SEEN`）、`stage.sh start execute,verify` 后停止被 Stop 门禁拦回（`GATE-SEEN`）。没装对应 harness 自动跳过。
 - 手工：交互式会话里跑一次命中 must-stop 的命令，确认弹确认框；Codex 的 hooks 信任与 deny 行为按 `docs/testing/codex.md` 核对。`stage.sh show` 看状态落在 `~/.local/state/jstack/sessions/<id>`。
+
+## 短路径的改动范围复核
+
+在 Git 工作树中，route 给含 `execute,verify,land` 的 XS/S 路径加上 `--recheck-size`，前提是有效阶段表提供 `review` 且可使用 Python 3.9 及以上。它在编辑前记录 Git 基线和已有编辑的内容摘要。进入 verify 时比较实际改动，直接进入 land 时也会复核。已有编辑如果内容未变，不计入本次工作范围。
+
+跨目录模块、超过三个变动路径，或触及 `api`、`schemas`、`hooks` 等边界路径时，路径扩展为 `execute → verify → review → land`。同一个模块的少量改动沿用原路径。目录规则用 `src/<模块>`、`packages/<包>` 等目录作为模块近似值，测试和文档仍计入文件数。路径一旦扩展，本任务保留 review，审查结论和发现处置齐全后才进入 land。实际 API 兼容性和 must-stop 授权仍按项目约定取证。

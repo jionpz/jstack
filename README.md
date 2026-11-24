@@ -164,7 +164,7 @@ JStack 支持把模型按职责分成两层：`premium` 负责架构判断、关
 ./jstack models init             # 配置模型
 ./jstack models apply --dry-run  # 先检查将要修改的文件
 ./jstack models apply            # 确认后应用
-./jstack models status           # 查看当前预算状态
+./jstack models status           # 查看当前预算和各 harness 的 premium flow 角色
 ```
 
 模型配置写在 `~/.jstack/config.json`。**更换模型提供商可能改变代码和上下文的数据流向**，运行 `apply` 前应检查配置。项目自身的任务跟踪、验证命令和必须暂停事项则放在 `<repo>/.jstack/config.json`；不要在项目配置里存放模型凭据。具体规则见[配置字段](docs/agents/jstack-config.md)及 [ADR-0003](docs/adr/0003-two-tier-models.md)。
@@ -180,6 +180,8 @@ JStack 支持把模型按职责分成两层：`premium` 负责架构判断、关
 ```
 
 真实 smoke 需要模型和网络。全量 smoke 会报告 OMP、Cursor 和 Codex 的结果，这三者缺失或未通过时仍可通过发布检查。发布前还需通过 Claude Code 和 Pi 的评测。
+
+Claude Code 的注意力题（`*-attention-*`）分别记录打断、漏停、误停和被推翻的默认决定。每次答复只算一次打断，漏停按待决事项计数。有需要时，runner 用同一会话发送一次预置的用户答复，`nudges` 仍只记录催促。计分按题目约定识别答复里的问题和默认决定，并检查回复前的仓库状态。只有完成首轮并拿到答复的样本才进入注意力统计。Pi 运行整套评测时跳过这些题。
 
 项目源码与构建产物分开管理：`src/flow/` 是 JStack 自有工作流的源码；`upstream/` 保留第三方上游副本，`patches/` 保存本地补丁，`plugins/` 是生成后的插件目录。修改功能时请改源码或补丁，不要直接编辑构建产物。
 

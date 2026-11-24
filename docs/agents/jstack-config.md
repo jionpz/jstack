@@ -24,13 +24,15 @@
 |---|---|---|---|---|
 | `models.<harness>.premium` | string | 无（必填才有分层） | `jstack models apply/status` | 高级模型 id，可带 `[1m]` 与 `:effort` 后缀；`<harness>` 取 `claude-code`、`cursor`、`omp`、`pi` |
 | `models.<harness>.bulk` | string[2] | 无 | `jstack models apply/status`；`evals/run.sh` 在没给 `--model` 时取 `claude-code` 的 `bulk[0]` 作默认 | 两个无限模型；`bulk[0]` 给 `sonnet`/判断降级，`bulk[1]` 给 `haiku`/`SMALL_FAST` |
-| `models.<harness>.roles` | object | pstack 的 17 行角色表 | 同上 | 角色 → `premium` \| `bulk` \| `bulk0` \| `bulk1` 的覆盖，只写要改的行；值可以是逗号分隔的字符串或数组，`bulk` 等同 `bulk0` |
+| `models.<harness>.roles` | object | pstack 角色表及阶段表的 flow 角色 | 同上 | 角色 → `premium` \| `bulk` \| `bulk0` \| `bulk1` 的覆盖，只写要改的行；值可以是逗号分隔的字符串或数组，`bulk` 等同 `bulk0` |
 | `budget.premium_daily_tokens` | number \| null | `null` | `jstack models status/apply` | premium 当日 token 上限；超限时判断类角色降级到 `bulk0` |
 | `budget.premium_concurrency` | number \| null | `null` | 同上 | premium 并发上限（AnyRouter 这类不能并发的 provider 用） |
 | `notifications.channel` | string \| null | `null` | 预留（#13） | 只占位，不实现；实现前写入即报"未支持" |
 | `notifications.target` | string \| null | `null` | 预留（#13） | 同上 |
 
 `models` 里出现未知 harness 名不算错误（向前兼容），`apply` 遇到未实现的 harness 只打印角色表。
+
+[阶段表](../../src/flow/skills/route/stages.md)中的 `Tier` 为每个阶段声明工作和裁决层级。工作角色采用 `flow <阶段>`，规模判断用 `flow route`。有裁决层级时另生成 `flow <阶段> gate`，例如 `flow review gate`。`models status` 按 harness 列出应用角色覆盖和预算降级后使用 premium 的 flow 角色。角色声明本身是供调用方使用的配置，阶段执行仍由现有提供者驱动。
 
 ## 仓库级 `<repo>/.jstack/config.json`
 
@@ -44,8 +46,8 @@
 | `domain_docs.conventions` | string | `docs/agents/conventions` | `flow:archive`、poteto-mode 的委派 | 项目约定库；缺目录时归档阶段跳过并说明 |
 | `must_stop` | `{action, hook?, regex?, path_regex?, allow_path_regex?}[]` | `[]` | `route`、`prompt.sh`、`guard.sh` | 追加项。`action` 是给人看的一句话；带 `regex`（ERE）的条目由 guard 按 shell 命令拦截，带 `path_regex`（ERE）的条目按编辑工具的路径和补丁目标拦截，`allow_path_regex` 可从路径规则中放行例外；`hook` 是稳定标识，便于 reason 和日志引用。没有匹配字段的条目只能靠 route 自己识别 |
 | `stages_file` | string \| null | `null` | `stage.sh`、`locate.sh`、`prompt.sh`、`route` | 整表替换的路径，相对仓库根；表格格式与插件的 `stages.md` 完全相同。必须含 `execute`，至少要有一个阶段。route 生成路线时丢掉表里没有的阶段 |
-| `verify.command` | string \| null | `null` | `prompt.sh`（注入提示）、`route`、`flow:archive` | 项目的验证命令；提供后 verify 阶段的证据默认来自它 |
-| `verify.timeout_s` | number | `600` | `route` | 验证命令超时 |
+| `verify.command` | string \| null | `null` | Stop、`stage.sh verify`、`stage.sh end`、`prompt.sh` | 受信任的项目验证命令，由仓库根目录执行并记录实际结果 |
+| `verify.timeout_s` | positive number | `600` | 验证执行器 | 验证进程的超时秒数 |
 
 禁用键（出现即 `./jstack check` 报错）：
 

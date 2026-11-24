@@ -258,21 +258,33 @@ jstack_json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 
 # Cursor 配置文件 $1 的事件 $2 是否注册了命令 $3。
 jstack_cursor_config_has() {
-	local file=$1 event=$2 command=$3 leaf
+	local file=$1 event=$2 command=$3
 	[ -f "$file" ] || return 1
 	if jstack_has_jq; then
 		jq -e --arg event "$event" --arg command "$command" \
 			'(.hooks[$event] // []) | any(.command == $command)' "$file" >/dev/null 2>&1
 		return
 	fi
-	leaf=${command##*/}
-	grep -Fq -- "/hooks/$leaf" "$file" 2>/dev/null &&
-		grep -Fq "\"$event\"" "$file" 2>/dev/null
+	command -v python3 >/dev/null 2>&1 || return 1
+	python3 -I - "$file" "$event" "$command" <<'PY'
+import json
+import sys
+
+path, event, command = sys.argv[1:]
+try:
+    with open(path, encoding="utf-8") as config:
+        entries = json.load(config).get("hooks", {}).get(event, [])
+except (OSError, ValueError, AttributeError):
+    sys.exit(1)
+sys.exit(not (isinstance(entries, list) and any(
+    isinstance(entry, dict) and entry.get("command") == command for entry in entries
+)))
+PY
 }
 
 # Cursor 里同一个 guard / prompt / stop 可能同时由项目原生 hooks、本地 Cursor 插件和
 # Claude 兼容导入加载。项目投影存在时，让非项目副本退出，只执行项目 vendor 那一份。
-# 只在 Cursor 会话、有 jq、项目事件确实注册了同一脚本时生效；其余情况继续执行。
+# 只在 Cursor 会话、项目事件确实注册了同一脚本时生效；无法解析配置就继续执行。
 jstack_cursor_defer_to_project() {
 	local script=$1 event=$2 name self project target command
 	[ -n "${CURSOR_VERSION:-}" ] || return 1
@@ -295,7 +307,7 @@ jstack_repo_root() {
 	[ -n "$d" ] || return 1
 	while :; do
 		[ -f "$d/.jstack/config.json" ] && { printf '%s\n' "$d"; return 0; }
-		[ -d "$d/.git" ] && { printf '%s\n' "$d"; return 0; }
+		[ -e "$d/.git" ] && { printf '%s\n' "$d"; return 0; }
 		[ "$d" = / ] && return 1
 		d=$(dirname "$d")
 	done
@@ -365,11 +377,39 @@ jstack_cfg_path_patterns() {
 		tr '\001' '\t'
 }
 
+jstack_run_verify() {
+    local cfg repo
+    repo=$(jstack_get verify_repo "$1")
+    [ -n "$repo" ] || repo=$(jstack_get repo "$1")
+    if [ -n "$repo" ]; then
+        if [ ! -d "$repo" ]; then
+            echo "无法找到任务启动时的验证仓库：$repo"
+            return 1
+        fi
+        cfg="$repo/.jstack/config.json"
+    else
+        cfg=$(jstack_repo_config) || return 10
+    fi
+    if [ ! -f "$cfg" ] && ! grep -qx 'verify_required yes' "$1" && [ ! -f "$1.verify.json" ]; then
+        return 10
+    fi
+    if ! command -v python3 >/dev/null; then
+        if ! grep -qx 'verify_required yes' "$1" && [ ! -f "$1.verify.json" ]; then
+            if jstack_has_jq && jq -e 'type == "object" and ((.verify.command // "") == "")' "$cfg" >/dev/null; then
+                return 10
+            fi
+        fi
+        echo "验证命令需要 python3"
+        return 1
+    fi
+    python3 -I "${BASH_SOURCE[0]%/*}/verify.py" "$2" "${cfg%/.jstack/config.json}" "$1"
+}
+
 # Return unmet, structured stage outputs (one diagnostic per line).
 # An unscoped evidence line from an older session is intentionally insufficient.
 # Hook and CLI call the same function so Stop and end cannot disagree.
 jstack_gate_missing() {
-    local file=$1 path stage repo
+    local file=$1 mode=${2:-wait} path stage repo verify_result verify_status
     [ -f "$file" ] || return 0
     path=$(jstack_get path "$file")
     stage=$(jstack_get stage "$file")
@@ -381,8 +421,16 @@ jstack_gate_missing() {
     ' || return 0
     case ",$path," in
     *,verify,*)
-        grep -q '^evidence verify [^ ]' "$file" ||
-            echo "verify 缺少本阶段的验证结果：先 enter verify，再 evidence \"<命令> -> <结果>\""
+        verify_status=0
+        verify_result=$(jstack_run_verify "$file" "$mode") || verify_status=$?
+        case $verify_status in
+        0) ;;
+        10)
+            grep -q '^evidence verify [^ ]' "$file" ||
+                echo "verify 缺少本阶段的验证结果：先 enter verify，再 evidence \"<命令> -> <结果>\""
+            ;;
+        *) printf '%s\n' "${verify_result:-配置的验证命令未能完成}" ;;
+        esac
         ;;
     esac
     case ",$path," in

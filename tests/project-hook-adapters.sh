@@ -119,6 +119,17 @@ printf '%s' "$project_guard_out" | jq -e '.permission == "deny"' >/dev/null ||
 	die "Project guard stopped when it was the active Cursor hook"
 say "Project Cursor hooks suppress user-level copies without suppressing themselves"
 
+no_jq_user_prompt() {
+	printf '%s' "$prompt_json" |
+		JSTACK_NO_JQ=1 CURSOR_PROJECT_DIR="$REPO" CURSOR_VERSION=1 CURSOR_CONVERSATION_ID="$SID" \
+		JSTACK_STATE_DIR="$T/state" bash "$user_flow/hooks/prompt.sh"
+}
+[ -z "$(no_jq_user_prompt)" ] || die "User-level prompt ran beside its project event without jq"
+jq -n --arg prompt "$cursor_prompt" --arg stop "$cursor_stop" \
+	'{version:1,hooks:{beforeSubmitPrompt:[{command:$stop}],stop:[{command:$prompt}]}}' >"$REPO/.cursor/hooks.json"
+[ -n "$(no_jq_user_prompt)" ] || die "User-level prompt yielded to a command registered for a different event"
+say "Without jq, project ownership requires the exact event and command"
+
 jq -n '{version:1,hooks:{}}' >"$REPO/.cursor/hooks.json"
 fallback_out=$(printf '%s' "$prompt_json" |
 	CLAUDE_PROJECT_DIR="$REPO" CURSOR_PROJECT_DIR="$REPO" CURSOR_VERSION=1 JSTACK_STATE_DIR="$T/state" bash -c "$claude_prompt")

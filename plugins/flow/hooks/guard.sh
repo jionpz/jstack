@@ -333,7 +333,7 @@ main() {
 		# stage state mutations; read-only stage.sh show remains available. This is
 		# best-effort protection, not a sandbox.
 		if [ -n "$(jstack_json_str agent_id "$input")" ] &&
-			printf '%s\n' "$cmd" | grep -Eq 'stage\.sh[^;&|]*(start|enter|evidence|review|land|default|ask|end|pending|settled)([[:space:]]|$)'; then
+			printf '%s\n' "$cmd" | grep -Eq 'stage\.sh[^;&|]*(start|enter|evidence|verify|review|land|default|ask|end|pending|settled)([[:space:]]|$)'; then
 			reason="jstack: 子代理不可修改主会话阶段记录；将验证、审查和落地结果交还主会话记录。"
 			emit_result "$reason" deny
 			return 0
