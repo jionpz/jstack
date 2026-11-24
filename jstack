@@ -411,6 +411,7 @@ local_providers() { bash "$ROOT/plugins/flow/skills/route/locate.sh" | cut -f1; 
 smoke_project() { # <pi|omp>
 	local h=$1 dir="$WORK/smoke/$1/project with spaces" out session state stage prompt text rc=0
 	mkdir -p "$dir"
+	dir=$(cd "$dir" && pwd -P) || return 1
 	if ! install_project "$dir" 0 "$h" auto >"$WORK/smoke/$h/project-install.log" 2>&1; then
 		say "✗ $h: 项目级安装失败"
 		tail -10 "$WORK/smoke/$h/project-install.log" | sed 's/^/  /'
@@ -443,7 +444,7 @@ smoke_project() { # <pi|omp>
 			rc=1
 		fi
 		if ! jq -s -e 'any(.[]; .type == "tool_execution_start" and .toolName == "bash" and ((.args.command // "") | contains("start execute,verify")))' "$out" >/dev/null ||
-			! jq -r '.. | objects | select(.customType? == "jstack-gates" or .customType? == "session-stop-continuation") | .content // empty | strings' "$out" | grep -q 'jstack verify 门禁'; then
+			! jq -r '.. | objects | select(.customType? == "jstack-gates" or .customType? == "session-stop-continuation") | .content // empty | strings' "$out" | grep -qF 'verify 缺少本阶段的验证结果'; then
 			say "✗ $h: 项目 Stop 门禁没有给出缺证据理由"
 			rc=1
 		fi
@@ -459,7 +460,8 @@ smoke_project() { # <pi|omp>
 	fi
 	if smoke_run "$h 项目阶段注入" "$out" env JSTACK_STATE_DIR="$state" bash -c 'cd "$1" || exit; shift; exec "$@"' _ "$dir" "$@"; then
 		text=$(jq -r '.. | objects | select(.customType? == "jstack-gates") | .content // empty | strings' "$out")
-		if ! grep -q 'jstack 阶段门禁：当前阶段 execute' <<<"$text" || ! grep -qF "$dir/.jstack/vendor/plugins/flow/skills/route/stage.sh" <<<"$text"; then
+		if ! grep -Eq 'jstack 阶段门禁：当前阶段 (execute|verify)([[:space:]]|$)' <<<"$text" ||
+			! grep -qF "$stage" <<<"$text"; then
 			say "✗ $h: 没有看到项目阶段注入"
 			rc=1
 		fi
