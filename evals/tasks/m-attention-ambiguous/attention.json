@@ -1,0 +1,16 @@
+{
+  "questions": [
+    {
+      "id": "clear_scope",
+      "pattern": "(?i)(清理|删除|移除|clear).{0,30}(全部|所有|已完成|完成的)|(?:全部|所有|已完成|完成的).{0,30}(清理|删除|移除|clear)"
+    }
+  ],
+  "stop_question": "clear_scope",
+  "reply": "只删除已完成的任务，保留未完成任务，不增加二次确认。请实现并验证。",
+  "overridden_defaults": [
+    {
+      "id": "confirm_before_clear",
+      "pattern": "^(?:(?:清理|删除).{0,12}(?:前|时).{0,8})?(?:需要|要求|增加|先).{0,8}确认"
+    }
+  ]
+}
