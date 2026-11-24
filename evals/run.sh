@@ -31,6 +31,7 @@ RESULTS=${JSTACK_EVAL_RESULTS:-$ROOT/evals/results.jsonl}
 REPORTS=${JSTACK_EVAL_REPORTS:-$ROOT/evals/reports}
 SCRATCH=${JSTACK_EVAL_SCRATCH:-$ROOT/.scratch/evals}
 NUDGE='我现在不在电脑前，回答不了问题。需要决定的地方按你推荐的方案处理，把这件事做完。'
+ATTENTION_PROMPT='如果需要我决定，请把每项具体问题单独写成一行「需要你决定：<问题>」。如果采用了可逆的默认决定，请把每条决定单独写成一行「默认决定：<决定>」。没有对应内容时省略该行。这两类行请使用纯文本，不加项目符号或 Markdown。'
 # 工作流组：关掉用户已装的 jstack marketplace 插件（样本仓库用的是项目级安装的 vendor 树），
 # 但保留项目 .claude/settings.json 里的 flow hooks，门禁才真的生效。
 SETTINGS='{"disableAllHooks":false,"enabledPlugins":{"pstack@jstack":false,"spec@jstack":false,"flow@jstack":false}}'
@@ -83,10 +84,11 @@ def stop_blocks: [.[][]
     error: (if $timed_out == 1 then null else
       first(range(0; $res | length) as $i | $res[$i] as $r
         | if $r == null then "第 \($i + 1) 轮没有 result 事件（退出码 \($rcs[$i])）"
-          elif ($rcs[$i] // 0) != 0 then "第 \($i + 1) 轮退出码 \($rcs[$i])"
           elif $r.is_error then "第 \($i + 1) 轮出错（\($r.subtype)）：\($r.result // "" | tostring | .[0:200])"
+          elif ($rcs[$i] // 0) != 0 then "第 \($i + 1) 轮退出码 \($rcs[$i])：\($r.result // "" | tostring | .[0:200])"
           else empty end) // null end)
-  }
+  } + (if $attention == null then {} else {attention: $attention} end)
+    + (if $attention_error == "" then {} else {error: $attention_error} end)
 JQ
 
 # 输入：本次运行的全部记录。输出：报告里的一节。
@@ -100,6 +102,8 @@ def grp: (.group // (if (.task | endswith("-vanilla")) then "control" else "work
 def gname: if (.[0] | grp) == "workflow" then "工作流" else "对照" end;
 def gates: ([.[].gates // "off"] | unique | join(","));
 def row($name): "| \($name) | \(gname) | \(frac(.pass)) | \(avg(.nudges)) | \(avg(.turns)) | \(avg(.wall_s)) | \(sumf(.tokens)) | \(sumf(.premium_tokens)) | \(frac(.route)) | \(frac(.poteto)) | \(avg(.subagents)) | \(sumf(.stop_blocks // 0)) | \(gates) |";
+def attention_row:
+  "| \(.[0].task) | \(gname) | \(length) | \(sumf(.attention.interruptions)) | \(sumf(.attention.missed_stops)) | \(sumf(.attention.false_stops)) | \(sumf(.attention.overturned_defaults)) |";
 
 . as $all
 | ([$all[].model | select(. != null)] | unique | join(", ")) as $models
@@ -117,13 +121,19 @@ def row($name): "| \($name) | \(gname) | \(frac(.pass)) | \(avg(.nudges)) | \(av
    "- 组: \($groups)",
    "- 样本: \($all | length)（每个任务 \($samples) 个 × \([$all[] | grp] | unique | length) 组）",
    "- max-nudges: \($max_nudges)"]
-  + (if $harnesses == "pi" then ["- 说明: Pi 单轮运行，nudges 固定 0；不要直接拿它和 claude 的打断次数比较"] else [] end)
+  + (if $harnesses == "pi" then ["- 说明: Pi 单轮运行，nudges 固定 0"] else [] end)
   + (if $errors == [] then [] else ["- 出错样本: " + ($errors | join("；"))] end)
   + ["",
-     "| 任务 | 组 | 通过 | 平均打断 | 平均 turns | 平均耗时 (s) | tokens | premium tokens | route | poteto | 平均子 agent | Stop 拦截 | 门禁 |",
+     "| 任务 | 组 | 通过 | 平均催促 | 平均 turns | 平均耗时 (s) | tokens | premium tokens | route | poteto | 平均子 agent | Stop 拦截 | 门禁 |",
      "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
   + ($all | sort_by(.task, (if grp == "workflow" then 0 else 1 end)) | group_by([.task, grp]) | map(row(.[0].task)))
   + ($all | sort_by(grp) | group_by(grp) | map(row("**合计**")))
+  + ($all | map(select(.attention != null)) |
+     if length == 0 then [] else
+       ["", "| 注意力题 | 组 | 已计分样本 | 打断 | 漏停 | 误停 | 被推翻默认 |", "|---|---|---|---|---|---|---|"]
+       + (group_by([.task, grp]) | map(attention_row))
+       + (group_by(grp) | map(map(.task = "**合计**") | attention_row))
+     end)
 | join("\n")
 JQ
 
@@ -220,7 +230,30 @@ prepare_workdir() {
 
 # 在工作目录 $2 跑任务 $1 的 check.sh，ANSWER_FILE=$3，输出写到 $4。
 run_check() {
-	(cd "$2" && ANSWER_FILE=$3 bash "$TASKS_DIR/$1/check.sh") </dev/null >"$4" 2>&1
+	(cd "$2" && ANSWER_FILE=$3 ANSWER_ROUND=${5:-1} bash "$TASKS_DIR/$1/check.sh") </dev/null >"$4" 2>&1
+}
+
+valid_attention() {
+	local dir=$1
+	[ -f "$dir/attention.json" ] || return 0
+	jq -e -s '
+		def nonempty: type == "string" and length > 0;
+		def entries: type == "array"
+		  and all(.[]; (.id | nonempty) and (.pattern | nonempty and (try (test("") | true) catch false)))
+		  and ((map(.id) | unique | length) == length);
+		length == 1 and (.[0] |
+		  (.questions | entries)
+		  and ((.overridden_defaults // []) | entries)
+		  and (if (.questions | length) > 0 then (.reply | nonempty) else .reply == null end)
+		  and ((.check_before_reply // false) | type == "boolean")
+		  and (.stop_question == null or (.stop_question as $id | any(.questions[]; .id == $id))))
+	' "$dir/attention.json" >/dev/null || return 1
+	[ -f "$dir/before.sh" ] || jq -e '.stop_question == null' "$dir/attention.json" >/dev/null
+}
+
+score_attention() {
+	jq -c --arg first "$2" --arg followup "$3" --argjson checkpoint "$4" --argjson replied "$5" \
+		-f "$ROOT/evals/attention.jq" "$1"
 }
 
 # 在工作目录 $1 用干净环境跑一轮 agent，stdout/stderr 写到 $2/$3；超过 TIMEOUT 秒就杀掉整个进程组并创建 $4。
@@ -356,6 +389,8 @@ SH
 run_sample() {
 	local task=$1 n=$2 group=$3 gates dir="$RUN_DIR/$1-$2-$3" work base start round=1 nudges=0 pass=0 timed_out=0 sid msg rcs= rc=0 state_dir=
 	local ctx= check_ok=0 round_ok=0 f pi_args claude_args record_ok=0
+	local task_dir="$TASKS_DIR/$1" attention_file= attention=null attention_error= reply="$NUDGE"
+	local checkpoint=null first_answer= first_check=null check_before_reply=false replied=false
 	gates=$(gates_for "$group")
 	mkdir -p "$dir"
 	work=$(prepare_workdir "$task" "$group") || { say "✗ $task [$group] #${n}：准备工作目录失败"; return 1; }
@@ -363,6 +398,11 @@ run_sample() {
 	isolate_sample "$(dirname "$work")"
 	base=$(git -C "$work" rev-parse HEAD)
 	msg=$(cat "$TASKS_DIR/$task/prompt.md")
+	if [ -f "$task_dir/attention.json" ]; then
+		attention_file="$task_dir/attention.json"
+		check_before_reply=$(jq -r '.check_before_reply // false' "$attention_file")
+		msg="$msg"$'\n\n'"$ATTENTION_PROMPT"
+	fi
 	for f in AGENTS.override.md AGENTS.md CLAUDE.md; do
 		if [ -f "$work/$f" ]; then ctx="$work/$f"; break; fi
 	done
@@ -394,7 +434,7 @@ run_sample() {
 			if [ -z "$sid" ]; then
 				claude_args=(-p "$msg" "${claude_args[@]}")
 			else
-				claude_args=(-p "$NUDGE" --resume "$sid" "${claude_args[@]}")
+				claude_args=(-p "$reply" --resume "$sid" "${claude_args[@]}")
 			fi
 			run_agent "$work" "$dir/round-$round.jsonl" "$dir/round-$round.err" "$dir/timed-out" "$state_dir" claude "${claude_args[@]}" || rc=$?
 		fi
@@ -405,9 +445,42 @@ run_sample() {
 		fi
 		extract_answer "$dir/round-$round.jsonl" >"$dir/answer-$round.txt" || true
 		check_ok=0
-		run_check "$task" "$work" "$dir/answer-$round.txt" "$dir/check-$round.txt" && check_ok=1
+		EVAL_BASE=$base run_check "$task" "$work" "$dir/answer-$round.txt" "$dir/check-$round.txt" "$round" && check_ok=1
 		round_ok=0
 		round_ok_fn "$dir/round-$round.jsonl" && round_ok=1
+		if [ -n "$attention_file" ]; then
+			[ "$round_ok" = 1 ] && [ "$rc" = 0 ] || break
+			if [ "$round" = 1 ]; then
+				first_answer=$(cat "$dir/answer-1.txt")
+				if [ "$check_before_reply" = true ]; then
+					first_check=false
+					[ "$check_ok" != 1 ] || first_check=true
+				fi
+				if [ -f "$task_dir/before.sh" ]; then
+					checkpoint=false
+					(cd "$work" && EVAL_BASE=$base bash "$task_dir/before.sh") </dev/null >"$dir/before.log" 2>&1 && checkpoint=true
+				fi
+				attention=$(score_attention "$attention_file" "$first_answer" "" "$checkpoint" false) || return 1
+				reply=$(jq -r '.reply // empty' "$attention_file")
+				jq -e '.missed_stops == 0 and .false_stops == 0 and .checkpoint_pass != false' \
+					<<<"$attention" >/dev/null || break
+				if [ -n "$reply" ]; then
+					sid=$(jq -Rrs 'split("\n") | map(fromjson? | select(.type == "result")) | last | .session_id // ""' "$dir/round-1.jsonl")
+					if [ -z "$sid" ]; then
+						attention_error="首轮缺少 session_id，无法发送预置答复"
+						break
+					fi
+					round=2
+					continue
+				fi
+			else
+				replied=true
+				attention=$(score_attention "$attention_file" "$first_answer" "$(cat "$dir/answer-2.txt")" "$checkpoint" "$replied") || return 1
+				jq -e '.false_stops == 0' <<<"$attention" >/dev/null || break
+			fi
+			[ "$first_check" = false ] || pass=$check_ok
+			break
+		fi
 		if [ "$check_ok" = 1 ] && [ "$round_ok" = 1 ] && [ "$rc" = 0 ]; then
 			pass=1
 			break
@@ -418,6 +491,9 @@ run_sample() {
 		nudges=$((nudges + 1))
 		round=$((round + 1))
 	done
+	if [ "$attention" != null ] && [ "$first_check" != null ]; then
+		attention=$(jq -c --argjson first_check "$first_check" '. + {first_check_pass: $first_check}' <<<"$attention")
+	fi
 	(git -C "$work" add -A && git -C "$work" diff --cached --binary "$base") >"$dir/diff.patch" 2>/dev/null || true
 	if [ -n "$KEEP" ]; then
 		say "  $task [$group] #$n 的工作目录保留在 ${work}（门禁状态在 ${state_dir}）"
@@ -447,7 +523,8 @@ run_sample() {
 			--arg group "$group" --arg gates "$gates" \
 			--argjson sample "$n" --argjson pass "$pass" --argjson timed_out "$timed_out" \
 			--argjson nudges "$nudges" --argjson wall "$(($(date +%s) - start))" \
-			--argjson rcs "[$rcs]" --arg premium "$PREMIUM" --arg harness "$HARNESS" --arg provider "$PROVIDER" --arg thinking "$THINKING" \
+			--argjson rcs "[$rcs]" --arg premium "$PREMIUM" \
+			--argjson attention "$attention" --arg attention_error "$attention_error" \
 			"$RECORD_JQ" "$dir/rounds.jsonl" >"$dir/record.json"; then
 			record_ok=1
 		fi
@@ -461,6 +538,7 @@ run_sample() {
 
 cmd_run() {
 	local samples=1 jobs=1 t n g i=0 pids=() records report section max_nudges_set=0 groups=
+	local supported_tasks= explicit_tasks
 	HARNESS=claude MODEL= MAX_NUDGES= PROVIDER= THINKING= KEEP= GROUP=both
 	while [ $# -gt 0 ]; do
 		case $1 in
@@ -530,10 +608,20 @@ cmd_run() {
 			say "模型 ${MODEL}（--model）"
 		fi
 	fi
+	explicit_tasks=$#
 	pick_tasks "$@"
 	for t in $TASKS; do
 		[ -f "$TASKS_DIR/$t/prompt.md" ] && [ -f "$TASKS_DIR/$t/check.sh" ] || die "任务 $t 缺少 prompt.md 或 check.sh"
+		if [ "$HARNESS" = pi ] && [ -f "$TASKS_DIR/$t/attention.json" ]; then
+			[ "$explicit_tasks" -eq 0 ] || die "注意力题 $t 需要 --harness claude"
+			say "跳过注意力题 ${t}（需要 --harness claude）"
+			continue
+		fi
+		valid_attention "$TASKS_DIR/$t" || die "任务 $t 的 attention.json 契约无效"
+		supported_tasks="$supported_tasks $t"
 	done
+	TASKS=$supported_tasks
+	[ -n "$TASKS" ] || die "没有当前 harness 支持的任务"
 
 	RUN_ID="$(date +%Y%m%d-%H%M%S)-$RANDOM"
 	RUN_DATE=$(date +%Y-%m-%d)
@@ -600,6 +688,11 @@ cmd_selftest() {
 		dir="$TASKS_DIR/$t" log="$SANDBOX/$t.log"
 		if [ ! -f "$dir/prompt.md" ] || [ ! -f "$dir/check.sh" ]; then
 			say "✗ ${t}：缺少 prompt.md 或 check.sh"
+			bad=1
+			continue
+		fi
+		if ! valid_attention "$dir"; then
+			say "✗ ${t}：attention.json 契约无效"
 			bad=1
 			continue
 		fi

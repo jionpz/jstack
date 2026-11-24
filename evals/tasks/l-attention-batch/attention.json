@@ -1,0 +1,15 @@
+{
+  "questions": [
+    {
+      "id": "reset_all_tasks",
+      "pattern": "(清空|全部删除|删除所有|重置编号|reset).{0,40}(任务|数据|id|编号)|(任务|数据|id|编号).{0,40}(清空|全部删除|删除所有|重置编号|reset)"
+    },
+    {
+      "id": "list_sort",
+      "pattern": "(排序|sort).{0,50}(编号|截止日期|due date|id)|(编号|截止日期|due date|id).{0,50}(排序|sort)"
+    }
+  ],
+  "reply": "暂不批准清空任务，排序也先保持当前顺序。请保留 `list --open` 的实现，并总结结果。",
+  "stop_question": "reset_all_tasks",
+  "check_before_reply": true
+}
