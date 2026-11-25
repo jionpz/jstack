@@ -22,11 +22,13 @@ install_codex_hooks "$REPO" 0
 jq -e '
   ([.hooks.UserPromptSubmit[].hooks[] | select(.type == "command" and .timeout == 10 and (.command | contains("CURSOR_VERSION")))] | length == 1) and
   ([.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[] | select(.type == "command" and .timeout == 10 and (.command | contains("CURSOR_VERSION")))] | length == 1) and
+  ([.hooks.PreToolUse[] | select(.matcher == "Write|Edit|MultiEdit|NotebookEdit") | .hooks[] | select(.type == "command" and .timeout == 10 and (.command | contains("CURSOR_VERSION")))] | length == 1) and
   ([.hooks.Stop[].hooks[] | select(.type == "command" and .timeout == 10 and (.command | contains("CURSOR_VERSION")))] | length == 1)
 ' "$REPO/.claude/settings.json" >/dev/null || die "Claude hook template is incomplete"
 jq -e '
   .version == 1 and
   (.hooks.beforeShellExecution[0].command | contains("hooks/guard.sh")) and
+  (.hooks.preToolUse[0].command | contains("hooks/guard.sh")) and
   (.hooks.beforeSubmitPrompt[0].command | contains("hooks/prompt.sh")) and
   (.hooks.stop[0].command | contains("hooks/stop.sh")) and
   (.hooks.stop[0].loop_limit == 3)
@@ -34,9 +36,11 @@ jq -e '
 jq -e '
   ([.hooks.UserPromptSubmit[0].hooks[0].command,
     .hooks.PreToolUse[0].hooks[0].command,
+    .hooks.PreToolUse[1].hooks[0].command,
     .hooks.Stop[0].hooks[0].command] |
     all(startswith("repo=$(git rev-parse --show-toplevel) && exec \"$repo/.jstack/vendor/plugins/flow/hooks/"))) and
-  (.hooks.PreToolUse[0].matcher == "Bash")
+  ([.hooks.PreToolUse[].matcher] | index("Bash") != null) and
+  ([.hooks.PreToolUse[].matcher] | index("apply_patch") != null)
 ' "$REPO/.codex/hooks.json" >/dev/null || die "Codex hooks are not portable"
 say "Project hook templates contain all three adapters"
 

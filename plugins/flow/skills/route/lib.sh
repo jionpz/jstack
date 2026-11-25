@@ -181,12 +181,43 @@ jstack_stage_rows() {
 
 jstack_has_jq() { [ -z "${JSTACK_NO_JQ:-}" ] && command -v jq >/dev/null 2>&1; }
 
+# 无 jq 时把 JSON 字符串里的转义还原成实际字符；支持 JSON 的常用单字符转义。
+jstack_json_unescape() {
+	awk '
+		{
+			s = $0
+			out = ""
+			for (i = 1; i <= length(s); i++) {
+				c = substr(s, i, 1)
+				if (c != "\\") {
+					out = out c
+					continue
+				}
+				i++
+				if (i > length(s)) {
+					out = out "\\"
+					break
+				}
+				c = substr(s, i, 1)
+				if (c == "n") out = out "\n"
+				else if (c == "r") out = out "\r"
+				else if (c == "t") out = out "\t"
+				else if (c == "b") out = out "\b"
+				else if (c == "f") out = out "\f"
+				else out = out c
+			}
+			printf "%s", out
+		}'
+}
+
 # hook 输入 $2 里顶层字符串字段 $1 的值。
 jstack_json_str() {
 	if jstack_has_jq; then
 		printf '%s' "$2" | jq -r --arg k "$1" '.[$k] // empty | strings'
 	else
-		printf '%s' "$2" | tr '\n' ' ' | sed -nE "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"([^\"]*)\".*/\\1/p" | head -1
+		printf '%s' "$2" | tr '\n' ' ' |
+			sed -nE 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*"((\\.|[^"\\])*)".*/\1/p' |
+			head -1 | jstack_json_unescape
 	fi
 }
 
@@ -292,6 +323,13 @@ jstack_cfg_summary() {
 jstack_cfg_patterns() {
 	jstack_cfg '(.must_stop // [])[] | select(.regex != null and .regex != "") |
 		"\(.hook // .action // "repo")\u0001\(.regex)"' | tr '\001' '\t'
+}
+
+# 仓库追加的 must-stop 路径模式，每行 "hook<TAB>路径正则<TAB>允许正则"。
+jstack_cfg_path_patterns() {
+	jstack_cfg '(.must_stop // [])[] | select(.path_regex != null and .path_regex != "") |
+		"\(.hook // .action // "repo")\u0001\(.path_regex)\u0001\(.allow_path_regex // "")"' |
+		tr '\001' '\t'
 }
 
 jstack_run_verify() {

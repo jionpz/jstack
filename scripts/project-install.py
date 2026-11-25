@@ -28,9 +28,12 @@ ABSOLUTE_FLOW = re.compile(r'(?<![\w$}])/[^\n";]*?/\.jstack/vendor/plugins/flow'
 PI_SOURCE = re.compile(r"npm:@tintinweb/pi-subagents@\d+\.\d+\.\d+(?:[-+][\w.+-]+)?")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 HOOK_EVENTS = {
-    "prompt": ("UserPromptSubmit", {}, "beforeSubmitPrompt"),
-    "guard": ("PreToolUse", {"matcher": "Bash"}, "beforeShellExecution"),
-    "stop": ("Stop", {}, "stop"),
+    "prompt": (("UserPromptSubmit", {}, "beforeSubmitPrompt"),),
+    "guard": (
+        ("PreToolUse", {"matcher": "Bash"}, "beforeShellExecution"),
+        ("PreToolUse", {"matcher": "Write|Edit|MultiEdit|NotebookEdit"}, "preToolUse"),
+    ),
+    "stop": (("Stop", {}, "stop"),),
 }
 MISSING = object()
 
@@ -250,34 +253,45 @@ def check_hook_targets(repo):
             raise ProjectError(f"项目门禁需要可执行的 vendor 脚本：{rel}")
 
 
+def hook_targets(path, script):
+    targets = HOOK_EVENTS[script]
+    if path == CODEX_HOOKS and script == "guard":
+        return (
+            ("PreToolUse", {"matcher": "Bash"}, "beforeShellExecution"),
+            ("PreToolUse", {"matcher": "apply_patch"}, "preToolUse"),
+        )
+    return targets
+
+
 def owned_hook_forms(path):
-    for script, (event, context, cursor_event) in HOOK_EVENTS.items():
+    for script, targets in HOOK_EVENTS.items():
         cursor_command = f'"${{CURSOR_PROJECT_DIR}}/{FLOW}"/hooks/{script}.sh'
-        if path == CURSOR_HOOKS:
-            handler = {"command": cursor_command, "timeout": 10}
-            if script == "stop":
-                handler["loop_limit"] = 3
-            yield [[cursor_event, {}, handler]]
-            continue
-        if path == CODEX_HOOKS:
-            commands = [f'repo=$(git rev-parse --show-toplevel) && exec "$repo/{FLOW}/hooks/{script}.sh"']
-        else:
-            suffix = f'exec "${{CLAUDE_PROJECT_DIR}}/{FLOW}/hooks/{script}.sh"'
-            timeout = "10 and .loop_limit == 3" if script == "stop" else "10"
-            escaped_cursor = cursor_command.replace('"', r'\"')
-            cursor_check = (
-                f"'(.hooks.{cursor_event} // []) | any(.command == $command and .timeout == {timeout})' "
-                '"${CURSOR_PROJECT_DIR:-${CLAUDE_PROJECT_DIR:-.}}/.cursor/hooks.json" >/dev/null 2>&1; '
-                "then exit 0; fi; " + suffix
-            )
-            cursor_prefix = 'if [ -n "${CURSOR_VERSION:-}" ] && command -v jq >/dev/null 2>&1 && jq -e --arg command '
-            commands = [
-                f'"${{CLAUDE_PROJECT_DIR}}/{FLOW}"/hooks/{script}.sh',
-                'if [ -n "${CURSOR_VERSION:-}" ]; then exit 0; fi; ' + suffix,
-                f'{cursor_prefix}"{escaped_cursor}" {cursor_check}',
-                f"{cursor_prefix}'{cursor_command}' {cursor_check}",
-            ]
-        yield [[event, context, {"type": "command", "command": command, "timeout": 10}] for command in commands]
+        for event, context, cursor_event in hook_targets(path, script):
+            if path == CURSOR_HOOKS:
+                handler = {"command": cursor_command, "timeout": 10}
+                if script == "stop":
+                    handler["loop_limit"] = 3
+                yield [[cursor_event, {}, handler]]
+                continue
+            if path == CODEX_HOOKS:
+                commands = [f'repo=$(git rev-parse --show-toplevel) && exec "$repo/{FLOW}/hooks/{script}.sh"']
+            else:
+                suffix = f'exec "${{CLAUDE_PROJECT_DIR}}/{FLOW}/hooks/{script}.sh"'
+                timeout = "10 and .loop_limit == 3" if script == "stop" else "10"
+                escaped_cursor = cursor_command.replace('"', r'\"')
+                cursor_check = (
+                    f"'(.hooks.{cursor_event} // []) | any(.command == $command and .timeout == {timeout})' "
+                    '"${CURSOR_PROJECT_DIR:-${CLAUDE_PROJECT_DIR:-.}}/.cursor/hooks.json" >/dev/null 2>&1; '
+                    "then exit 0; fi; " + suffix
+                )
+                cursor_prefix = 'if [ -n "${CURSOR_VERSION:-}" ] && command -v jq >/dev/null 2>&1 && jq -e --arg command '
+                commands = [
+                    f'"${{CLAUDE_PROJECT_DIR}}/{FLOW}"/hooks/{script}.sh',
+                    'if [ -n "${CURSOR_VERSION:-}" ]; then exit 0; fi; ' + suffix,
+                    f'{cursor_prefix}"{escaped_cursor}" {cursor_check}',
+                    f"{cursor_prefix}'{cursor_command}' {cursor_check}",
+                ]
+            yield [[event, context, {"type": "command", "command": command, "timeout": 10}] for command in commands]
 
 
 def validate_proof(path, proof):
@@ -352,8 +366,11 @@ def legacy_hooks(doc, path, expected):
         match = matcher.fullmatch(command) if matcher else None
         if match:
             script = match["script"]
-            legacy_event, legacy_context, _ = HOOK_EVENTS[script]
-            if event == legacy_event and context == legacy_context and handler == {
+            legacy_targets = [
+                (target_event, target_context)
+                for target_event, target_context, _ in hook_targets(path, script)
+            ]
+            if (event, context) in legacy_targets and handler == {
                 "type": "command", "command": command, "timeout": 10,
             }:
                 matches.append(fragment)
