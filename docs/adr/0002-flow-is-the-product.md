@@ -19,9 +19,9 @@ jstack 不是"打包上游的 marketplace"，而是用户长期维护的整条 A
 - route 的职责从"把任务交给 poteto-mode"扩大到"驱动任务走完全部阶段"。`locate.sh` 里写死的入口名改为读这张表。
 - 上游改名或换掉某个提供者，只改表和对应的定位逻辑；`jstack check` 要校验表里每个提供者都能被找到。
 - 一个提供者不满足阶段的门禁时，门禁由 jstack 补齐（hook、脚本或 jstack 自己的 skill），不靠给上游打补丁。
-- 精简或改写某个提供者之前，先用工作流评测证明改动没有退化。
+- 精简或改写提供者时，用功能回归核对对应阶段的产出与门禁。
 - 支持的 harness：Claude Code 是主力，所有门禁和 hook 先在 Claude Code 落地；Pi、OMP、Codex、Cursor 保证 skill 可用、route 可用、能派子 agent。某个门禁在某个 harness 上做不到时，明确跳过并说明，不静默降级。
 
 ## 发布支持分级
 
-2026-11-13 确认 Claude Code 和 Pi 为一等支持。发布前，这两个 harness 的评测和真实 smoke 都必须通过。OMP、Cursor 和 Codex 为尽力而为支持，保留安装和运行检查，并在[门禁能力矩阵](../harness/gates.md)记录降级。`./jstack check --smoke` 和 `./jstack smoke all` 均报告所有 harness 的 smoke 结果，其中一等 harness 缺失或失败会使命令失败。单独运行指定 harness 的 smoke 时，该 harness 必须可用并通过。
+2026-11-13 确认 Claude Code 和 Pi 为一等支持。发布前，两者都必须通过真实 smoke。OMP、Cursor 和 Codex 为尽力而为支持，保留安装和运行检查，并在[门禁能力矩阵](../harness/gates.md)记录降级。`./jstack check --smoke` 和 `./jstack smoke all` 均报告所有 harness 的 smoke 结果，其中一等 harness 缺失或失败会使命令失败。单独运行指定 harness 的 smoke 时，该 harness 必须可用并通过。

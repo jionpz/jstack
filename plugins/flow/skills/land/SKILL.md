@@ -10,9 +10,9 @@ You own publication, not implementation. Execute, verify, and review have alread
 
 ## 1. Inspect the diff before committing
 
-Read the task or spec, `../route/stage.sh show`, and the full diff from the recorded base. Include both committed work (`git diff <base>..HEAD`) and anything still uncommitted (`git diff` and `git diff --cached`).
+Keep the task repository as the working directory. Use the absolute path to `stage.sh` alongside the active route provider for all stage commands. Read the task or spec, run `stage.sh show`, and inspect the full diff from the recorded base. Include both committed work (`git diff <base>..HEAD`) and anything still uncommitted (`git diff` and `git diff --cached`).
 
-Run `git status --short`, `git diff --check`, and inspect every changed path. A change that does not belong to this task, debug output, generated files, unrelated lockfile churn, or any secret blocks land. Secrets include `.env*`, credentials, auth stores, tokens, private keys, and harness configuration that carries them. If you find a real defect, return to execute instead of hiding it in the PR description.
+Run `git status --short`, `git diff --check <base>`, `git diff --cached --check`, and inspect every changed path. Keep generated outputs and lockfile changes when the project requires them for this task. Check them against the project's generator or validation command. Debug output, unrelated changes, and secrets block land. Secrets include `.env*`, credentials, auth stores, tokens, private keys, and harness configuration that carries them. Return to execute for any defect.
 
 ## 2. Branch and commit
 
@@ -20,7 +20,7 @@ Check the current branch with `git branch --show-current`. Reuse the task branch
 
 Commit only the intended files, in small verified units. Use a Conventional Commits subject that says what changed and a body that says why. Keep unrelated user changes out of the commit. Never rewrite a pushed branch: force push is a must-stop action.
 
-Leave the working tree clean. Before recording the head SHA or pushing, confirm that HEAD is on the task branch. In a repository with no remote, the branch commit is the land output: run `../route/stage.sh land commit <SHA>` and stop without pushing or opening a PR.
+Leave the working tree clean. Before recording the head SHA or pushing, confirm that HEAD is on the task branch. In a repository with no remote, record `stage.sh land commit <SHA>` and finish land.
 
 ## 3. Open or update the PR
 
@@ -42,11 +42,11 @@ Open the PR ready, not as a draft. Write a one-minute briefing from the task, di
 - <what is not covered, or "None identified">
 ```
 
-Use the actual verify evidence. If there is no verification evidence, land is blocked. Do not paste secrets, raw logs, or a file-by-file essay. After the PR exists and its head is the commit you inspected, run `../route/stage.sh land commit <SHA>` and `../route/stage.sh land pr <URL>`.
+Use the actual verify evidence. If there is no verification evidence, land is blocked. Do not paste secrets, raw logs, or a file-by-file essay. After the PR exists and its head is the commit you inspected, record `stage.sh land commit <SHA>` and `stage.sh land pr <URL>`.
 
 ## 4. Check CI once
 
-Wait once for the required checks on the pushed head. On GitHub, run `gh pr checks <number> --watch`; use the equivalent forge command elsewhere. Do not poll in a loop.
+Confirm that the PR's head matches the inspected commit before and after waiting for CI. On GitHub, read it with `gh pr view <number> --json headRefOid --jq .headRefOid` and wait with `gh pr checks <number> --watch`. Use the equivalent commands elsewhere. If the head changed, return to verify with the new candidate. Do not poll in a loop.
 
 - Green on the inspected head: land is PR-ready. Report the PR URL, head SHA, the verification and decisions sections, and the check result.
 - Red, still unfinished after that one wait, or unable to run: land is not met. Name the exact failing, pending, or unavailable check and send the task back to execute for a fix and a fresh verify. Do not report the task as done.
