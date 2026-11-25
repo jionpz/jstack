@@ -15,7 +15,7 @@ flow 的三个门禁（阶段提示、验证门禁、红线守卫）的判定逻
 
 “需适配”不是没实现：三个门禁在 Pi、OMP 和 Codex 上都已实现，只是需要各自的事件/协议翻译，并有下面的降级。
 
-`./jstack check --smoke` 与 `./jstack smoke all` 要求 Claude Code 和 Pi 的烟测通过；OMP、Cursor、Codex 缺失或失败会在输出里报告。单独运行 `./jstack smoke <harness>` 时，被指定的 harness 必须可用并通过。发布还需通过 Claude Code 和 Pi 的评测，见 [ADR-0002](../adr/0002-flow-is-the-product.md#发布支持分级)。
+`./jstack check --smoke` 与 `./jstack smoke all` 要求 Claude Code 和 Pi 的 smoke 通过。OMP、Cursor、Codex 缺失或失败会在输出里报告。单独运行 `./jstack smoke <harness>` 时，被指定的 harness 必须可用并通过。发布支持分级见 [ADR-0002](../adr/0002-flow-is-the-product.md#发布支持分级)。
 
 ## 接入方式
 
