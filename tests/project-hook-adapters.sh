@@ -20,10 +20,11 @@ install_claude_hooks "$REPO" 0
 install_cursor_hooks "$REPO" 0
 install_codex_hooks "$REPO" 0
 jq -e '
-  ([.hooks.UserPromptSubmit[].hooks[] | select(.type == "command" and .timeout == 10 and (.command | contains("CURSOR_VERSION")))] | length == 1) and
-  ([.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[] | select(.type == "command" and .timeout == 10 and (.command | contains("CURSOR_VERSION")))] | length == 1) and
-  ([.hooks.PreToolUse[] | select(.matcher == "Write|Edit|MultiEdit|NotebookEdit") | .hooks[] | select(.type == "command" and .timeout == 10 and (.command | contains("CURSOR_VERSION")))] | length == 1) and
-  ([.hooks.Stop[].hooks[] | select(.type == "command" and .timeout == 10 and (.command | contains("CURSOR_VERSION")))] | length == 1)
+  def imported: select(.type == "command" and .timeout == 10 and (.command | startswith("JSTACK_CURSOR_HOOK_SOURCE=claude-project exec ")));
+  ([.hooks.UserPromptSubmit[].hooks[] | imported] | length == 1) and
+  ([.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[] | imported] | length == 1) and
+  ([.hooks.PreToolUse[] | select(.matcher == "Write|Edit|MultiEdit|NotebookEdit") | .hooks[] | imported] | length == 1) and
+  ([.hooks.Stop[].hooks[] | imported] | length == 1)
 ' "$REPO/.claude/settings.json" >/dev/null || die "Claude hook template is incomplete"
 jq -e '
   .version == 1 and
@@ -87,7 +88,8 @@ plugin_prompt=$(jq -r '.hooks.UserPromptSubmit[0].hooks[0].command' "$plugin/hoo
 local_home="$T/local-home"
 local_flow="$local_home/.cursor/plugins/local/flow"
 mkdir -p "$local_flow/hooks"
-cp "$plugin/hooks/hooks.cursor.json" "$local_flow/hooks/"
+cp -R "$plugin/hooks/." "$local_flow/hooks/"
+cp -R "$plugin/skills" "$local_flow/"
 imported_duplicate=$(printf '%s' "$prompt_json" |
 	HOME="$local_home" CLAUDE_PLUGIN_ROOT="$plugin" CURSOR_VERSION=1 JSTACK_STATE_DIR="$T/state" bash -c "$plugin_prompt")
 [ -z "$imported_duplicate" ] || die "Imported Claude plugin prompt ran beside the native Cursor plugin"
@@ -132,7 +134,7 @@ say "Without jq, project ownership requires the exact event and command"
 
 jq -n '{version:1,hooks:{}}' >"$REPO/.cursor/hooks.json"
 fallback_out=$(printf '%s' "$prompt_json" |
-	CLAUDE_PROJECT_DIR="$REPO" CURSOR_PROJECT_DIR="$REPO" CURSOR_VERSION=1 JSTACK_STATE_DIR="$T/state" bash -c "$claude_prompt")
+	HOME="$local_home" CLAUDE_PROJECT_DIR="$REPO" CURSOR_PROJECT_DIR="$REPO" CURSOR_VERSION=1 JSTACK_STATE_DIR="$T/state" bash -c "$claude_prompt")
 [ -n "$fallback_out" ] || die "Claude fallback was suppressed without a native Cursor hook"
 printf '%s' "$fallback_out" | jq -e 'has("additional_context")' >/dev/null ||
 	die "Claude fallback did not keep the Cursor protocol"
@@ -150,11 +152,63 @@ for path_entry in "${path_entries[@]}"; do
 		[ -e "$no_jq_bin/$name" ] || ln -s "$executable" "$no_jq_bin/$name"
 	done
 done
-jq -n '{version:1,hooks:{beforeSubmitPrompt:[{command:"\"${CURSOR_PROJECT_DIR}/.jstack/vendor/plugins/flow\"/hooks/prompt.sh",timeout:10}]}}' >"$REPO/.cursor/hooks.json"
-no_jq_out=$(printf '%s' "$prompt_json" |
-	PATH="$no_jq_bin" CLAUDE_PROJECT_DIR="$REPO" CURSOR_PROJECT_DIR="$REPO" CURSOR_VERSION=1 JSTACK_STATE_DIR="$T/state" /bin/bash -c "$claude_prompt")
-[ -n "$no_jq_out" ] || die "Claude fallback was suppressed when jq is unavailable"
-say "Without jq, imported Claude hook remains the fallback"
+install_cursor_hooks "$REPO" 0
+cp "$REPO/.cursor/hooks.json" "$T/project-cursor-hooks.json"
+cp "$plugin/hooks/hooks.cursor.json" "$local_flow/hooks/"
+imported_flow="$local_home/.claude/plugins/cache/jstack/flow/test"
+mkdir -p "$imported_flow"
+cp -R "$plugin/hooks" "$plugin/skills" "$imported_flow/"
+replay_cursor() {
+	printf '%s' "$1" |
+		PATH="$replay_path" HOME="$local_home" CLAUDE_PROJECT_DIR="$REPO" CURSOR_PROJECT_DIR="$2" \
+		CLAUDE_PLUGIN_ROOT="$plugin" CURSOR_PLUGIN_ROOT="$local_flow" CURSOR_VERSION=1 \
+		CURSOR_CONVERSATION_ID="$SID" JSTACK_STATE_DIR="$T/state" /bin/bash -c "$3"
+}
+business_prompt="printf '%s' '{\"additional_context\":\"business probe\"}'"
+edit_json=$(printf '{"conversation_id":"%s","hook_event_name":"preToolUse","tool_name":"Write","tool_input":{"file_path":"/tmp/.env"}}' "$SID")
+shell_json=$(printf '{"conversation_id":"%s","hook_event_name":"beforeShellExecution","command":"git clean -fd"}' "$SID")
+import_shell_json=$(printf '{"conversation_id":"%s","hook_event_name":"preToolUse","tool_name":"Shell","tool_input":{"command":"git clean -fd"}}' "$SID")
+for replay_path in "$PATH" "$no_jq_bin"; do
+	for event in beforeSubmitPrompt beforeShellExecution preToolUse stop; do
+		case $event in
+		beforeSubmitPrompt) section='.hooks.UserPromptSubmit[0]'; payload=$prompt_json; import_payload=$payload; response='has("additional_context")' ;;
+		beforeShellExecution) section='.hooks.PreToolUse[0]'; payload=$shell_json; import_payload=$import_shell_json; response='.permission == "ask"' ;;
+		preToolUse) section='.hooks.PreToolUse[1]'; payload=$edit_json; import_payload=$payload; response='.permission == "deny"' ;;
+		stop) section='.hooks.Stop[0]'; payload=$stop_json; import_payload=$payload; response='has("followup_message")' ;;
+		esac
+		project_native=$(jq -r --arg event "$event" '.hooks[$event][0].command' "$T/project-cursor-hooks.json")
+		user_native=$(jq -r --arg event "$event" '.hooks[$event][0].command' "$local_flow/hooks/hooks.cursor.json")
+		cache_import="CURSOR_PLUGIN_ROOT=\"$imported_flow\"; $user_native"
+		project_import=$(jq -r "$section.hooks[0].command" "$REPO/.claude/settings.json")
+		plugin_import=$(jq -r "$section.hooks[0].command" "$plugin/hooks/hooks.json")
+		replay_cursor "$payload" "$REPO" "$project_native" | jq -e "$response" >/dev/null ||
+			die "Project Cursor hook did not respond for $event"
+		[ -z "$(replay_cursor "$payload" "$REPO" "$user_native")" ] &&
+			[ -z "$(replay_cursor "$payload" "$REPO" "$cache_import")" ] &&
+			[ -z "$(replay_cursor "$import_payload" "$REPO" "$project_import")" ] &&
+			[ -z "$(replay_cursor "$import_payload" "$REPO" "$plugin_import")" ] ||
+			die "More than one JStack hook responded for $event"
+		replay_cursor "$payload" "" "$user_native" | jq -e "$response" >/dev/null ||
+			die "User-only Cursor hook did not respond for $event"
+		[ -z "$(replay_cursor "$import_payload" "" "$plugin_import")" ] ||
+			die "Imported Claude plugin ran beside its user-level Cursor hook for $event"
+		[ -z "$(replay_cursor "$payload" "" "$cache_import")" ] ||
+			die "Claude cache plugin's native hook ran beside its user-level Cursor hook for $event"
+	done
+	replay_cursor "$prompt_json" "$REPO" "$business_prompt" | jq -e '.additional_context == "business probe"' >/dev/null ||
+		die "Independent Cursor hook did not respond"
+done
+say "Mixed Cursor hook commands respond once per event with and without jq, and the business hook still runs"
+
+replay_path=$no_jq_bin
+mv "$local_flow/hooks/hooks.cursor.json" "$T/user-cursor-hooks.json"
+jq -n '{version:1,hooks:{}}' >"$REPO/.cursor/hooks.json"
+replay_cursor "$prompt_json" "$REPO" "$claude_prompt" | jq -e 'has("additional_context")' >/dev/null ||
+	die "Imported Claude prompt did not fall back without jq and a native config"
+project_shell=$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$REPO/.claude/settings.json")
+replay_cursor "$import_shell_json" "$REPO" "$project_shell" | jq -e '.permission == "deny"' >/dev/null ||
+	die "Imported Claude shell guard did not fall back without native shell hooks"
+say "Imported Claude hooks still handle prompts and shell commands without native Cursor hooks"
 
 codex_prompt=$(jq -r '.hooks.UserPromptSubmit[0].hooks[0].command' "$REPO/.codex/hooks.json")
 codex_prompt_out=$(cd "$REPO" && printf '{"session_id":"%s","turn_id":"turn-1","hook_event_name":"UserPromptSubmit","prompt":"hi"}' "$SID" |

@@ -33,7 +33,7 @@ main() {
 	local input evt proto=claude file path stage row next arrow n d st cfg warn stages text sid receipt=
 	input=$(cat)
 	evt=$(jstack_json_str hook_event_name "$input")
-	jstack_cursor_defer_to_project "$0" beforeSubmitPrompt && return 0
+	jstack_cursor_defer "$0" beforeSubmitPrompt && return 0
 	if [ "$evt" = beforeSubmitPrompt ]; then
 		proto=cursor
 	elif jstack_is_codex "$input"; then

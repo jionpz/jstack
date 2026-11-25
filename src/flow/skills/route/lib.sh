@@ -285,18 +285,29 @@ PY
 # Cursor 里同一个 guard / prompt / stop 可能同时由项目原生 hooks、本地 Cursor 插件和
 # Claude 兼容导入加载。项目投影存在时，让非项目副本退出，只执行项目 vendor 那一份。
 # 只在 Cursor 会话、项目事件确实注册了同一脚本时生效；无法解析配置就继续执行。
-jstack_cursor_defer_to_project() {
-	local script=$1 event=$2 name self project target command
+jstack_cursor_defer() {
+	local script=$1 event=$2 source=${JSTACK_CURSOR_HOOK_SOURCE:-} name self claude_plugins local_hook project target command
 	[ -n "${CURSOR_VERSION:-}" ] || return 1
 	name=$(basename "$script")
 	self=$(cd "$(dirname "$script")" 2>/dev/null && pwd -P)/$name || return 1
+	if [ -z "$source" ] && claude_plugins=$(cd "$HOME/.claude/plugins" 2>/dev/null && pwd -P); then
+		case $self in "$claude_plugins"/*) source=claude-plugin ;; esac
+	fi
+	local_hook="$HOME/.cursor/plugins/local/flow/hooks/$name"
+	if [ -n "$source" ] && [ -x "$local_hook" ] && jstack_cursor_config_has \
+		"$(dirname "$local_hook")/hooks.cursor.json" "$event" "\"\${CURSOR_PLUGIN_ROOT}\"/hooks/$name"; then
+		return 0
+	fi
 	project=${CURSOR_PROJECT_DIR:-}
+	if [ "$source" = claude-project ]; then
+		project=${project:-${CLAUDE_PROJECT_DIR:-}}
+	fi
 	[ -n "$project" ] || return 1
 	project=$(cd "$project" 2>/dev/null && pwd -P) || return 1
 	target="$project/.jstack/vendor/plugins/flow/hooks/$name"
 	[ -x "$target" ] || return 1
 	target=$(cd "$(dirname "$target")" && pwd -P)/$name || return 1
-	[ "$self" = "$target" ] && return 1
+	[ "$self" != "$target" ] || [ "$source" = claude-project ] || return 1
 	command="\"\${CURSOR_PROJECT_DIR}/.jstack/vendor/plugins/flow\"/hooks/$name"
 	jstack_cursor_config_has "$project/.cursor/hooks.json" "$event" "$command"
 }

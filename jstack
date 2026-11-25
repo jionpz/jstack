@@ -2628,8 +2628,10 @@ cmd_check() {
 			say "✗ upstream/$PLUGIN 与 upstream/$PLUGIN.lock.json 记录的内容对不上：副本只能由 ./jstack sync 写入"
 			rc=1
 		fi
-		# 上游 adapter 只翻译 Markdown 里的 Cursor 名称，脚本里写死的 Cursor 路径要靠补丁修。
-		if hits=$(grep -rnIE '(\$HOME|~)/\.cursor/|agent-transcripts' --exclude='*.md' --exclude-dir=node_modules "$OUT"); then
+		# 只检查跨宿主的上游脚本。flow 自己维护各宿主的原生安装入口。
+		if [ -n "$OWN" ]; then
+			:
+		elif hits=$(grep -rnIE '(\$HOME|~)/\.cursor/|agent-transcripts' --exclude='*.md' --exclude-dir=node_modules "$OUT"); then
 			say "✗ plugins/$PLUGIN 的脚本里还有写死的 Cursor 路径，需要补丁："
 			printf '%s\n' "$hits" | sed "s|$ROOT/||; s/^/  /" | head -20
 			rc=1
@@ -4283,22 +4285,16 @@ install_claude_hooks() { # <仓库> <dry>：项目级 hooks 指向 vendor，重�
 	fi
 	mkdir -p "$repo/.claude"
 	new=$(jq -n \
-		--arg root '${CLAUDE_PROJECT_DIR}/.jstack/vendor/plugins/flow' \
-		--arg cursor_root '${CURSOR_PROJECT_DIR}/.jstack/vendor/plugins/flow' '
-		def native($event; $hook):
-			"if [ -n \"${CURSOR_VERSION:-}\" ] && command -v jq >/dev/null 2>&1 && " +
-			"jq -e --arg command \u0027\u0022" + $cursor_root + "\u0022/hooks/" + $hook + ".sh\u0027 \u0027" +
-			"(.hooks." + $event + " // []) | any(.command == $command and .timeout == " +
-			(if $hook == "stop" then "10 and .loop_limit == 3" else "10" end) + ")\u0027 " +
-			"\"${CURSOR_PROJECT_DIR:-${CLAUDE_PROJECT_DIR:-.}}/.cursor/hooks.json\" >/dev/null 2>&1; " +
-			"then exit 0; fi; exec \"" + $root + "/hooks/" + $hook + ".sh\"";
+		--arg root '${CLAUDE_PROJECT_DIR}/.jstack/vendor/plugins/flow' '
+		def hook($script):
+			{type:"command", command:("JSTACK_CURSOR_HOOK_SOURCE=claude-project exec \"" + $root + "/hooks/" + $script + ".sh\""), timeout:10};
 		{hooks: {
-			UserPromptSubmit: [{hooks: [{type:"command", command:native("beforeSubmitPrompt"; "prompt"), timeout:10}]}],
+			UserPromptSubmit: [{hooks: [hook("prompt")]}],
 			PreToolUse: [
-				{matcher:"Bash", hooks: [{type:"command", command:native("beforeShellExecution"; "guard"), timeout:10}]},
-				{matcher:"Write|Edit|MultiEdit|NotebookEdit", hooks: [{type:"command", command:native("preToolUse"; "guard"), timeout:10}]}
+				{matcher:"Bash", hooks: [hook("guard")]},
+				{matcher:"Write|Edit|MultiEdit|NotebookEdit", hooks: [hook("guard")]}
 			],
-			Stop: [{hooks: [{type:"command", command:native("stop"; "stop"), timeout:10}]}]
+			Stop: [{hooks: [hook("stop")]}]
 		}}
 	') || die "写 $settings 失败：现有内容不是合法的 JSON"
 	printf '%s\n' "$new" >"$settings"

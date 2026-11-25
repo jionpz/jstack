@@ -287,6 +287,7 @@ def owned_hook_forms(path):
                 cursor_prefix = 'if [ -n "${CURSOR_VERSION:-}" ] && command -v jq >/dev/null 2>&1 && jq -e --arg command '
                 commands = [
                     f'"${{CLAUDE_PROJECT_DIR}}/{FLOW}"/hooks/{script}.sh',
+                    f"JSTACK_CURSOR_HOOK_SOURCE=claude-project {suffix}",
                     'if [ -n "${CURSOR_VERSION:-}" ]; then exit 0; fi; ' + suffix,
                     f'{cursor_prefix}"{escaped_cursor}" {cursor_check}',
                     f"{cursor_prefix}'{cursor_command}' {cursor_check}",

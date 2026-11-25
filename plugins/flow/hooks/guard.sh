@@ -206,8 +206,11 @@ shell_staged_secret_hit() {
 }
 
 match_shell() {
-	local cmd=$1 segs pats line hook re rest scope src n best_n= hit= hit_src= stage stage_n stage_src stage_hit reason
+	local cmd=$1 segs builtin_segs= match_segs pats line hook re rest scope src n best_n= hit= hit_src= stage= stage_n stage_src stage_hit reason
 	segs=$(printf '%s\n' "$cmd" | awk '{ gsub(/&&|\|\||[;|]/, "\n"); print }')
+	if jstack_has_jq; then
+		builtin_segs=$(printf '%s\n' "$cmd" | awk -f "$route/../../hooks/literal-command.awk") || builtin_segs=
+	fi
 	pats=$(
 		builtin_patterns
 		if repo_pats=$(jstack_cfg_patterns 2>/dev/null); then
@@ -223,10 +226,12 @@ match_shell() {
 		src=${rest%%"$tab"*}; [ -n "$src" ] || src=${rest#*"$tab"}
 		[ -n "$hook" ] && [ "$re" != "$rest" ] || continue
 		if [ "$scope" = full ]; then
-			printf '%s\n' "$cmd" | grep -Eq -- "$re" || continue
+			printf '%s\n' "${builtin_segs:-$cmd}" | grep -Eq -- "$re" || continue
 			n=1
 		else
-			n=$(printf '%s\n' "$segs" | grep -nE -- "$re" | head -1 | cut -d: -f1)
+			match_segs=$segs
+			[ "$src" != builtin ] || match_segs=${builtin_segs:-$segs}
+			n=$(printf '%s\n' "$match_segs" | grep -nE -- "$re" | head -1 | cut -d: -f1)
 			[ -n "$n" ] || continue
 		fi
 		if [ -z "$best_n" ] || [ "$n" -lt "$best_n" ]; then
@@ -235,7 +240,9 @@ match_shell() {
 			hit_src=$src
 		fi
 	done <<<"$pats"
-	stage=$(shell_staged_secret_hit "$segs") || stage=
+	if [ -z "$builtin_segs" ]; then
+		stage=$(shell_staged_secret_hit "$segs") || stage=
+	fi
 	if [ -n "$stage" ]; then
 		stage_n=${stage%%"$tab"*}; rest=${stage#*"$tab"}
 		stage_src=${rest%%"$tab"*}; stage_hit=${rest#*"$tab"}
@@ -297,17 +304,17 @@ main() {
 		;;
 	preToolUse)
 		tool=$(jstack_json_str tool_name "$input")
-		# Cursor 的 preToolUse 对 shell 也会触发；shell 统一由 beforeShellExecution
-		# 处理，否则同一个 guard 会被调用两次。编辑工具仍走这里。
-		case $tool in
-		Shell | shell | Bash | bash) return 0 ;;
-		esac
-		project_event=preToolUse
 		if is_shell_tool "$tool"; then
+			case ${JSTACK_CURSOR_HOOK_SOURCE:-} in
+			claude-project | claude-plugin) ;;
+			*) return 0 ;;
+			esac
 			kind=shell
 			cmd=$(json_command "$input")
+			project_event=beforeShellExecution
 		elif is_edit_tool "$tool"; then
 			kind=edit
+			project_event=preToolUse
 		else
 			return 0
 		fi
@@ -326,7 +333,7 @@ main() {
 		fi
 		;;
 	esac
-	jstack_cursor_defer_to_project "$0" "$project_event" && return 0
+	jstack_cursor_defer "$0" "$project_event" && return 0
 	if [ "$kind" = shell ]; then
 		[ -n "$cmd" ] || return 0
 		# Claude Code's PreToolUse payload includes agent_id for subagents. Deny only
