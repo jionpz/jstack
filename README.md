@@ -129,11 +129,11 @@ JStack 的核心是 **flow**，不是把第三方 skills 简单放在一起。�
 
 | 插件 | 承担的工作 |
 |---|---|
-| **flow** | JStack 自己维护的流程控制、任务分级、默认执行、默认审查与归档 |
+| **flow** | JStack 自己维护的流程控制、任务分级、默认执行、默认审查、默认落地与归档 |
 | **spec** | 需求澄清、领域建模、需求说明、任务拆分和会话交接；来源于 [Matt Pocock 的 skills](https://github.com/mattpocock/skills) |
 | **pstack** | 适合多个独立任务单或跨天工程的深度执行与编排；来源于 [Lauren Tan 的 pstack](https://github.com/cursor/plugins/tree/main/pstack) |
 
-普通任务默认使用 `flow:execute`，较复杂的多任务工作可切换到 `pstack:poteto-mode`。同一任务只保留一个主要执行者，避免不同编排器重复安排实现、测试与审查。第三方实现被视为可维护、可替换的阶段提供者，而不是 JStack 的流程定义本身。[设计决策：ADR-0002](docs/adr/0002-flow-is-the-product.md)
+普通任务默认使用 `flow:execute`；`flow:review` 和 `flow:land` 负责默认审查与 PR-ready 落地。较复杂的多任务工作可切换到 `pstack:poteto-mode`。同一任务只保留一个主要执行者，避免不同编排器重复安排实现、测试、审查与落地。第三方实现被视为可维护、可替换的阶段提供者，而不是 JStack 的流程定义本身。[设计决策：ADR-0002](docs/adr/0002-flow-is-the-product.md)
 
 ## 人工决策与安全边界
 

@@ -41,11 +41,15 @@ Follow the global memory rules:
 
 ## 4. Clean up worktrees (after merge)
 
-Read pstack's worktree-cleanup playbook at the path `locate.sh` printed for `pstack:poteto-mode/playbooks/worktree-cleanup.md`, and apply its buckets. Limit it to worktrees this task created, and skip its transcript scan unless a bucket is ambiguous.
+Clean only worktrees this task created. With a remote, wait until the PR is merged and confirm `mergedAt` with the forge (`gh pr view <url> --json state,mergedAt,baseRefName,headRefName`) before touching anything. A repo with no remote has no PR to wait for; clean only after the branch commits are complete.
 
-- Clean, merged, and not in use: remove, then `git worktree prune`.
-- Uncommitted work, or a worktree still in use: leave it and report why.
-- Never remove the worktree the current session is running in.
+1. Use `git worktree list --porcelain` to get registered paths. Never infer or hand-type a worktree path.
+2. Record the current worktree with `git rev-parse --show-toplevel`; never remove it. Also leave a worktree marked `locked`.
+3. For each candidate, check `git -C <path> status --porcelain`. Any output, including untracked files, means leave it.
+4. With a remote, run `git fetch origin`, then require the candidate's `HEAD` to be reachable from the PR's base branch with `git merge-base --is-ancestor <head> origin/<base>`. If that cannot be proved, leave it. Without a remote, require the branch to contain the task's completed commits.
+5. Remove a clean, merged, unlocked worktree with `git worktree remove <path>` only. Do not use `--force`. If removal fails, leave it and report why. Run `git worktree prune` after a successful removal.
+
+Report every removed worktree and every kept worktree with its reason. A worktree you cannot prove is safe stays.
 
 ## 5. Route each lesson (before merge)
 

@@ -95,7 +95,7 @@ branch_ready` 改为分支完成。与 ticket 模式一样，它只声明完成�
 | execute | `flow:execute` | `developer` |
 | verify | `pstack:principle-prove-it-works` | `verifier` |
 | review | `flow:review` | `reviewer` |
-| land | `pstack:poteto-mode/playbooks/opening-a-pr.md` | `releaser` |
+| land | `flow:land` | `releaser` |
 
 阶段表将 review 标记为托管写入的必经阶段。交互式 XS/S 按 route 的分级规则运行。
 

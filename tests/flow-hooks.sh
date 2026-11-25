@@ -411,7 +411,7 @@ cat >"$REPO/.jstack/stages.md" <<'MD'
 | size | One sentence | None | `flow:route` |
 | execute | The change | None | `pstack:poteto-mode` |
 | verify | Evidence | No evidence means not done | `pstack:principle-prove-it-works` |
-| land | Commits | must-stop | `pstack:poteto-mode/playbooks/opening-a-pr.md` |
+| land | Commits | must-stop | `flow:land` |
 MD
 export VERIFY_COUNTER="$T/verify-count"
 cat >"$REPO/scripts/verify.sh" <<'SH'

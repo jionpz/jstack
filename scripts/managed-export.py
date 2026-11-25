@@ -32,7 +32,7 @@ LEGACY_TICKET_PROVIDERS = {
     "execute": "flow:execute",
     "verify": "pstack:principle-prove-it-works",
     "review": "flow:review",
-    "land": "pstack:poteto-mode/playbooks/opening-a-pr.md",
+    "land": "flow:land",
 }
 PROVIDER_RE = re.compile(r"(flow|pstack|spec):([a-z0-9-]+)((?:/[a-zA-Z0-9_-][a-zA-Z0-9_.-]*)*)")
 
