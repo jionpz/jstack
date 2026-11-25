@@ -293,21 +293,28 @@ match_edit() {
 }
 
 main() {
-	local input evt tool cmd kind= reason
+	local input evt tool cmd kind= reason project_event=
 	input=$(cat)
 	evt=$(jstack_json_str hook_event_name "$input")
 	case $evt in
 	beforeShellExecution)
 		kind=shell
 		cmd=$(jstack_json_str command "$input")
+		project_event=beforeShellExecution
 		;;
 	preToolUse)
 		tool=$(jstack_json_str tool_name "$input")
 		if is_shell_tool "$tool"; then
+			case ${JSTACK_CURSOR_HOOK_SOURCE:-} in
+			claude-project | claude-plugin) ;;
+			*) return 0 ;;
+			esac
 			kind=shell
 			cmd=$(json_command "$input")
+			project_event=beforeShellExecution
 		elif is_edit_tool "$tool"; then
 			kind=edit
+			project_event=preToolUse
 		else
 			return 0
 		fi
@@ -317,13 +324,16 @@ main() {
 		if is_shell_tool "$tool"; then
 			kind=shell
 			cmd=$(json_command "$input")
+			project_event=beforeShellExecution
 		elif is_edit_tool "$tool"; then
 			kind=edit
+			project_event=preToolUse
 		else
 			return 0
 		fi
 		;;
 	esac
+	jstack_cursor_defer "$0" "$project_event" && return 0
 	if [ "$kind" = shell ]; then
 		[ -n "$cmd" ] || return 0
 		# Claude Code's PreToolUse payload includes agent_id for subagents. Deny only

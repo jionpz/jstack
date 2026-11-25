@@ -32,7 +32,7 @@ Claude Code 有 `--scope project`，其余 harness 只有用户级安装；四�
 - 只把 9 个入口 skill 链到各 harness 的项目 skill 目录：flow 的 `route`、`archive`，pstack 的 `poteto-mode`，spec 的 `grill-with-docs`、`to-spec`、`to-tickets`、`wayfinder`、`handoff`、`setup-matt-pocock-skills`。其余 skill 由 `locate.sh` 按物理路径读取，不进入发现目录。
 - 发现目录按实测：Claude Code 用 `.claude/skills`；Pi、OMP、Codex 和 Cursor 共用 `.agents/skills`（Pi 和 OMP 按项目向上查找，Codex 项目根实测可读，Cursor 应用内置读取）。链接用相对路径，仓库搬走也有效。旧安装留在 `.cursor/skills` 的 jstack 软链会在 install 时清理；`.agents` 里已有的同名入口视为用户配置，install 保留并跳过，不覆盖。
 - Claude Code 从 `.claude/skills` 加载入口，从 `.claude/agents` 加载两个 agent。flow 的三类 hook（提示、guard、Stop）写进项目 `.claude/settings.json`；guard 同时匹配 shell 与编辑工具。命令用 `${CLAUDE_PROJECT_DIR}` 指向 vendor。
-- Cursor 的三类 hook 写进 `.cursor/hooks.json`，其中 guard 接 `beforeShellExecution` 和 `preToolUse` 两个事件。命令用 `${CURSOR_PROJECT_DIR}` 指向 vendor。原生接线和 Claude 兼容导入共存时，需要验证一次事件只执行一个 jstack 门禁。
+- Cursor 的三类 hook 写进 `.cursor/hooks.json`，其中 guard 接 `beforeShellExecution` 和 `preToolUse` 两个事件。命令用 `${CURSOR_PROJECT_DIR}` 指向 vendor。原生接线和 Claude 兼容导入共存时，项目 vendor 优先，用户级插件和导入副本在脚本入口退出；shell 只由 `beforeShellExecution` 处理，避免 `preToolUse` 重复调用。
 - Codex 的三类 hook 写进 `.codex/hooks.json`；guard 同时匹配 `Bash` 和 `apply_patch`。命令从会话目录定位当前 checkout 的 Git 根，再找 vendor。
 
 ### 3. lock：安装可核查

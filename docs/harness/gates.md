@@ -20,7 +20,7 @@ flow 的三个门禁（阶段提示、验证门禁、红线守卫）共用 `src/
 ## 接入方式
 
 - **Claude Code**：`src/flow/hooks/hooks.json`，插件清单的 `hooks` 字段。
-- **Cursor**：`src/flow/hooks/hooks.cursor.json`，由 `.cursor-plugin/plugin.json` 的 `hooks` 字段指向；`./jstack install-cursor` 复制插件树。项目级安装使用 `.cursor/hooks.json`，从 `.claude/settings.json` 导入的 jstack 项目 hooks 在 Cursor 中退出。
+- **Cursor**：`src/flow/hooks/hooks.cursor.json`，由 `.cursor-plugin/plugin.json` 的 `hooks` 字段指向；`./jstack install-cursor` 复制插件树。项目级安装使用 `.cursor/hooks.json`，从 `.claude/settings.json` 导入的 jstack 项目 hooks 在 Cursor 中退出。所有权优先级是项目 vendor > 用户级 Cursor 本地插件 > Claude 兼容导入；脚本发现更高优先级的同名原生 hook 时自己退出。用户级副本用 jq 或 Python 3 核对项目配置中的事件和命令，无法解析时继续执行。`preToolUse` 不处理 shell，shell 只走 `beforeShellExecution`，避免同一命令被两个事件调用两次。
 - **Pi**：根 `package.json` 的 `pi.extensions` → `plugins/flow/extensions/pi.ts`，`./jstack install-pi`（或 `install --all`）安装 package 后自动加载。项目级安装在 `.pi/extensions/jstack-flow-gates.ts` 写相对路径入口，转出 `.jstack/vendor/plugins/flow/extensions/pi.ts`。扩展用 `import.meta.url` 找到 flow 根，脚本从对应安装树的 `hooks/` 执行。Pi 的项目扩展需要信任；项目 smoke 对临时安装使用 `--approve`。
 - **OMP**：OMP 的插件清单只收 skills / agents，不收 flow 的 Claude 格式 hooks。用户级 `./jstack install` 把 `plugins/flow/extensions/omp.ts` 写成 `~/.omp/agent/extensions/jstack-flow-gates.ts`；项目级安装写 `.omp/extensions/jstack-flow-gates.ts`，相对路径转出 `.jstack/vendor/plugins/flow/extensions/omp.ts`。OMP 的对应 extension 目录加载入口文件。
 - **Codex**：项目级安装写 `.codex/hooks.json`。命令从会话目录解析 Git 根并执行该 checkout 的 vendor 脚本。交互式会话在审查并信任 hooks 后执行。已审查来源的自动化测试可使用 `--dangerously-bypass-hook-trust`。

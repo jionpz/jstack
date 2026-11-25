@@ -206,10 +206,11 @@ for f in "$ST" "$H/prompt.sh" "$H/stop.sh" "$H/guard.sh"; do
 done
 if command -v jq >/dev/null; then
 	t "hooks.json 注册了 UserPromptSubmit、PreToolUse(shell+edit)、Stop" jq -e '
-		(.hooks.UserPromptSubmit[0].hooks[0].command | endswith("/hooks/prompt.sh")) and
-		([.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[0].command | endswith("/hooks/guard.sh")] | length == 1) and
-		([.hooks.PreToolUse[] | select(.matcher == "Write|Edit|MultiEdit|NotebookEdit") | .hooks[0].command | endswith("/hooks/guard.sh")] | length == 1) and
-		(.hooks.Stop[0].hooks[0].command | endswith("/hooks/stop.sh"))' "$H/hooks.json"
+		(.hooks.UserPromptSubmit[0].hooks[0].command | contains("/hooks/prompt.sh")) and
+		([.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[0].command | contains("/hooks/guard.sh")] | length == 1) and
+		([.hooks.PreToolUse[] | select(.matcher == "Write|Edit|MultiEdit|NotebookEdit") | .hooks[0].command | contains("/hooks/guard.sh")] | length == 1) and
+		(.hooks.Stop[0].hooks[0].command | contains("/hooks/stop.sh")) and
+		([.hooks[][] | .hooks[]?.command // empty] | all(startswith("JSTACK_CURSOR_HOOK_SOURCE=claude-plugin exec ")))' "$H/hooks.json"
 	t "hooks.cursor.json 注册了 Cursor 原生事件" jq -e '
 		(.version == 1) and
 		(.hooks.beforeShellExecution[0].command | endswith("/hooks/guard.sh")) and
@@ -261,7 +262,8 @@ for mode in jq nojq; do
 		out=$(printf "{\"stop_hook_active\":false}" | JSTACK_SESSION_ID=other-session PI_SESSION_ID=$1 "$2" "$3")
 		[ -z "$out" ]' _ "$SID" "$BASH" "$H/stop.sh"
 	t "[$mode] guard.sh 对 Cursor 的 beforeShellExecution 返回 permission=ask" cursor_asks 'rm -rf build' 'Recursive forced delete (`rm -rf` and its variants)'
-	t "[$mode] guard.sh 对 Cursor 的 preToolUse 降级为 deny" cursor_denies 'rm -rf build' 'Recursive forced delete (`rm -rf` and its variants)'
+	t "[$mode] guard.sh 对 Cursor 的 preToolUse 编辑工具降级为 deny" cursor_edit_denies Write '/tmp/.env' 'Writing an environment file that can hold secrets'
+	t "[$mode] Cursor preToolUse 不重复处理 shell" silent hook guard "$(cursor_pre_in 'rm -rf build')"
 	t "[$mode] guard.sh 对 Codex 的 PreToolUse 降级为 deny" codex_denies 'rm -rf build' 'Recursive forced delete (`rm -rf` and its variants)'
 	t "[$mode] stop.sh 对 Cursor 的 completed 返回 followup_message" cursor_blocks
 	t "[$mode] stop.sh 对 Cursor 的 aborted 放行" silent hook stop "$(cursor_stop_in aborted)"
@@ -458,7 +460,7 @@ if command -v jq >/dev/null; then
 	done
 	t "Cursor beforeShellExecution 放行字面查询" silent hook guard "$(cursor_shell_in 'rg sudo src/flow')"
 	t "Cursor preToolUse 放行字面查询" silent hook guard "$(cursor_pre_in 'rg sudo src/flow')"
-	t "Cursor preToolUse 检查引号内的命令展开" cursor_denies 'printf "%s" "$( sudo true )"' 'Any `sudo`'
+	t "Cursor beforeShellExecution 检查引号内的命令展开" cursor_asks 'printf "%s" "$( sudo true )"' 'Any `sudo`'
 	t "Codex PreToolUse 放行字面查询" silent hook guard "$(codex_input 'rg sudo src/flow')"
 	t "guard.sh 保留命令展开的检查" asks 'printf "%s" "$( sudo true )"' 'Any `sudo`'
 	t "guard.sh 保留 Zsh 路径展开的检查" asks "rg -e 'example sudo text' =cat" 'Any `sudo`'
