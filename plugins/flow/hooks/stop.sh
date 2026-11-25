@@ -26,6 +26,7 @@ main() {
 	local input evt cursor=0 file st reason status loop_count missing cwd
 	input=$(cat)
 	evt=$(jstack_json_str hook_event_name "$input")
+	jstack_cursor_defer "$0" stop && return 0
 	if [ "$evt" = stop ]; then cursor=1; fi
 	if [ "$cursor" -eq 0 ]; then
 		jstack_json_true stop_hook_active "$input" && return 0

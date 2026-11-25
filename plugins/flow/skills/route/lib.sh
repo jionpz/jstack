@@ -181,12 +181,43 @@ jstack_stage_rows() {
 
 jstack_has_jq() { [ -z "${JSTACK_NO_JQ:-}" ] && command -v jq >/dev/null 2>&1; }
 
+# 无 jq 时把 JSON 字符串里的转义还原成实际字符；支持 JSON 的常用单字符转义。
+jstack_json_unescape() {
+	awk '
+		{
+			s = $0
+			out = ""
+			for (i = 1; i <= length(s); i++) {
+				c = substr(s, i, 1)
+				if (c != "\\") {
+					out = out c
+					continue
+				}
+				i++
+				if (i > length(s)) {
+					out = out "\\"
+					break
+				}
+				c = substr(s, i, 1)
+				if (c == "n") out = out "\n"
+				else if (c == "r") out = out "\r"
+				else if (c == "t") out = out "\t"
+				else if (c == "b") out = out "\b"
+				else if (c == "f") out = out "\f"
+				else out = out c
+			}
+			printf "%s", out
+		}'
+}
+
 # hook 输入 $2 里顶层字符串字段 $1 的值。
 jstack_json_str() {
 	if jstack_has_jq; then
 		printf '%s' "$2" | jq -r --arg k "$1" '.[$k] // empty | strings'
 	else
-		printf '%s' "$2" | tr '\n' ' ' | sed -nE "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"([^\"]*)\".*/\\1/p" | head -1
+		printf '%s' "$2" | tr '\n' ' ' |
+			sed -nE 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*"((\\.|[^"\\])*)".*/\1/p' |
+			head -1 | jstack_json_unescape
 	fi
 }
 
@@ -224,6 +255,62 @@ jstack_hook_sid() {
 jstack_is_codex() { [ -n "$(jstack_json_str turn_id "$1")" ]; }
 
 jstack_json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
+# Cursor 配置文件 $1 的事件 $2 是否注册了命令 $3。
+jstack_cursor_config_has() {
+	local file=$1 event=$2 command=$3
+	[ -f "$file" ] || return 1
+	if jstack_has_jq; then
+		jq -e --arg event "$event" --arg command "$command" \
+			'(.hooks[$event] // []) | any(.command == $command)' "$file" >/dev/null 2>&1
+		return
+	fi
+	command -v python3 >/dev/null 2>&1 || return 1
+	python3 -I - "$file" "$event" "$command" <<'PY'
+import json
+import sys
+
+path, event, command = sys.argv[1:]
+try:
+    with open(path, encoding="utf-8") as config:
+        entries = json.load(config).get("hooks", {}).get(event, [])
+except (OSError, ValueError, AttributeError):
+    sys.exit(1)
+sys.exit(not (isinstance(entries, list) and any(
+    isinstance(entry, dict) and entry.get("command") == command for entry in entries
+)))
+PY
+}
+
+# Cursor 里同一个 guard / prompt / stop 可能同时由项目原生 hooks、本地 Cursor 插件和
+# Claude 兼容导入加载。项目投影存在时，让非项目副本退出，只执行项目 vendor 那一份。
+# 只在 Cursor 会话、项目事件确实注册了同一脚本时生效；无法解析配置就继续执行。
+jstack_cursor_defer() {
+	local script=$1 event=$2 source=${JSTACK_CURSOR_HOOK_SOURCE:-} name self claude_plugins local_hook project target command
+	[ -n "${CURSOR_VERSION:-}" ] || return 1
+	name=$(basename "$script")
+	self=$(cd "$(dirname "$script")" 2>/dev/null && pwd -P)/$name || return 1
+	if [ -z "$source" ] && claude_plugins=$(cd "$HOME/.claude/plugins" 2>/dev/null && pwd -P); then
+		case $self in "$claude_plugins"/*) source=claude-plugin ;; esac
+	fi
+	local_hook="$HOME/.cursor/plugins/local/flow/hooks/$name"
+	if [ -n "$source" ] && [ -x "$local_hook" ] && jstack_cursor_config_has \
+		"$(dirname "$local_hook")/hooks.cursor.json" "$event" "\"\${CURSOR_PLUGIN_ROOT}\"/hooks/$name"; then
+		return 0
+	fi
+	project=${CURSOR_PROJECT_DIR:-}
+	if [ "$source" = claude-project ]; then
+		project=${project:-${CLAUDE_PROJECT_DIR:-}}
+	fi
+	[ -n "$project" ] || return 1
+	project=$(cd "$project" 2>/dev/null && pwd -P) || return 1
+	target="$project/.jstack/vendor/plugins/flow/hooks/$name"
+	[ -x "$target" ] || return 1
+	target=$(cd "$(dirname "$target")" && pwd -P)/$name || return 1
+	[ "$self" != "$target" ] || [ "$source" = claude-project ] || return 1
+	command="\"\${CURSOR_PROJECT_DIR}/.jstack/vendor/plugins/flow\"/hooks/$name"
+	jstack_cursor_config_has "$project/.cursor/hooks.json" "$event" "$command"
+}
 
 # 仓库根：JSTACK_REPO 优先；否则从当前目录向上，遇到 .jstack/config.json 或 .git 停。
 jstack_repo_root() {
@@ -292,6 +379,13 @@ jstack_cfg_summary() {
 jstack_cfg_patterns() {
 	jstack_cfg '(.must_stop // [])[] | select(.regex != null and .regex != "") |
 		"\(.hook // .action // "repo")\u0001\(.regex)"' | tr '\001' '\t'
+}
+
+# 仓库追加的 must-stop 路径模式，每行 "hook<TAB>路径正则<TAB>允许正则"。
+jstack_cfg_path_patterns() {
+	jstack_cfg '(.must_stop // [])[] | select(.path_regex != null and .path_regex != "") |
+		"\(.hook // .action // "repo")\u0001\(.path_regex)\u0001\(.allow_path_regex // "")"' |
+		tr '\001' '\t'
 }
 
 jstack_run_verify() {

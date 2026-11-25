@@ -101,7 +101,8 @@ branch_ready` 改为分支完成。与 ticket 模式一样，它只声明完成�
 
 Keel 1.0 将 `flow:verify` 派给单独的 QA 阶段，每次尝试接收一份验证结果。
 需要两份独立报告的任务必须由 launcher 明确支持双派发与结果汇总。只有单份结果时，
-verify 应报告 `blocked`。交互式 route 自己派发和收集验证报告。
+verify 应报告 `blocked`。Keel 1.0 会接受单份通过报告，双验证需要 launcher 增加门禁。
+交互式 route 自己派发和收集验证报告。
 
 包会嵌入 route、阶段表、must-stop、四个 provider 的完整内容，读取
 `tool-policy.json` 并生成 stage/profile/harness 映射及 `content_digest`。`sources`

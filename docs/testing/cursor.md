@@ -33,7 +33,7 @@ done
 bash "$HOME/.cursor/plugins/local/flow/skills/route/locate.sh"
 ```
 
-`./jstack smoke cursor` 直接调用 Cursor.app 内的 `plugins-loader.cjs`，断言三个插件都被加载、`flow` 有 `route`、`pstack` 有 `poteto-mode` 和 `poteto-agent`、`spec` 有 `grill-with-docs`、`flow` 的 hooks 配置里有 `beforeShellExecution` / `beforeSubmitPrompt` / `stop`，并在 Cursor 布局下运行 `locate.sh`。随后按 Cursor 的 hook 协议喂三份输入，确认安装副本里的 guard 返回 `permission: ask`、stop 返回 `followup_message`、prompt 返回 `additional_context`。它不启动模型，也不覆盖下面的交互检查。
+`./jstack smoke cursor` 直接调用 Cursor.app 内的 `plugins-loader.cjs`，断言三个插件都被加载、`flow` 有 `route`、`pstack` 有 `poteto-mode` 和 `poteto-agent`、`spec` 有 `grill-with-docs`、`flow` 的 hooks 配置里有 `beforeShellExecution` / `preToolUse` / `beforeSubmitPrompt` / `stop`，并在 Cursor 布局下运行 `locate.sh`。随后按 Cursor 的 hook 协议喂四份输入：shell guard 返回 `permission: ask`，编辑工具 guard 返回 `permission: deny`，stop 返回 `followup_message`，prompt 返回 `additional_context`。它不启动模型，也不覆盖下面的交互检查。
 
 第二条命令应打印 7 行，覆盖 `poteto-mode`、`setup-matt-pocock-skills`、`grill-with-docs`、`to-spec`、`to-tickets`、`wayfinder`、`handoff`，且每行路径都存在。
 
@@ -47,9 +47,9 @@ bash "$HOME/.cursor/plugins/local/flow/skills/route/locate.sh"
 6. **装的是转换产物**：`~/.cursor/plugins/local/pstack/agents/poteto-agent.md` 保留 `is_background: true`；`pstack/skills/` 里没有「If you are not in Cursor, read the harness adapter」的引导。这说明 Cursor 用的是从 Claude 树转换出的产物，不是 Claude Code 树。
 7. **spec/flow 的 Cursor manifest**：`~/.cursor/plugins/local/spec/.cursor-plugin/plugin.json` 的 `skills` 是一个 10 项的数组；`flow` 的 `skills` 是 `"./skills/"`，`hooks` 指向 `"./hooks/hooks.cursor.json"`。
 8. **阶段提示**：让 route 进入某个阶段后，再发一条消息，回复的上下文里应出现「jstack 阶段门禁：当前阶段 …」。没有阶段记录时不应出现。
-9. **must-stop 确认**：让 agent 运行 `rm -rf build`（或 `git push --force`），Cursor 应弹出命令确认，提示里带 `jstack must-stop:`；取消后命令不执行。
+9. **must-stop 确认**：让 agent 运行 `rm -rf build`（或 `git push --force`），Cursor 应弹出命令确认，提示里带 `jstack must-stop:`；取消后命令不执行。再让 agent 用编辑工具写 `.env`，`preToolUse` 无法可靠弹出确认，应直接拒绝。
 10. **Stop 门禁**：当前阶段在 execute 或 verify、没有记录任何 `stage.sh evidence`，让 agent 直接宣布完成；Cursor 应自动追加一条 `followup_message`，内容包含「jstack verify 门禁」并把 agent 拉回验证。记录一条证据后再让它结束，不应再被拦。
-11. **项目级安装的 hooks**：提交 `./jstack install --all --scope project` 的产物，在另一个路径 clone 后打开 Cursor。保持第三方导入开启，重复第 8–10 项。在 Hooks output 里确认一次事件只得到一次 jstack 门禁响应。旧工具和业务 hooks 的响应另行核对。
+11. **项目级安装的 hooks**：提交 `./jstack install --all --scope project` 的产物，在另一个路径 clone 后打开 Cursor。保持第三方导入开启，并保留用户级本地 flow 插件，重复第 8–10 项。在 Hooks output 里确认 prompt、shell guard、编辑 guard、Stop 各只得到一次 jstack 门禁响应；项目 vendor 应成为 owner，用户级插件和 Claude 兼容导入的同名副本应退出。旧工具和业务 hooks 的响应另行核对。
 
 ## 失败时记录
 

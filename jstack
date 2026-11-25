@@ -693,7 +693,7 @@ const { loadPlugins } = require(loader);
     process.exit(1);
   }
   const h = by.get('flow')?.hooks?.config?.hooks || {};
-  const missingHooks = ['beforeShellExecution', 'beforeSubmitPrompt', 'stop'].filter(e => !Array.isArray(h[e]) || h[e].length === 0);
+	const missingHooks = ['beforeShellExecution', 'preToolUse', 'beforeSubmitPrompt', 'stop'].filter(e => !Array.isArray(h[e]) || h[e].length === 0);
   if (missingHooks.length) {
     console.error(`Cursor loader: flow hooks 缺少 ${missingHooks.join(', ')}`);
     process.exit(1);
@@ -731,6 +731,12 @@ JS
 		say "✗ Cursor: beforeShellExecution 没有对 rm -rf 返回 ask"
 		return 1
 	fi
+	if ! printf '{"conversation_id":"cursor-smoke","hook_event_name":"preToolUse","tool_name":"Write","tool_input":{"file_path":"/tmp/.env"}}' |
+		JSTACK_STATE_DIR="$WORK/smoke/state" bash "$root/flow/hooks/guard.sh" >"$out" 2>/dev/null ||
+		! grep -q '"permission":"deny"' "$out" || ! grep -qF 'jstack must-stop' "$out"; then
+		say "✗ Cursor: preToolUse 没有拒绝写 .env"
+		return 1
+	fi
 	if ! printf '{"conversation_id":"cursor-smoke","hook_event_name":"stop","status":"completed","loop_count":0}' |
 		JSTACK_STATE_DIR="$WORK/smoke/state" bash "$root/flow/hooks/stop.sh" >"$out" 2>/dev/null ||
 		! grep -q '"followup_message"' "$out" || ! grep -qF 'jstack verify' "$out"; then
@@ -743,7 +749,7 @@ JS
 		say "✗ Cursor: beforeSubmitPrompt 没有注入阶段提示"
 		return 1
 	fi
-	say "✓ Cursor: hooks 按 Cursor 协议工作（must-stop ask、Stop 拦下、阶段提示）"
+	say "✓ Cursor: hooks 按 Cursor 协议工作（shell ask、编辑 deny、Stop 拦下、阶段提示）"
 	out="$WORK/smoke/cursor-route.txt"
 	if bash "$root/flow/skills/route/locate.sh" >"$out" 2>"$out.err"; then
 		if [ "$(cut -f1 "$out")" = "$(local_providers)" ]; then
@@ -2057,24 +2063,25 @@ SH
 		[(.hooks.UserPromptSubmit // []), (.hooks.PreToolUse // []), (.hooks.Stop // [])]
 		| map(.[]? | .hooks[]?.command // "")
 		| map(select(contains($mark))) as $ours
-		| (($ours | length) == 3) and ([$ours[] | select(contains("hooks/hooks"))] | length) == 0
+		| (($ours | length) == 4) and ([$ours[] | select(contains("hooks/hooks"))] | length) == 0
 	' "$r/.claude/settings.json" >/dev/null 2>&1; then
-		say "✗ .claude/settings.json 里的 flow hooks 不是三条"
+		say "✗ .claude/settings.json 里的 flow hooks 不完整"
 		rc=1
 	fi
 	if ! jq -e '
 		(.version == 1) and
-		([.hooks[][].command // empty] | map(select(contains(".jstack/vendor/plugins/flow"))) | length == 3) and
+		([.hooks[][].command // empty] | map(select(contains(".jstack/vendor/plugins/flow"))) | length == 4) and
 		([.hooks[][].command // empty] | map(select(contains("hooks/hooks"))) | length == 0)
 	' "$r/.cursor/hooks.json" >/dev/null 2>&1; then
-		say "✗ .cursor/hooks.json 里的 flow hooks 不是三条"
+		say "✗ .cursor/hooks.json 里的 flow hooks 不完整"
 		rc=1
 	fi
 	if ! jq -e '
-		([.hooks[][] | .hooks[]?.command // empty] | map(select(contains(".jstack/vendor/plugins/flow"))) | length == 3) and
-		([.hooks[][] | .hooks[]?.command // empty] | map(select(contains("git rev-parse --show-toplevel"))) | length == 3) and
+		([.hooks[][] | .hooks[]?.command // empty] | map(select(contains(".jstack/vendor/plugins/flow"))) | length == 4) and
+		([.hooks[][] | .hooks[]?.command // empty] | map(select(contains("git rev-parse --show-toplevel"))) | length == 4) and
 		([.hooks[][] | .hooks[]?.command // empty] | map(select(contains("hooks/hooks"))) | length == 0) and
-		(.hooks.PreToolUse[0].matcher == "Bash")
+		([.hooks.PreToolUse[].matcher] | index("Bash") != null) and
+		([.hooks.PreToolUse[].matcher] | index("apply_patch") != null)
 	' "$r/.codex/hooks.json" >/dev/null 2>&1; then
 		say "✗ .codex/hooks.json 里的 flow hooks 没有从当前 Git 根目录解析 vendor"
 		rc=1
@@ -2621,8 +2628,10 @@ cmd_check() {
 			say "✗ upstream/$PLUGIN 与 upstream/$PLUGIN.lock.json 记录的内容对不上：副本只能由 ./jstack sync 写入"
 			rc=1
 		fi
-		# 上游 adapter 只翻译 Markdown 里的 Cursor 名称，脚本里写死的 Cursor 路径要靠补丁修。
-		if hits=$(grep -rnIE '(\$HOME|~)/\.cursor/|agent-transcripts' --exclude='*.md' --exclude-dir=node_modules "$OUT"); then
+		# 只检查跨宿主的上游脚本。flow 自己维护各宿主的原生安装入口。
+		if [ -n "$OWN" ]; then
+			:
+		elif hits=$(grep -rnIE '(\$HOME|~)/\.cursor/|agent-transcripts' --exclude='*.md' --exclude-dir=node_modules "$OUT"); then
 			say "✗ plugins/$PLUGIN 的脚本里还有写死的 Cursor 路径，需要补丁："
 			printf '%s\n' "$hits" | sed "s|$ROOT/||; s/^/  /" | head -20
 			rc=1
@@ -2680,6 +2689,7 @@ cmd_check() {
 				elif ! jq -e '
 					(.version == 1) and
 					((.hooks.beforeShellExecution // []) | length == 1) and
+					((.hooks.preToolUse // []) | length == 1) and
 					((.hooks.beforeSubmitPrompt // []) | length == 1) and
 					((.hooks.stop // []) | length == 1)
 				' "$OUT/$hooks_rel" >/dev/null 2>&1; then
@@ -4270,24 +4280,21 @@ install_claude_hooks() { # <仓库> <dry>：项目级 hooks 指向 vendor，重�
 	local repo=$1 dry=$2 settings new
 	settings="$repo/.claude/settings.json"
 	if [ "$dry" -eq 1 ]; then
-		say "  写 .claude/settings.json 的 flow hooks（UserPromptSubmit / PreToolUse / Stop）"
+		say "  写 .claude/settings.json 的 flow hooks（UserPromptSubmit / PreToolUse shell+edit / Stop）"
 		return 0
 	fi
 	mkdir -p "$repo/.claude"
 	new=$(jq -n \
-		--arg root '${CLAUDE_PROJECT_DIR}/.jstack/vendor/plugins/flow' \
-		--arg cursor_root '${CURSOR_PROJECT_DIR}/.jstack/vendor/plugins/flow' '
-		def native($event; $hook):
-			"if [ -n \"${CURSOR_VERSION:-}\" ] && command -v jq >/dev/null 2>&1 && " +
-			"jq -e --arg command \u0027\u0022" + $cursor_root + "\u0022/hooks/" + $hook + ".sh\u0027 \u0027" +
-			"(.hooks." + $event + " // []) | any(.command == $command and .timeout == " +
-			(if $hook == "stop" then "10 and .loop_limit == 3" else "10" end) + ")\u0027 " +
-			"\"${CURSOR_PROJECT_DIR:-${CLAUDE_PROJECT_DIR:-.}}/.cursor/hooks.json\" >/dev/null 2>&1; " +
-			"then exit 0; fi; exec \"" + $root + "/hooks/" + $hook + ".sh\"";
+		--arg root '${CLAUDE_PROJECT_DIR}/.jstack/vendor/plugins/flow' '
+		def hook($script):
+			{type:"command", command:("JSTACK_CURSOR_HOOK_SOURCE=claude-project exec \"" + $root + "/hooks/" + $script + ".sh\""), timeout:10};
 		{hooks: {
-			UserPromptSubmit: [{hooks: [{type:"command", command:native("beforeSubmitPrompt"; "prompt"), timeout:10}]}],
-			PreToolUse: [{matcher:"Bash", hooks: [{type:"command", command:native("beforeShellExecution"; "guard"), timeout:10}]}],
-			Stop: [{hooks: [{type:"command", command:native("stop"; "stop"), timeout:10}]}]
+			UserPromptSubmit: [{hooks: [hook("prompt")]}],
+			PreToolUse: [
+				{matcher:"Bash", hooks: [hook("guard")]},
+				{matcher:"Write|Edit|MultiEdit|NotebookEdit", hooks: [hook("guard")]}
+			],
+			Stop: [{hooks: [hook("stop")]}]
 		}}
 	') || die "写 $settings 失败：现有内容不是合法的 JSON"
 	printf '%s\n' "$new" >"$settings"
@@ -4297,13 +4304,14 @@ install_cursor_hooks() { # <仓库> <dry>：项目级 Cursor hooks 指向 vendor
 	local repo=$1 dry=$2 hooks new
 	hooks="$repo/.cursor/hooks.json"
 	if [ "$dry" -eq 1 ]; then
-		say "  写 .cursor/hooks.json 的 flow hooks（beforeShellExecution / beforeSubmitPrompt / stop）"
+		say "  写 .cursor/hooks.json 的 flow hooks（beforeShellExecution / preToolUse / beforeSubmitPrompt / stop）"
 		return 0
 	fi
 	mkdir -p "$repo/.cursor"
 	new=$(jq -n --arg root '${CURSOR_PROJECT_DIR}/.jstack/vendor/plugins/flow' '
 		{version:1, hooks:{
 			beforeShellExecution:[{command:("\"" + $root + "\"/hooks/guard.sh"), timeout:10}],
+			preToolUse:[{command:("\"" + $root + "\"/hooks/guard.sh"), timeout:10}],
 			beforeSubmitPrompt:[{command:("\"" + $root + "\"/hooks/prompt.sh"), timeout:10}],
 			stop:[{command:("\"" + $root + "\"/hooks/stop.sh"), timeout:10, loop_limit:3}]
 		}}
@@ -4315,7 +4323,7 @@ install_codex_hooks() { # <仓库> <dry>：项目级 hooks 指向 vendor，重�
 	local repo=$1 dry=$2 hooks new
 	hooks="$repo/.codex/hooks.json"
 	if [ "$dry" -eq 1 ]; then
-		say "  写 .codex/hooks.json 的 flow hooks（UserPromptSubmit / PreToolUse / Stop）"
+		say "  写 .codex/hooks.json 的 flow hooks（UserPromptSubmit / PreToolUse shell+patch / Stop）"
 		return 0
 	fi
 	mkdir -p "$repo/.codex"
@@ -4324,7 +4332,10 @@ install_codex_hooks() { # <仓库> <dry>：项目级 hooks 指向 vendor，重�
 			"repo=$(git rev-parse --show-toplevel) && exec \"$repo/.jstack/vendor/plugins/flow/hooks/" + $hook + ".sh\"";
 		{hooks:{
 			UserPromptSubmit:[{hooks:[{type:"command", command:generated("prompt"), timeout:10}]}],
-			PreToolUse:[{matcher:"Bash", hooks:[{type:"command", command:generated("guard"), timeout:10}]}],
+			PreToolUse:[
+				{matcher:"Bash", hooks:[{type:"command", command:generated("guard"), timeout:10}]},
+				{matcher:"apply_patch", hooks:[{type:"command", command:generated("guard"), timeout:10}]}
+			],
 			Stop:[{hooks:[{type:"command", command:generated("stop"), timeout:10}]}]
 		}}
 	') || die "写 $hooks 失败：现有内容不是合法的 JSON"
