@@ -9,13 +9,14 @@ route=${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd -P)}/skills/route
 . "$route/lib.sh" || exit 0
 
 main() {
-	local input evt tool cmd segs pats line hook rest re src hit_src= n best= hit= tab action reason cfg
+	local input evt tool cmd literal_cmd= segs builtin_segs= match_segs pats line hook rest re src hit_src= n best= hit= tab action reason cfg
 	input=$(cat)
 	evt=$(jstack_json_str hook_event_name "$input")
 	case $evt in
 	beforeShellExecution)
 		# Cursor 的 shell 审批钩子：输入是顶层的 command，没有 tool_name。
 		cmd=$(jstack_json_str command "$input")
+		if jstack_has_jq; then literal_cmd=$cmd; fi
 		;;
 	preToolUse)
 		# Cursor 也认 Claude 的 preToolUse，但它不执行 ask；这里只认 Shell，输出按下面的降级处理。
@@ -23,11 +24,16 @@ main() {
 		[ -z "$tool" ] || [ "$tool" = Shell ] || return 0
 		cmd=$(printf '%s' "$input" | tr '\n' ' ' |
 			sed -nE 's/.*"tool_input"[[:space:]]*:[[:space:]]*\{[^}]*"command"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' | head -1)
+		if jstack_has_jq; then
+			literal_cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty | strings') || literal_cmd=
+		fi
 		;;
 	*)
 		tool=$(jstack_json_str tool_name "$input")
 		[ -z "$tool" ] || [ "$tool" = Bash ] || return 0
-		if ! jstack_has_jq || ! cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty | strings'); then
+		if jstack_has_jq && cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty | strings'); then
+			literal_cmd=$cmd
+		else
 			cmd=$(printf '%s\n' "$input" | awk '{ gsub(/\\n/, "\n"); gsub(/\\t|"/, " "); print }')
 		fi
 		;;
@@ -52,6 +58,9 @@ main() {
         return 0
     fi
     segs=$(printf '%s\n' "$cmd" | awk '{ gsub(/&&|\|\||[;|]/, "\n"); print }')
+	if [ -n "$literal_cmd" ]; then
+		builtin_segs=$(printf '%s\n' "$literal_cmd" | awk -f "$route/../../hooks/literal-command.awk") || builtin_segs=
+	fi
 	# 内置模式加仓库追加的模式，每条带来源列：builtin / repo。
 	pats=$(
 		awk '/^```patterns[ \t]*$/ { f = 1; next } f && /^```/ { exit } f && NF' "$route/must-stop.md" |
@@ -67,7 +76,9 @@ main() {
 		re=${rest%%"$tab"*}
 		src=${rest#*"$tab"}
 		[ -n "$hook" ] && [ "$re" != "$rest" ] || continue
-		n=$(printf '%s\n' "$segs" | grep -nE -- "$re" | head -1 | cut -d: -f1)
+		match_segs=$segs
+		[ "$src" != builtin ] || match_segs=${builtin_segs:-$segs}
+		n=$(printf '%s\n' "$match_segs" | grep -nE -- "$re" | head -1 | cut -d: -f1)
 		[ -n "$n" ] || continue
 		if [ -z "$best" ] || [ "$n" -lt "$best" ]; then best=$n hit=$hook hit_src=$src; fi
 	done <<<"$pats"
