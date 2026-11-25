@@ -12,7 +12,7 @@ JStack 的必需 CI 是 [`.github/workflows/check.yml`](../.github/workflows/che
 
 - 校验 upstream + patches 的构建产物一致性、manifest、插件与安装配置、工作流 hook、shell 兼容、模型配置逻辑及 `evals/tasks` 的样本自检。
 - 校验 `claude plugin validate`。CI 固定用于校验 manifest 的 Claude Code CLI 版本；升级应单独提交、在两个系统上通过后再合并。
-- **不执行**消耗 token 的 `./jstack eval`、需要真实模型与登录态的 smoke。它们应在特性变更和发布验收时独立进行，不能从静态 CI 绿色推断模型效果。
+- 发布 smoke 单独运行，需要宿主和登录态。发布支持分级见 [ADR-0002](adr/0002-flow-is-the-product.md#发布支持分级)。
 
 ## 诊断顺序
 
@@ -33,4 +33,3 @@ JStack 的必需 CI 是 [`.github/workflows/check.yml`](../.github/workflows/che
 
 - GitHub-hosted runner 的容量、系统补丁及公共 npm 服务无法完全冻结或由仓库修复。版本固定只是减少不必要的漂移。
 - 如果校验器、macOS 或 Ubuntu 标签需要升级，应通过独立 PR 调整固定版本，观察双平台结果，并在 PR 中记录新的版本。
-- `./jstack check` 的样本自检验证评测题“初始状态失败、参考解通过”的正确性，**不等价于对模型表现的评测**。修改 `evals/` 后仍应按 [维护规则](../AGENTS.md) 比较模型评测基线。

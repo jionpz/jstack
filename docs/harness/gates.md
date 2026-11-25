@@ -1,6 +1,6 @@
 # Harness 门禁能力
 
-flow 的三个门禁（阶段提示、验证门禁、红线守卫）的判定逻辑都在 `src/flow/hooks/*.sh`，与 harness 无关。各 harness 用自己的事件把输入翻译成 Claude Code 的 hook 协议，再执行同一个脚本；状态文件格式和会话 id 规则也共用 `lib.sh`。
+flow 的三个门禁（阶段提示、验证门禁、红线守卫）共用 `src/flow/hooks/` 中的判定逻辑。各 harness 用自己的事件调用同一个门禁脚本，状态文件和会话 id 规则也共用 `lib.sh`。
 
 本文件记录每个 harness 能承载哪些门禁、怎么接、哪些地方降级。Codex 的三个门禁也已接：项目级安装把 hooks 写进 `.codex/hooks.json`；它的 hooks 默认要信任后才执行，非交互运行要加 `--dangerously-bypass-hook-trust`。Workloop 的会话 id 已接，但平台没有 Stop hook，门禁只能降级为 agent 自检，见“降级”第 7 条。
 
@@ -15,7 +15,7 @@ flow 的三个门禁（阶段提示、验证门禁、红线守卫）的判定逻
 
 “需适配”不是没实现：三个门禁在 Pi、OMP 和 Codex 上都已实现，只是需要各自的事件/协议翻译，并有下面的降级。
 
-`./jstack check --smoke` 与 `./jstack smoke all` 要求 Claude Code 和 Pi 的烟测通过；OMP、Cursor、Codex 缺失或失败会在输出里报告。单独运行 `./jstack smoke <harness>` 时，被指定的 harness 必须可用并通过。发布还需通过 Claude Code 和 Pi 的评测，见 [ADR-0002](../adr/0002-flow-is-the-product.md#发布支持分级)。
+`./jstack check --smoke` 与 `./jstack smoke all` 要求 Claude Code 和 Pi 的 smoke 通过。OMP、Cursor、Codex 缺失或失败会在输出里报告。单独运行 `./jstack smoke <harness>` 时，被指定的 harness 必须可用并通过。发布支持分级见 [ADR-0002](../adr/0002-flow-is-the-product.md#发布支持分级)。
 
 ## 接入方式
 
@@ -28,6 +28,12 @@ flow 的三个门禁（阶段提示、验证门禁、红线守卫）的判定逻
 验证门禁可执行仓库配置的验证命令并写入回执。状态文件的路径和格式见 `lib.sh`。任务正常收尾时 `stage.sh` 在同一级的 `runs.jsonl` 追加一行运行记录。没有收尾的任务留在 `runs/active/`，`./jstack runs` 将其标为未完成。记录包含仓库、规模、阶段路径、证据、默认决定、打断次数和耗时等元数据。
 
 提示 hook 每轮输出 `jstack 提示门禁注入：session=<id>`，尚未执行 `stage.sh start` 时也输出，供 agent 核对本会话确实收到过 harness 注入。看到源码中的字符串、配置存在或手动运行 hook 都不算收到注入；这个标记只证明提示 hook 运行，不能代替 Stop/guard 的实际拦截证据。
+
+## 红线守卫如何识别只读参数
+
+守卫用 `jq` 从 hook 事件中提取准确的命令文本。对单条 `rg`、`grep`、`cat` 或 `printf`，如果所有参数都是字面量，且选项与格式已知只用于搜索、读文件或打印，内置规则只匹配命令名。`rg sudo src/flow` 中的 `sudo` 因此可以作为普通搜索词使用。
+
+展开、重定向、管道、复合命令、未知选项和缺少 `jq` 的环境继续使用原来的分段匹配。仓库追加的 `must_stop.regex` 始终读取原分段，仍可要求确认特定搜索。静态检查以工具的标准行为为准，实际命令解析和权限由运行环境决定。
 
 ## 会话 id
 

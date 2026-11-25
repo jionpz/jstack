@@ -129,11 +129,11 @@ JStack 的核心是 **flow**，不是把第三方 skills 简单放在一起。�
 
 | 插件 | 承担的工作 |
 |---|---|
-| **flow** | JStack 自己维护的流程控制、任务分级、默认执行、默认审查与归档 |
+| **flow** | JStack 自己维护的流程控制、任务分级、默认执行、默认审查、默认落地与归档 |
 | **spec** | 需求澄清、领域建模、需求说明、任务拆分和会话交接；来源于 [Matt Pocock 的 skills](https://github.com/mattpocock/skills) |
 | **pstack** | 适合多个独立任务单或跨天工程的深度执行与编排；来源于 [Lauren Tan 的 pstack](https://github.com/cursor/plugins/tree/main/pstack) |
 
-普通任务默认使用 `flow:execute`，较复杂的多任务工作可切换到 `pstack:poteto-mode`。同一任务只保留一个主要执行者，避免不同编排器重复安排实现、测试与审查。第三方实现被视为可维护、可替换的阶段提供者，而不是 JStack 的流程定义本身。[设计决策：ADR-0002](docs/adr/0002-flow-is-the-product.md)
+普通任务默认使用 `flow:execute`；`flow:review` 和 `flow:land` 负责默认审查与 PR-ready 落地。较复杂的多任务工作可切换到 `pstack:poteto-mode`。同一任务只保留一个主要执行者，避免不同编排器重复安排实现、测试、审查与落地。第三方实现被视为可维护、可替换的阶段提供者，而不是 JStack 的流程定义本身。[设计决策：ADR-0002](docs/adr/0002-flow-is-the-product.md)
 
 ## 人工决策与安全边界
 
@@ -176,18 +176,15 @@ JStack 支持把模型按职责分成两层：`premium` 负责架构判断、关
 ./jstack doctor --repo <dir>  # 检查项目安装、版本和锁文件
 ./jstack check --smoke         # 发布检查，要求 Claude Code 和 Pi 的真实 smoke 通过
 ./jstack smoke claude-code      # 单独验收项目安装后的 Claude Code 门禁
-./jstack eval list             # 列出固定评测任务
 ```
 
-真实 smoke 需要模型和网络。全量 smoke 会报告 OMP、Cursor 和 Codex 的结果，这三者缺失或未通过时仍可通过发布检查。发布前还需通过 Claude Code 和 Pi 的评测。
-
-Claude Code 的注意力题（`*-attention-*`）分别记录打断、漏停、误停和被推翻的默认决定。每次答复只算一次打断，漏停按待决事项计数。有需要时，runner 用同一会话发送一次预置的用户答复，`nudges` 仍只记录催促。计分按题目约定识别答复里的问题和默认决定，并检查回复前的仓库状态。只有完成首轮并拿到答复的样本才进入注意力统计。Pi 运行整套评测时跳过这些题。
+真实 smoke 需要模型和网络。全量 smoke 会报告 OMP、Cursor 和 Codex 的结果，这三者缺失或未通过时仍可通过发布检查。
 
 项目源码与构建产物分开管理：`src/flow/` 是 JStack 自有工作流的源码；`upstream/` 保留第三方上游副本，`patches/` 保存本地补丁，`plugins/` 是生成后的插件目录。修改功能时请改源码或补丁，不要直接编辑构建产物。
 
 - **架构与配置**：[阶段定义](src/flow/skills/route/stages.md) · [工具能力映射](docs/harness/tools.md) · [配置字段](docs/agents/jstack-config.md) · [设计决策](docs/adr/)
 - **运行与集成**：[门禁能力](docs/harness/gates.md) · [Keel 托管工作流接口](docs/managed.md)
-- **维护与评测**：[CI](.github/workflows/check.yml) · [测试](tests/) · [评测](evals/) · [上游同步记录](SYNC-LOG.md) · [旧版详细维护说明（存档）](docs/archive/README-2026-11-18.md)
+- **维护**：[CI](.github/workflows/check.yml) · [测试](tests/) · [上游同步记录](SYNC-LOG.md) · [旧版详细维护说明（存档）](docs/archive/README-2026-11-18.md)
 
 ## 从 Trellis 迁移
 
