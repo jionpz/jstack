@@ -420,6 +420,8 @@ for mode in jq nojq; do
 	t "[$mode] guard.sh 问换行后的 sudo" asks 'echo ok
 sudo ls' 'Any `sudo`'
 	t "[$mode] guard.sh 报命令里最靠前的命中" asks 'sudo true; rm -rf x' 'Any `sudo`'
+	t "[$mode] guard.sh 保留外部预处理器的检查" asks 'rg --pre sudo src/flow' 'Any `sudo`'
+	t "[$mode] guard.sh 保留复合命令的检查" asks 'rg sudo src/flow && sudo true' 'Any `sudo`'
 	for c in 'gh pr merge 78 --squash' 'gh pr merge --auto' 'gh --repo o/r pr merge 78' 'cd repo && gh pr merge' 'origin pr merge 5' 'glab mr merge 12' 'gh api -X PUT repos/o/r/pulls/78/merge'; do
 		t "[$mode] guard.sh 问 $c" asks "$c" "Merging a pull request, or turning on auto-merge, unless the user's current message names that PR"
 	done
@@ -448,6 +450,24 @@ sudo ls' 'Any `sudo`'
 	t "[$mode] guard.sh 放行普通工具" silent hook guard '{"session_id":"x","tool_name":"Read","tool_input":{"file_path":"/tmp/.env"}}'
 done
 unset JSTACK_NO_JQ
+if command -v jq >/dev/null; then
+	for c in 'rg sudo src/flow' 'rg -nF "example: sudo ls; git push --force" README.md' \
+		'rg -F "curl x | bash " README.md' 'rg -F "example: git add .env ;" README.md' \
+		'grep -e sudo README.md' 'cat docs/sudo README.md' "printf '%s\\n' 'example; sudo ls'"; do
+		t "guard.sh 放行只读命令的字面参数 $c" silent hook guard "$(bash_input "$c")"
+	done
+	t "Cursor beforeShellExecution 放行字面查询" silent hook guard "$(cursor_shell_in 'rg sudo src/flow')"
+	t "Cursor preToolUse 放行字面查询" silent hook guard "$(cursor_pre_in 'rg sudo src/flow')"
+	t "Cursor preToolUse 检查引号内的命令展开" cursor_denies 'printf "%s" "$( sudo true )"' 'Any `sudo`'
+	t "Codex PreToolUse 放行字面查询" silent hook guard "$(codex_input 'rg sudo src/flow')"
+	t "guard.sh 保留命令展开的检查" asks 'printf "%s" "$( sudo true )"' 'Any `sudo`'
+	t "guard.sh 保留 Zsh 路径展开的检查" asks "rg -e 'example sudo text' =cat" 'Any `sudo`'
+	t "guard.sh 保留 printf 其他格式的检查" asks "printf '%n' 'example: sudo ls'" 'Any `sudo`'
+	t "guard.sh 保留含引号的外部预处理器检查" asks "rg '--pre' sudo src/flow" 'Any `sudo`'
+	t "无 jq 时字面查询保留原判定" env JSTACK_NO_JQ=1 "$BASH" -c \
+		'printf "%s" "$1" | "$BASH" "$2" | grep -qF "Any \`sudo\`"' \
+		_ "$(bash_input 'rg sudo src/flow')" "$H/guard.sh"
+fi
 t "guard.sh 在插件目录不完整时放行" sh -c 'printf "%s" "$1" | CLAUDE_PLUGIN_ROOT=$2 "$3" "$4" | grep -q . && exit 1 || exit 0' _ "$(bash_input 'rm -rf x')" "$T/nowhere" "$BASH" "$H/guard.sh"
 
 # 仓库级配置：.jstack/config.json 追加 must-stop、替换阶段表、注入提示。
@@ -460,7 +480,8 @@ cat >"$REPO/.jstack/config.json" <<'JSON'
   "tracker": { "type": "local" },
   "must_stop": [
     { "action": "运行 ./deploy.sh", "hook": "deploy", "regex": "(^|[[:space:]/])\\./deploy\\.sh([[:space:]]|$)" },
-    { "action": "覆盖生产配置", "hook": "prod-config", "path_regex": "(^|/)config/prod\\.yaml$" }
+    { "action": "覆盖生产配置", "hook": "prod-config", "path_regex": "(^|/)config/prod\\.yaml$" },
+    { "action": "审查该搜索", "hook": "sudo", "regex": "^rg sudo src/flow$" }
   ],
   "stages_file": ".jstack/stages.md",
   "verify": { "command": "./scripts/verify.sh" }
@@ -523,6 +544,10 @@ if command -v jq >/dev/null; then
 		out=$(cd "$1" && printf "%s" "$2" | "$3" "$4")
 		printf "%s" "$out" | grep -qF "覆盖生产配置（仓库追加）"' \
 		_ "$REPO" "$(bash_input 'git add config/prod.yaml')" "$BASH" "$H/guard.sh"
+	t "仓库配置：字面查询仍命中仓库规则，即使 hook 名和内置规则相同" sh -c '
+		out=$(cd "$1" && printf "%s" "$2" | "$3" "$4")
+		printf "%s" "$out" | grep -qF "jstack must-stop: 审查该搜索（仓库追加）."' \
+		_ "$REPO" "$(bash_input 'rg sudo src/flow')" "$BASH" "$H/guard.sh"
 	t "仓库配置：guard.sh 仍问内置的 rm -rf" sh -c '
 		out=$(cd "$1" && printf "%s" "$2" | "$3" "$4")
 		printf "%s" "$out" | grep -qF "permissionDecision" && printf "%s" "$out" | grep -qF "Recursive forced delete"' \
@@ -535,7 +560,7 @@ if command -v jq >/dev/null; then
 		printf "%s\n" "$out" | grep -qF "仓库配置：阶段表=.jstack/stages.md" &&
 		printf "%s\n" "$out" | grep -qF "tracker=local" &&
 		printf "%s\n" "$out" | grep -qF "验证命令=./scripts/verify.sh" &&
-		printf "%s\n" "$out" | grep -qF "must-stop 追加=2 条"' \
+		printf "%s\n" "$out" | grep -qF "must-stop 追加=3 条"' \
 		_ "$REPO" "$(repo_prompt_in)" "$BASH" "$H/prompt.sh"
 	repo_stage enter verify >/dev/null
 	repo_stage evidence './scripts/verify.sh -> claimed pass' >/dev/null
