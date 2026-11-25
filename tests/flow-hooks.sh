@@ -198,7 +198,9 @@ prompt_shows() {
 		[ "$(printf '%s\n' "$out" | grep -Fo -- "\"$ST\"" | wc -l | tr -d ' ')" -eq 1 ] &&
 		[ "$(printf '%s' "$out" | LC_ALL=en_US.UTF-8 wc -m | tr -d ' ')" -lt 1500 ]
 }
-prompt_gate() { hook prompt "$(prompt_in)" | grep -qF '本阶段门禁：No evidence means not done'; }
+prompt_gate() {
+	hook prompt "$(prompt_in)" | grep -qF 'Stop and `stage.sh end` check the configured command receipt or stage-scoped evidence'
+}
 prompt_defaults() { hook prompt "$(prompt_in)" | grep -qF '已采用的默认决定：1 条'; }
 
 for f in "$ST" "$H/prompt.sh" "$H/stop.sh" "$H/guard.sh"; do

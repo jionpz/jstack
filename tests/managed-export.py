@@ -332,10 +332,14 @@ class ManagedExportTests(unittest.TestCase):
             for profile in ("reviewer", "archivist"):
                 text = text.replace(f"`{profile}` | bulk", f"`{profile}` | - | bulk")
             text = text.replace("`flow:execute` |", "`flow:managed-execute` `flow:execute` |")
+            text = text.replace("`pstack:principle-prove-it-works` |", "`flow:verify` |")
             stages.write_text(text, encoding="utf-8")
             provider = root / "src/flow/skills/managed-execute/SKILL.md"
             provider.parent.mkdir()
             provider.write_text("managed execute\n", encoding="utf-8")
+            verifier = root / "src/flow/skills/verify/SKILL.md"
+            verifier.parent.mkdir()
+            verifier.write_text("independent verification\n", encoding="utf-8")
             command = [
                 sys.executable, str(root / "scripts/managed-export.py"),
                 "--root", str(root), "--with-stage-tiers",
@@ -347,6 +351,7 @@ class ManagedExportTests(unittest.TestCase):
             self.assertEqual([rule["stage_path"] for rule in route["route_rules"]], [expected] * 5)
             self.assertEqual(route["stage_templates"], ticket["stages"])
             self.assertEqual(ticket["stages"][0]["provider"], "flow:managed-execute")
+            self.assertEqual(ticket["stages"][1]["provider"], "flow:verify")
             self.assertEqual(route["stage_tiers"], ticket["stage_tiers"])
             self.assertEqual(route["stage_tiers"]["review"], {"work": "bulk", "gate": "bulk"})
 
