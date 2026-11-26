@@ -155,6 +155,10 @@ builtin_path_patterns() {
 		awk -F'\t' 'NF >= 2 { print $1 "\t" $2 "\t" $3 "\tbuiltin" }'
 }
 
+shell_segments() {
+	printf '%s\n' "$1" | awk '{ gsub(/&&|\|\||[;|]/, "\n"); print }'
+}
+
 git_add_tokens() {
 	printf '%s\n' "$1" | awk '
 		{
@@ -170,10 +174,11 @@ git_add_tokens() {
 }
 
 shell_staged_secret_hit() {
-	local segs=$1 builtin_paths repo_paths n=0 seg token line hook re allow rest
+	local segs=$1 builtin_segs=$2 builtin_paths repo_paths n=0 seg builtin_seg token line hook re allow rest
 	builtin_paths=$(builtin_path_patterns) || builtin_paths=
 	repo_paths=$(jstack_cfg_path_patterns 2>/dev/null) || repo_paths=
 	while IFS= read -r seg; do
+		IFS= read -r builtin_seg <&3
 		n=$((n + 1))
 		printf '%s\n' "$seg" | grep -Eq '(^|[[:space:]/])git[[:space:]]+add([[:space:]]|$)' || continue
 		while IFS= read -r token; do
@@ -182,6 +187,7 @@ shell_staged_secret_hit() {
 			token=${token#\'}; token=${token%\'}
 			token=$(normalize_path "$token")
 			while IFS= read -r line; do
+				[ "$seg" = "$builtin_seg" ] || break
 				[ -n "$line" ] || continue
 				hook=${line%%"$tab"*}; rest=${line#*"$tab"}
 				re=${rest%%"$tab"*}; rest=${rest#*"$tab"}
@@ -202,14 +208,17 @@ shell_staged_secret_hit() {
 				fi
 			done <<<"$repo_paths"
 		done <<<"$(git_add_tokens "$seg")"
-	done <<<"$segs"
+	done <<<"$segs" 3<<<"${builtin_segs:-$segs}"
 }
 
 match_shell() {
-	local cmd=$1 segs builtin_segs= match_segs pats line hook re rest scope src n best_n= hit= hit_src= stage= stage_n stage_src stage_hit reason
-	segs=$(printf '%s\n' "$cmd" | awk '{ gsub(/&&|\|\||[;|]/, "\n"); print }')
+	local cmd=$1 segs builtin_cmd= builtin_segs= match_segs pats line hook re rest scope src n best_n= hit= hit_src= stage= stage_n stage_src stage_hit reason
+	segs=$(shell_segments "$cmd")
 	if jstack_has_jq; then
-		builtin_segs=$(printf '%s\n' "$cmd" | awk -f "$route/../../hooks/literal-command.awk") || builtin_segs=
+		builtin_cmd=$(printf '%s\n' "$cmd" | awk -f "$route/../../hooks/literal-command.awk") || builtin_cmd=
+		if [ -n "$builtin_cmd" ]; then
+			builtin_segs=$(shell_segments "$builtin_cmd")
+		fi
 	fi
 	pats=$(
 		builtin_patterns
@@ -226,8 +235,18 @@ match_shell() {
 		src=${rest%%"$tab"*}; [ -n "$src" ] || src=${rest#*"$tab"}
 		[ -n "$hook" ] && [ "$re" != "$rest" ] || continue
 		if [ "$scope" = full ]; then
-			printf '%s\n' "${builtin_segs:-$cmd}" | grep -Eq -- "$re" || continue
-			n=1
+			if [ -n "$builtin_cmd" ]; then
+				n=$(printf '%s\n' "$builtin_cmd" | JSTACK_FULL_PATTERN="$re" awk '
+					match($0, ENVIRON["JSTACK_FULL_PATTERN"]) {
+						prefix = substr($0, 1, RSTART)
+						print 1 + gsub(/&&|\|\||[;|]/, "", prefix)
+						exit
+					}')
+				[ -n "$n" ] || continue
+			else
+				printf '%s\n' "$cmd" | grep -Eq -- "$re" || continue
+				n=1
+			fi
 		else
 			match_segs=$segs
 			[ "$src" != builtin ] || match_segs=${builtin_segs:-$segs}
@@ -240,8 +259,8 @@ match_shell() {
 			hit_src=$src
 		fi
 	done <<<"$pats"
-	if [ -z "$builtin_segs" ]; then
-		stage=$(shell_staged_secret_hit "$segs") || stage=
+	if [ -z "$builtin_cmd" ] || [[ $builtin_segs == *$'\n'* ]]; then
+		stage=$(shell_staged_secret_hit "$segs" "$builtin_segs") || stage=
 	fi
 	if [ -n "$stage" ]; then
 		stage_n=${stage%%"$tab"*}; rest=${stage#*"$tab"}
