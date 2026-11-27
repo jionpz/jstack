@@ -11,6 +11,8 @@
 #                  [--harnesses <a,b>] [--with-pi-recommended|--no-pi-recommended]
 #                                                  项目级 --all 生成五个 harness 的投影；--harnesses 增补指定投影
 #                                                  用户级 --all 探测并安装本机已有 harness
+#   ./jstack refresh [--repo <dir> ...] [--user] [--dry-run]
+#                                                  刷新项目 lock 中已有的接线；--user 同时刷新本机 harness
 #   ./jstack uninstall --scope project [--repo <dir>] [--dry-run] [--harnesses <a,b>]
 #   ./jstack install-pi [--no-pi-recommended]       安装 Pi package，并把 pstack agents 接到 ~/.pi/agent/agents
 #   ./jstack install-cursor                        把 pstack、spec、flow 复制到 ~/.cursor/plugins/local/
@@ -36,7 +38,7 @@
 #   ./jstack models apply [--dry-run] [--yes]      写入四个 harness 的模型规则；--dry-run 只打印
 #   ./jstack models status                         premium 今日 token 用量、预算和生效的 flow 角色
 #   ./jstack doctor [--json] [--no-fail] [--repo <dir>]  只读列出各 harness × 作用域的安装、版本、来源与 lock 状态
-#   ./jstack runs [--repo <dir>] [--limit N] [--json] [--show <run-id>]
+#   ./jstack runs [--repo <dir>] [--decision <text>] [--limit N] [--json] [--show <run-id>]
 #                                                  列出任务运行记录；完成和未完成的都有路径、证据与默认决定
 #   ./jstack report <run-id>                        在当前仓库重试发布已保存的收尾摘要
 #   ./jstack retire trellis [--repo <dir>] [--task-map <file>] [--json] [--apply]
@@ -1836,10 +1838,16 @@ SH
 # 覆盖：干净 shell 首次装齐三个插件、重跑只升级不重装（#87 的 bug）、外层 dir 不泄漏进
 # 门禁路径、混合状态只补缺的、CLI 报错要中断且不写门禁入口、不覆盖用户自己的文件。
 check_omp_user() {
-	local h="$WORK/omp-user-home" bin="$WORK/omp-user-bin" out gate installs upgrades rc=0
+	local h="$WORK/omp-user-home" bin="$WORK/omp-user-bin" out gate cache native installs upgrades rc=0
 	local before_installs before_upgrades fail
 	mkdir -p "$h" "$bin"
 	gate="$h/.omp/agent/extensions/jstack-flow-gates.ts"
+	cache="$h/.omp/plugins/cache/plugins/jstack flow"
+	native="$h/.omp/plugins/node_modules/flow"
+	mkdir -p "$cache/extensions"
+	: >"$cache/extensions/omp.ts"
+	mkdir -p "$(dirname "$native")"
+	ln -s "$cache" "$native"
 	cat >"$bin/omp" <<'SH'
 #!/usr/bin/env bash
 set -eu
@@ -1853,8 +1861,13 @@ case "$1 $2" in
   esac ;;
 'plugin list')
   [ "${JSTACK_OMP_TEST_FAIL:-}" != list ] || exit 17
-  [ -f "$HOME/installed" ] && sed 's/^/  /; s/$/ (0.0.0) (user)/' "$HOME/installed" || true ;;
+  [ "$3" = --json ] || exit 19
+  { [ ! -f "$HOME/installed" ] || cat "$HOME/installed"; } |
+    jq -Rn --arg path "$HOME/.omp/plugins/cache/plugins/jstack flow" '
+      {marketplace: ([inputs | {id:.,scope:"user",entries:[{installPath:$path}]}]
+        + [{id:"flow@jstack",scope:"project",entries:[{installPath:"/wrong/project"}]}])}' ;;
 'plugin install')
+  [ "$4" = --scope ] && [ "$5" = user ] || exit 19
   [ "${JSTACK_OMP_TEST_FAIL:-}" != install ] || exit 17
   if grep -Fxq "$3" "$HOME/installed" 2>/dev/null; then
     printf 'Error: plugin %s is already installed\n' "$3" >&2
@@ -1862,6 +1875,7 @@ case "$1 $2" in
   fi
   printf '%s\n' "$3" >>"$HOME/installed" ;;
 'plugin upgrade')
+  [ "$4" = --scope ] && [ "$5" = user ] || exit 19
   [ "${JSTACK_OMP_TEST_FAIL:-}" != upgrade ] || exit 17
   grep -Fxq "$3" "$HOME/installed" ;;
 *) exit 19 ;;
@@ -1874,12 +1888,12 @@ SH
 	}
 	rm -f "$h/calls" "$h/installed" "$h/marketplace"
 
-	# 干净 shell 首次安装：三个插件各 install 一次，门禁入口指向本次 checkout。
+	# 干净 shell 首次安装：三个插件各 install 一次，门禁跟随 OMP 的用户级链接。
 	if ! out=$( (unset dir; HOME="$h" PATH="$bin:$PATH" install_omp_user) 2>&1); then
 		say "✗ OMP 干净 shell 首次安装失败：$out"
 		return 1
 	fi
-	if ! grep -qxF "export { default } from \"$ROOT/plugins/flow/extensions/omp.ts\";" "$gate"; then
+	if ! grep -qxF "export { default } from \"$native/extensions/omp.ts\";" "$gate"; then
 		say "✗ OMP 首次安装未写正确的门禁入口"
 		return 1
 	fi
@@ -1890,13 +1904,14 @@ SH
 	fi
 
 	# 重跑：已装的走 upgrade，不再 install；被删掉的门禁入口要补回来。
-	rm -f "$gate"
+	rm -f "$gate" "$native"
 	if ! out=$( (unset dir; HOME="$h" PATH="$bin:$PATH" install_omp_user) 2>&1); then
 		say "✗ OMP 重复安装失败：$out"
 		rc=1
 	fi
 	counts
-	if [ ! -f "$gate" ] || [ "$installs" != 3 ] || [ "$upgrades" != 3 ]; then
+	if ! grep -qxF "export { default } from \"$cache/extensions/omp.ts\";" "$gate" ||
+		[ "$installs" != 3 ] || [ "$upgrades" != 3 ]; then
 		say "✗ OMP 重跑没有只升级已有插件（install ${installs} / upgrade ${upgrades}）"
 		rc=1
 	fi
@@ -2354,6 +2369,17 @@ check_project_lifecycle() (
 	"$cli" doctor --repo "$r" >/dev/null || return
 
 	cp "$r/.jstack/lock.json" "$WORK/project-lifecycle.lock"
+	jq -e --arg commit "$(git -C "$ROOT" rev-parse HEAD)" '
+		.jstack.commit == $commit and (.upstream_repositories.pstack | startswith("https://"))
+	' "$r/.jstack/lock.json" >/dev/null || return
+	jq '.jstack.commit = "0000000000000000000000000000000000000000"' \
+		"$WORK/project-lifecycle.lock" >"$r/.jstack/lock.json"
+	if "$cli" doctor --repo "$r" >"$WORK/project-lifecycle.log" 2>&1 ||
+		! grep -q '无法验证 jstack.commit' "$WORK/project-lifecycle.log"; then
+		say "✗ doctor 接受了找不到的 jstack 来源提交"
+		return 1
+	fi
+	cp "$WORK/project-lifecycle.lock" "$r/.jstack/lock.json"
 	printf 'user document\n' >"$r/README.md"
 	jq --arg hash "$(sha256_stream <"$r/README.md")" \
 		'.harnesses.codex.records += ["README.md"] | .managed["README.md"] = {kind:"file",sha256:$hash,executable:false}' \
@@ -2413,6 +2439,28 @@ check_project_lifecycle() (
 	jq -e '.hooks.Stop == [] and .user and (.hooks.UserPromptSubmit | length) == 1' "$r/.codex/hooks.json" >/dev/null || return
 	[ ! -e "$r/.jstack/vendor" ] || return 1
 	say "✓ 项目生命周期：增补、Git 根目录、碰撞、链接、混合配置、所有权与退役"
+)
+
+check_project_refresh() (
+	local a="$WORK/refresh project" b="$WORK/refresh-second" cli="$ROOT/jstack"
+	mkdir -p "$a" "$b"
+	git -C "$a" init -q
+	printf '/.codex/\n' >"$a/.gitignore"
+	"$cli" install --scope project --repo "$a" --harnesses cursor >/dev/null || return
+	"$cli" install --scope project --repo "$b" --harnesses pi >/dev/null || return
+	cp "$a/.jstack/lock.json" "$WORK/refresh.lock" || return
+	rm "$a/.cursor/hooks.json" || return
+	"$cli" refresh --repo "$a" --repo "$b" --dry-run >/dev/null || return
+	[ ! -e "$a/.cursor/hooks.json" ] && cmp -s "$a/.jstack/lock.json" "$WORK/refresh.lock" || return 1
+	if "$cli" refresh --repo "$a" --repo "$WORK" >/dev/null 2>&1 || [ -e "$a/.cursor/hooks.json" ]; then
+		say "✗ refresh 在全部项目预检成功前写入了文件"
+		return 1
+	fi
+	"$cli" refresh --repo "$a" --repo "$b" >/dev/null || return
+	[ -f "$a/.cursor/hooks.json" ] && [ ! -e "$a/.codex" ] && [ ! -e "$a/.claude" ] &&
+		jq -e '(.harnesses | keys) == ["cursor"]' "$a/.jstack/lock.json" >/dev/null &&
+		jq -e '(.harnesses | keys) == ["pi"]' "$b/.jstack/lock.json" >/dev/null || return 1
+	say "✓ 项目刷新：多仓预检、dry-run、修复缺失入口且不增补 harness"
 )
 
 # Cursor 版 pstack 由 plugins/pstack 转换生成。重跑一次转换，核对产物没有被手改；
@@ -2739,6 +2787,7 @@ cmd_check() {
 	check_doctor || rc=1
 	check_omp_user || rc=1
 	check_install_project || rc=1
+	check_project_refresh || rc=1
 	if bash "$ROOT/tests/project-clone.sh" >"$WORK/project-clone" 2>&1; then
 		say "✓ 项目级安装产物在干净 Git clone 中可用"
 	else
@@ -3928,7 +3977,9 @@ cmd_doctor() {
 		plugin_is_stale omp "$plugin" "$version" && stale=1
 		# 用户扩展可能指向另一棵 checkout；与 flow 缓存版本分别核对。
 		if [ "$plugin" = flow ] && [ -f "$HOME/.omp/agent/extensions/jstack-flow-gates.ts" ]; then
-			source=$(sed -nE 's/^export \{ default \} from "([^"]+)";$/\1/p' "$HOME/.omp/agent/extensions/jstack-flow-gates.ts" | head -1)
+			source=$(jq -Rr 'select(startswith("export { default } from ")) |
+				ltrimstr("export { default } from ") | rtrimstr(";") | fromjson? | strings' \
+				"$HOME/.omp/agent/extensions/jstack-flow-gates.ts" | head -1) || source=
 			case $source in
 			/*) ;;
 			*) source="$HOME/.omp/agent/extensions/$source" ;;
@@ -3984,7 +4035,7 @@ cmd_doctor() {
 	# 核对 lock 与漂移，生成七列。
 	lock=
 	if [ -n "$repo" ]; then
-		project_install_tool doctor "$repo" || rc=1
+		project_install_tool doctor "$repo" "$ROOT" || rc=1
 		if [ ! -L "$repo/.jstack" ] && [ ! -L "$repo/.jstack/lock.json" ] && [ -f "$repo/.jstack/lock.json" ]; then
 			lock="$repo/.jstack/lock.json"
 		fi
@@ -4385,16 +4436,23 @@ project_install_tool() {
 }
 
 stage_project_lock() { # <暂存目录> <harness>...
-	local repo=$1 vendor tree ver commit upstream plugins harnesses h recs
+	local repo=$1 vendor tree ver commit= upstream upstream_repositories plugins harnesses h recs source
 	shift
 	vendor="$repo/.jstack/vendor"
 	tree=$(tree_hash "$vendor")
 	ver=$(json_get version "$ROOT/package.json")
-	commit=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || true)
+	source=$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null || true)
+	if [ "$source" = "$ROOT" ]; then
+		commit=$(git -C "$ROOT" rev-parse --verify 'HEAD^{commit}' 2>/dev/null || true)
+	fi
 	upstream=$(for h in pstack spec; do
 		[ -f "$ROOT/upstream/$h.lock.json" ] || continue
 		printf '%s\t%s\n' "$h" "$(jq -r '.sha // ""' "$ROOT/upstream/$h.lock.json")"
 	done | jq -Rn '[inputs | split("\t") | {key: .[0], value: .[1]}] | from_entries')
+	upstream_repositories=$(for h in pstack spec; do
+		[ -f "$ROOT/upstream/$h.lock.json" ] || continue
+		jq -c --arg h "$h" '.repo | strings | {key: $h, value: .}' "$ROOT/upstream/$h.lock.json"
+	done | jq -s 'from_entries')
 	plugins=$(for h in $PLUGINS; do
 		printf '%s\t%s\n' "$h" "$(json_get version "$ROOT/plugins/$h/.claude-plugin/plugin.json")"
 	done | jq -Rn '[inputs | split("\t") | {key: .[0], value: {version: .[1]}}] | from_entries')
@@ -4405,12 +4463,13 @@ stage_project_lock() { # <暂存目录> <harness>...
 			jq --arg h "$h" --argjson r "$recs" '. + {($h): {scope: "project", records: $r}}')
 	done
 	printf '%s\n' "$harnesses" | jq --arg ver "$ver" --arg commit "$commit" --arg tree "$tree" \
-		--argjson upstream "$upstream" --argjson plugins "$plugins" '
+		--argjson upstream "$upstream" --argjson upstream_repositories "$upstream_repositories" --argjson plugins "$plugins" '
 		{
 			version: 2,
 			jstack: ({version: $ver} + (if $commit == "" then {} else {commit: $commit} end)),
 			vendor: {tree: $tree},
 			upstream: $upstream,
+			upstream_repositories: $upstream_repositories,
 			plugins: $plugins,
 			harnesses: .
 		}' >"$repo/.jstack/lock.json" || die "生成 lock 失败"
@@ -4454,54 +4513,72 @@ stage_project() { # <暂存目录> <harness>...
 	stage_project_lock "$repo" "$@"
 }
 
-install_project() { # <仓库> <dry> <harness csv> <Pi package mode>
-	local repo=$1 dry=$2 selection=$3 recommended=$4 harnesses stage
-	harnesses=$(project_install_tool select "$repo" "$selection") || return
+install_project() { # <仓库> <dry> <harness csv> <Pi package mode> [只沿用 lock]
+	local repo=$1 dry=$2 selection=$3 recommended=$4 locked=${5:-0} harnesses stage
+	harnesses=$(project_install_tool select "$repo" "$selection" "$locked") || return
 	stage=$(mktemp -d "$WORK/project-stage.XXXXXX") || return
 	stage_project "$stage" $harnesses || return
-	project_install_tool install "$repo" "$stage" "$dry" "$recommended" || return
+	project_install_tool install "$repo" "$stage" "$dry" "$recommended" "$locked" || return
 	if [ "$dry" -eq 0 ]; then
 		say "✓ 项目级安装完成（${harnesses}），提交 vendor、lock 和项目入口。"
 	fi
 }
 
 # OMP 的门禁扩展：OMP 的插件清单只收 skills/agents，不收 flow 的 Claude 格式 hooks，
-# 所以在 ~/.omp/agent/extensions/ 放一个入口文件，转出 flow 插件里的扩展本身。
+# 所以在 ~/.omp/agent/extensions/ 放一个入口文件，转出 OMP 用户级缓存里的扩展。
 install_omp_extension() {
-	local dir="$HOME/.omp/agent/extensions" target src
+	local plugin=$1 dir="$HOME/.omp/agent/extensions" target src quoted tmp
 	target="$dir/jstack-flow-gates.ts"
-	src="$ROOT/plugins/flow/extensions/omp.ts"
-	[ -f "$src" ] || die "缺少 ${src#"$ROOT"/}，先运行 ./jstack build"
+	src="${plugin}/extensions/omp.ts"
+	[ -f "$src" ] || die "OMP flow 缓存缺少扩展：$src"
 	mkdir -p "$dir" || die "无法创建 $dir"
 	# 符号链接一律不跟：用户可能把它指向自己的文件，写进去就是覆盖用户内容。
 	if [ -L "$target" ] || { [ -e "$target" ] && ! grep -q 'generated by jstack install' "$target"; }; then
 		die "$target 已存在且不是 jstack 生成的普通文件；先备份或移走"
 	fi
-	{
-		printf '// generated by jstack install; source: %s\n' "$src"
-		printf 'export { default } from "%s";\n' "$src"
-	} >"$target" || die "无法写入 $target"
+	quoted=$(jq -n --arg src "$src" '$src') || die "无法编码 OMP 扩展路径"
+	tmp=$(mktemp "$dir/.jstack-flow-gates.XXXXXX") || die "无法在 $dir 暂存门禁入口"
+	if ! printf '// generated by jstack install\nexport { default } from %s;\n' "$quoted" >"$tmp" ||
+		! mv -f "$tmp" "$target"; then
+		rm -f "$tmp"
+		die "无法写入 $target"
+	fi
 	say "✓ 已把 flow 的 OMP 门禁扩展接到 $target"
 }
 
 install_omp_user() {
 	command -v omp >/dev/null 2>&1 || die "需要 OMP CLI（omp）"
+	command -v jq >/dev/null 2>&1 || die "读取 OMP 安装记录需要 jq"
 	if ! omp plugin marketplace list 2>/dev/null | grep -q '^[[:space:]]*jstack[[:space:]]'; then
 		omp plugin marketplace add "$ROOT" || die "添加 OMP jstack marketplace 失败"
 	fi
 	# 已装的插件要用 upgrade：omp plugin install 对已装插件直接报 already installed 并退出，
 	# 否则重复运行 install 会停在这一行，后面的 cursor / codex 也跑不到。
 	# 列表读不出来就停：猜错方向的代价是给已装插件再 install 一次，报错还看不懂。
-	local p installed
-	installed=$(omp plugin list) || die "读取 OMP 已安装插件列表失败"
+	local p installed cache native
+	installed=$(omp plugin list --json | jq -ers '
+		if length == 1 and (.[0].marketplace | type == "array")
+		then .[0].marketplace | map(select(.scope == "user") | .id) | join("\n")
+		else error("missing OMP marketplace list") end
+	') || die "读取 OMP 已安装插件列表失败"
 	for p in $PLUGINS; do
-		if grep -qF "$p@jstack" <<<"$installed"; then
-			omp plugin upgrade "$p@jstack" || die "升级 OMP ${p}@jstack 失败"
+		if grep -qxF "$p@jstack" <<<"$installed"; then
+			omp plugin upgrade "$p@jstack" --scope user || die "升级 OMP ${p}@jstack 失败"
 		else
-			omp plugin install "$p@jstack" || die "安装 OMP ${p}@jstack 失败"
+			omp plugin install "$p@jstack" --scope user || die "安装 OMP ${p}@jstack 失败"
 		fi
 	done
-	install_omp_extension
+	cache=$(omp plugin list --json | jq -er '
+		[.marketplace[] | select(.id == "flow@jstack" and .scope == "user")
+		 | .entries[] | .installPath | strings | select(startswith("/"))]
+		| if length == 1 then .[0] else error("expected one user flow cache") end
+	') || die "无法定位 OMP 用户级 flow 缓存"
+	# OMP 的用户级包链接在原生升级时会更新。先确认它确实指向本次安装的副本。
+	native="${cache%/cache/plugins/*}/node_modules/flow"
+	if [ -L "$native" ] && [ "$native" -ef "$cache" ]; then
+		cache=$native
+	fi
+	install_omp_extension "$cache"
 	say "✓ 已安装 OMP 插件；重开 OMP 会话生效。"
 }
 
@@ -4676,6 +4753,48 @@ cmd_install() {
 	install_claude_user "$scope"
 }
 
+cmd_refresh() {
+	local dry=0 user=0 repo harness any=0 repos=()
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--repo) repos+=("${2:?--repo 后面要跟仓库路径}"); shift 2 ;;
+		--user) user=1; shift ;;
+		--dry-run) dry=1; shift ;;
+		*) die "未知参数：$1（用法：./jstack refresh [--repo <dir> ...] [--user] [--dry-run]）" ;;
+		esac
+	done
+	if [ "${#repos[@]}" -eq 0 ] && [ "$user" -eq 0 ]; then
+		repo=$(git rev-parse --show-toplevel 2>/dev/null) || repo=$PWD
+		repos+=("$repo")
+	fi
+	# 先预检所有仓库，避免在后面的仓库发现常见冲突时前面的仓库已经写入。
+	for repo in ${repos[@]+"${repos[@]}"}; do
+		if [ "$dry" -eq 1 ]; then
+			say "预览 $repo"
+			install_project "$repo" 1 "" auto 1 || return
+		else
+			install_project "$repo" 1 "" auto 1 >/dev/null || die "预检失败：$repo"
+		fi
+	done
+	if [ "$user" -eq 1 ]; then
+		for harness in claude-code pi omp cursor codex; do
+			if harness_present "$harness"; then
+				any=1
+				[ "$dry" -eq 0 ] || say "  刷新用户级 $harness"
+			fi
+		done
+		[ "$any" -eq 1 ] || die "没有探测到已安装的 harness"
+	fi
+	[ "$dry" -eq 0 ] || return 0
+	for repo in ${repos[@]+"${repos[@]}"}; do
+		say "刷新 $repo"
+		install_project "$repo" 0 "" auto 1 || return
+	done
+	if [ "$user" -eq 1 ]; then
+		cmd_install --all --scope user
+	fi
+}
+
 cmd_uninstall() {
 	local scope= repo= dry=0 harnesses=
 	while [ $# -gt 0 ]; do
@@ -4798,15 +4917,16 @@ cmd_install_pi() {
 
 # 运行记录：stage.sh 在用户级状态目录写活动快照和完成记录，这里只读。
 cmd_runs() {
-	local repo= limit=20 json=0 show= state root log active f files=()
+	local repo= decision= limit=20 json=0 show= state root log active f files=()
 	while [ $# -gt 0 ]; do
 		case $1 in
 		--repo) [ -n "${2:-}" ] || die "--repo 后面要跟目录"; repo=$2; shift 2 ;;
+		--decision) [ -n "${2:-}" ] || die "--decision 后面要跟搜索文字"; decision=$2; shift 2 ;;
 		--limit) [ -n "${2:-}" ] || die "--limit 后面要跟正整数"; limit=$2; shift 2 ;;
 		--limit=*) limit=${1#*=}; shift ;;
 		--json) json=1; shift ;;
 		--show) [ -n "${2:-}" ] || die "--show 后面要跟 run id"; show=$2; shift 2 ;;
-		*) die "未知参数：$1（用法：./jstack runs [--repo <dir>] [--limit N] [--json] [--show <run-id>]）" ;;
+		*) die "未知参数：$1（用法：./jstack runs [--repo <dir>] [--decision <text>] [--limit N] [--json] [--show <run-id>]）" ;;
 		esac
 	done
 	case $limit in '' | *[!0-9]*) die "--limit 需要正整数" ;; esac
@@ -4826,11 +4946,12 @@ cmd_runs() {
 			die "找不到仓库：$repo"
 		repo=$(cd "$repo" 2>/dev/null && pwd -P) || die "找不到仓库：$repo"
 	fi
-	local filter='.' data count sep
-	if [ -n "$repo" ]; then
-		filter='select(.repo == $repo)'
-	fi
-	data=$(jq -s --arg repo "$repo" "map($filter) | sort_by(.started_at // \"\") | reverse" "${files[@]}") ||
+	local data count sep
+	data=$(jq -s --arg repo "$repo" --arg decision "$decision" '
+		map(select(($repo == "" or .repo == $repo) and
+			($decision == "" or any(.defaults[]? | strings; contains($decision))))) |
+		sort_by(.started_at // "") | reverse
+	' "${files[@]}") ||
 		die "运行记录格式损坏"
 	count=$(printf '%s' "$data" | jq 'length')
 	[ "$count" -gt 0 ] || { say "没有匹配的运行记录"; return 0; }
@@ -4865,6 +4986,7 @@ case "${1:-}" in
 managed-export) shift; exec python3 -B "$ROOT/scripts/managed-export.py" "$@" ;;
 tools) shift; exec python3 -B "$ROOT/scripts/tool-policy.py" "$@" ;;
 install) shift; cmd_install "$@" ;;
+refresh) shift; cmd_refresh "$@" ;;
 uninstall) shift; cmd_uninstall "$@" ;;
 install-pi) shift; cmd_install_pi "$@" ;;
 install-cursor) shift; cmd_install_cursor "$@" ;;

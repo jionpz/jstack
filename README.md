@@ -77,6 +77,8 @@ cd jstack
 
 安装前可加 `--dry-run` 查看计划。**同一种工具不要同时启用用户级和项目级的 JStack**，以免插件或门禁重复加载。安装后用 `doctor` 核对版本、入口归属及 Git 忽略规则。
 
+升级已有项目时，用 `./jstack refresh --repo /path/to/project-a --repo /path/to/project-b`。每个项目保留 lock 中已有的 harness。加 `--dry-run` 预览，加 `--user` 同时对本机检测到的 harness 执行用户级安装或更新。项目改动仍由各仓库单独提交。
+
 Pi 的项目接线默认不声明子 agent 扩展包。需要该功能时，用 `--with-pi-recommended` 添加声明，Pi 按原生机制加载。用 `--no-pi-recommended` 可移除归属已记录在 lock 的声明。
 
 清退项目接线前，先预览：
@@ -156,6 +158,8 @@ JStack 的核心是 **flow**，不是把第三方 skills 简单放在一起。�
 
 这些工具可以共享 JStack 的阶段定义，但并非拥有完全相同的工具权限、事件回调和阻断能力。使用前请查看[门禁能力矩阵](docs/harness/gates.md)，并在实际环境中核对安装与信任状态。
 
+`./jstack doctor --json` 的 `cursor / local` 行显示用户级副本的版本，与当前构建版本不一致时标为 `stale`。该结果描述磁盘上的副本。
+
 ## 可选：按角色分配模型
 
 JStack 支持把模型按职责分成两层：`premium` 负责架构判断、关键决策等高杠杆任务，`bulk` 负责执行、探索和验证。两层对应的实际模型由用户配置，不预设任何提供商一定拥有无限额度，也不保证配置后必然更省钱。
@@ -173,7 +177,8 @@ JStack 支持把模型按职责分成两层：`premium` 负责架构判断、关
 
 ```bash
 ./jstack check                 # 静态检查与不依赖模型的测试
-./jstack doctor --repo <dir>  # 检查项目安装、版本和锁文件
+./jstack doctor --repo <dir>    # 检查项目安装、版本、锁文件和本地可解析的来源提交
+./jstack runs --decision "关键词" # 搜索运行记录里的默认决定
 ./jstack check --smoke         # 发布检查，要求 Claude Code 和 Pi 的真实 smoke 通过
 ./jstack smoke claude-code      # 单独验收项目安装后的 Claude Code 门禁
 ```

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # UserPromptSubmit hook（Claude Code / Codex）/ beforeSubmitPrompt（Cursor）：用户回话时，
 # 把当前阶段、它的产出和门禁、stage.sh 的用法注入上下文，并清掉 ask。
-# 没有任务状态时仍输出会话注入标记，供 route 区分未加载/未信任的提示 hook。
+# 没有任务状态时输出会话注入标记和工程任务的 route 入口提示。
 # 内部出错一律无输出地放行，hook 不能卡住用户。
 exec 2>/dev/null
 route=${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd -P)}/skills/route
@@ -44,6 +44,9 @@ main() {
 	file=$(jstack_state_file "$sid") && receipt="jstack 提示门禁注入：session=${sid}（仅证明提示 hook 已运行，Stop/guard 未由此验证）"
 	[ -n "$receipt" ] && [ -f "$file" ] || {
 		text=$(printf '%s\n' "$receipt" "$warn" | sed '/^$/d')
+		if [ -n "$receipt" ]; then
+			text=$(printf '%s\n%s' "$text" 'jstack: 工程任务先用 route。小改动走短路径，仓库行为的只读问题走 investigate，普通对话直接回复。')
+		fi
 		[ -z "$text" ] || emit "$text" "$proto"
 		return 0
 	}

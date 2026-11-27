@@ -594,10 +594,12 @@ def selection(csv):
     return names
 
 
-def install(repo, stage, dry, recommendation, inventory):
+def install(repo, stage, dry, recommendation, locked, inventory):
     old = read_lock(repo, inventory)
     desired = json_object(stage / LOCK)
-    if not set(old.get("harnesses", {})) <= set(desired["harnesses"]):
+    previous = set(old.get("harnesses", {}))
+    requested = set(desired["harnesses"])
+    if not previous <= requested or (locked and previous != requested):
         raise ProjectError("预检期间 harness 记录有变化，请重试")
     old_records = record_paths(old) if old.get("version") == 1 else set()
     old_proofs = old.get("managed", {})
@@ -725,7 +727,30 @@ def uninstall(repo, dry, csv, inventory):
         print("✓ 已退役项目投影：" + ", ".join(name for name in HARNESSES if name in retiring))
 
 
-def doctor(repo, inventory):
+def check_source_commit(lock, source):
+    jstack = lock.get("jstack", {})
+    if not isinstance(jstack, dict):
+        raise ProjectError("lock 的 jstack 来源记录无效")
+    if "commit" not in jstack:
+        return
+    commit = jstack["commit"]
+    if not isinstance(commit, str) or not re.fullmatch(r"[a-fA-F0-9]{7,64}", commit):
+        raise ProjectError("lock 的 jstack.commit 必须是 Git 提交 SHA")
+    git = ["git", "-C", str(source)]
+    env = {**os.environ, "GIT_NO_LAZY_FETCH": "1"}
+    root = subprocess.run([*git, "rev-parse", "--show-toplevel"], capture_output=True, env=env)
+    if root.returncode != 0 or Path(os.fsdecode(root.stdout.rstrip(b"\n"))) != source:
+        raise ProjectError(f"无法验证 jstack.commit {commit}：当前 JStack 安装源没有 Git 历史")
+    resolved = subprocess.run([*git, "rev-parse", f"--disambiguate={commit}"], capture_output=True, env=env)
+    objects = resolved.stdout.decode("ascii").splitlines()
+    if resolved.returncode or len(objects) != 1:
+        raise ProjectError(f"无法验证 jstack.commit {commit}：当前 JStack 安装源的 Git 历史里找不到该提交")
+    result = subprocess.run([*git, "cat-file", "-t", objects[0]], capture_output=True, env=env)
+    if result.returncode or result.stdout.strip() != b"commit":
+        raise ProjectError(f"无法验证 jstack.commit {commit}：Git 对象不是提交")
+
+
+def doctor(repo, source, inventory):
     lock = read_lock(repo, inventory)
     if not lock:
         return
@@ -764,6 +789,10 @@ def doctor(repo, inventory):
     if recommended.get("source") or PI_SETTINGS in lock.get("managed", {}):
         check_paths.add(PI_SETTINGS)
     git_ignored(repo, check_paths)
+    try:
+        check_source_commit(lock, source)
+    except ProjectError as exc:
+        problems.append(str(exc))
     if problems:
         raise ProjectError("\n! ".join(problems))
 
@@ -781,21 +810,26 @@ def main():
     if not repo.is_dir():
         raise ProjectError(f"--repo 不是目录：{repo}")
     if action == "doctor":
-        doctor(repo, inventory)
+        doctor(repo, Path(args[0]), inventory)
         return
     git_root = subprocess.run(["git", "-C", str(repo), "rev-parse", "--show-toplevel"], capture_output=True, text=True)
     if git_root.returncode == 0 and Path(git_root.stdout.rstrip("\n")).resolve() != repo:
         raise ProjectError(f"--repo 必须指向 Git 工作树根目录：{git_root.stdout.rstrip()}")
     if action == "select":
-        names = selection(args[0]) | set(read_lock(repo, inventory).get("harnesses", {}))
+        names = set(read_lock(repo, inventory).get("harnesses", {}))
+        if args[1] == "1":
+            if not names:
+                raise ProjectError("没有可刷新的项目安装，请先运行 jstack install --scope project")
+        else:
+            names |= selection(args[0])
         print(" ".join(name for name in HARNESSES if name in names))
         return
     fd = os.open(repo, os.O_RDONLY | os.O_DIRECTORY)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
         if action == "install":
-            stage, dry, recommendation = args
-            install(repo, Path(stage), dry == "1", recommendation, inventory)
+            stage, dry, recommendation, locked = args
+            install(repo, Path(stage), dry == "1", recommendation, locked == "1", inventory)
         elif action == "uninstall":
             dry, csv = args
             uninstall(repo, dry == "1", csv, inventory)
