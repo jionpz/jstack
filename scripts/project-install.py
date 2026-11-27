@@ -292,6 +292,8 @@ def owned_hook_forms(path):
                     f'{cursor_prefix}"{escaped_cursor}" {cursor_check}',
                     f"{cursor_prefix}'{cursor_command}' {cursor_check}",
                 ]
+            if path == ".claude/settings.json" and script == "guard" and context == {"matcher": "Bash"}:
+                commands.append(commands[1] + " --stage-only")
             yield [[event, context, {"type": "command", "command": command, "timeout": 10}] for command in commands]
 
 
@@ -320,7 +322,9 @@ def validate_proof(path, proof):
             raise ProjectError(f"{path} 的 Pi 推荐包证明无效")
         return
     forms = list(owned_hook_forms(path))
-    if len(fragments) != len(forms) or any(sum(fragment in options for fragment in fragments) != 1 for options in forms):
+    counts = [sum(fragment in options for fragment in fragments) for options in forms]
+    required = [count for count, options in zip(counts, forms) if not optional_guard(path, options[0])]
+    if sum(counts) != len(fragments) or any(count > 1 for count in counts) or any(count != 1 for count in required):
         raise ProjectError(f"{path} 的门禁证明必须指向项目内 jstack 脚本")
     events = proof.get("created_events")
     allowed_events = {options[0][0] for options in forms}
@@ -355,11 +359,19 @@ def command_for(handler):
     return handler.get("command", "") if isinstance(handler, dict) and isinstance(handler.get("command"), str) else ""
 
 
-def legacy_hooks(doc, path, expected):
+def optional_guard(path, fragment):
+    _, context, handler = fragment
+    return command_for(handler).rstrip('"').endswith("/guard.sh") and (
+        path != ".claude/settings.json" or context != {"matcher": "Bash"}
+    )
+
+
+def legacy_hooks(doc, path):
+    known = [fragment for options in owned_hook_forms(path) for fragment in options]
     matches = []
     for event, context, handler, *_ in hook_entries(doc, cursor=path == ".cursor/hooks.json"):
         fragment = [event, context, handler]
-        if fragment in expected:
+        if fragment in known:
             matches.append(fragment)
             continue
         command = command_for(handler)
@@ -388,11 +400,19 @@ def check_codex_commands(repo, doc):
                 raise ProjectError(f"{CODEX_HOOKS} 的旧门禁指向其他 clone 或已损坏：{command}")
 
 
-def install_hooks(repo, stage, path, prior, legacy):
+def install_hooks(repo, stage, path, prior, legacy, must_stop):
     source = checked_path(repo, path)
     current = json_object(source, optional=True)
     original = copy.deepcopy(current)
     generated = json_object(stage / path)
+    if not must_stop:
+        if path == ".claude/settings.json":
+            generated["hooks"]["PreToolUse"] = [copy.deepcopy(generated["hooks"]["PreToolUse"][0])]
+            generated["hooks"]["PreToolUse"][0]["hooks"][0]["command"] += " --stage-only"
+        elif path == CURSOR_HOOKS:
+            del generated["hooks"]["beforeShellExecution"], generated["hooks"]["preToolUse"]
+        else:
+            del generated["hooks"]["PreToolUse"]
     expected = generated_handlers(generated, path)
     if path == CODEX_HOOKS and any(
         LEGACY_CODEX.fullmatch(command_for(handler)) or ABSOLUTE_FLOW.search(command_for(handler))
@@ -400,12 +420,17 @@ def install_hooks(repo, stage, path, prior, legacy):
     ):
         raise ProjectError(f"生成的 {path} 包含暂存机上的绝对路径")
     cursor = path == ".cursor/hooks.json"
+    retired = set()
     if prior:
         if mode(source) is not None:
             verify_shared(current, path, prior)
             remove_hooks(current, path, prior["fragments"])
+            retired.update(prior["created_events"])
+            retired.update(fragment[0] for fragment in prior["fragments"] if optional_guard(path, fragment))
     elif legacy:
-        remove_hooks(current, path, legacy_hooks(current, path, expected))
+        fragments = legacy_hooks(current, path)
+        remove_hooks(current, path, fragments)
+        retired.update(event for event, _, _ in fragments)
     hooks = current.setdefault("hooks", {})
     hook_entries_list = [list(entry[:3]) for entry in hook_entries(current, cursor=cursor)]
     for fragment in expected:
@@ -414,6 +439,9 @@ def install_hooks(repo, stage, path, prior, legacy):
     created_events = {event for event in generated["hooks"] if event not in hooks}
     for event, groups in generated["hooks"].items():
         hooks.setdefault(event, []).extend(groups)
+    for event in retired - set(generated["hooks"]):
+        if hooks.get(event) == []:
+            del hooks[event]
     created_version = False
     if cursor:
         version = generated["version"]
@@ -604,6 +632,10 @@ def install(repo, stage, dry, recommendation, locked, inventory):
     old_records = record_paths(old) if old.get("version") == 1 else set()
     old_proofs = old.get("managed", {})
     proposed = record_paths(desired)
+    config = json_object(checked_path(repo, ".jstack/config.json"), optional=True)
+    must_stop = config.get("must_stop_enabled", False)
+    if type(must_stop) is not bool:
+        raise ProjectError("must_stop_enabled 必须是布尔值")
     if HOOKS & proposed:
         check_hook_targets(stage)
     managed = {}
@@ -622,7 +654,7 @@ def install(repo, stage, dry, recommendation, locked, inventory):
         target = checked_path(repo, path)
         prior = old_proofs.get(path)
         if path in HOOKS:
-            proof, data = install_hooks(repo, stage, path, prior, path in old_records)
+            proof, data = install_hooks(repo, stage, path, prior, path in old_records, must_stop)
             if data is not None:
                 changes[path] = data
         else:

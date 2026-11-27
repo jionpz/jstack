@@ -332,6 +332,16 @@ jstack_repo_config() {
 	printf '%s\n' "$root/.jstack/config.json"
 }
 
+jstack_must_stop_enabled() {
+	local cfg
+	cfg=$(jstack_repo_config) || return 1
+	if jstack_has_jq; then
+		jq -e '.must_stop_enabled == true' "$cfg" >/dev/null 2>&1
+	else
+		python3 -I -c 'import json, sys; sys.exit(json.load(open(sys.argv[1])).get("must_stop_enabled") is not True)' "$cfg" 2>/dev/null
+	fi
+}
+
 # 用 jq 表达式读仓库级配置；没有 jq 或没有配置时返回 1。
 jstack_cfg() {
 	local cfg
@@ -369,8 +379,9 @@ jstack_cfg_summary() {
 		(if (.stages_file // "") != "" then "阶段表=" + .stages_file else empty end),
 		(if (.tracker.type // "") != "" then "tracker=" + .tracker.type else empty end),
 		(if (.verify.command // "") != "" then "验证命令=" + .verify.command else empty end),
-		((.must_stop // []) | length) as $m |
-			(if $m > 0 then "must-stop 追加=" + ($m | tostring) + " 条" else empty end)
+		(if .must_stop_enabled == true then
+			"must-stop=已开启", ((.must_stop // []) | length | select(. > 0) | "must-stop 追加=\(.) 条")
+		else empty end)
 	'
 }
 

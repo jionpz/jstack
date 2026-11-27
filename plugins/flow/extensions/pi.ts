@@ -80,6 +80,7 @@ export default function (pi: any) {
 		}
 		const hook = runHook(root, "guard", {
 			session_id: sessionId(ctx),
+			cwd: ctx?.cwd,
 			hook_event_name: "PreToolUse",
 			tool_name: hookTool,
 			tool_input: hookInput,

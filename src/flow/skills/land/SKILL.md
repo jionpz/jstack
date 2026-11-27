@@ -18,7 +18,7 @@ Run `git status --short`, `git diff --check <base>`, `git diff --cached --check`
 
 Check the current branch with `git branch --show-current`. Reuse the task branch when it already exists. If HEAD is detached or on the default branch, create a task branch at the current HEAD, such as `codex/<slug>` in Codex. Preserve any existing commits on the default branch.
 
-Commit only the intended files, in small verified units. Use a Conventional Commits subject that says what changed and a body that says why. Keep unrelated user changes out of the commit. Never rewrite a pushed branch: force push is a must-stop action.
+Commit only the intended files, in small verified units. Use a Conventional Commits subject that says what changed and a body that says why. Keep unrelated user changes out of the commit. Never rewrite a pushed branch.
 
 Leave the working tree clean. Before recording the head SHA or pushing, confirm that HEAD is on the task branch. In a repository with no remote, record `stage.sh land commit <SHA>` and finish land.
 
@@ -51,4 +51,4 @@ Confirm that the PR's head matches the inspected commit before and after waiting
 - Green on the inspected head: land is PR-ready. Report the PR URL, head SHA, the verification and decisions sections, and the check result.
 - Red, still unfinished after that one wait, or unable to run: land is not met. Name the exact failing, pending, or unavailable check and send the task back to execute for a fix and a fresh verify. Do not report the task as done.
 
-Never merge the PR, enable auto-merge, or push directly to the default branch unless the user's current message explicitly names that PR or action. Route owns that decision, and the must-stop guard enforces it.
+Never merge the PR, enable auto-merge, or push directly to the default branch unless the user's current message explicitly names that PR or action. Route owns that decision. If the repository enables must-stop, its guard also checks for PR merge commands.

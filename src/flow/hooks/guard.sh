@@ -212,7 +212,7 @@ shell_staged_secret_hit() {
 }
 
 match_shell() {
-	local cmd=$1 segs builtin_cmd= builtin_segs= match_segs pats line hook re rest scope src n best_n= hit= hit_src= stage= stage_n stage_src stage_hit reason
+	local cmd=$1 segs builtin_cmd= builtin_segs= full_cmd match_segs pats line hook re rest scope src n best_n= hit= hit_src= stage= stage_n stage_src stage_hit reason
 	segs=$(shell_segments "$cmd")
 	if jstack_has_jq; then
 		builtin_cmd=$(printf '%s\n' "$cmd" | awk -f "$route/../../hooks/literal-command.awk") || builtin_cmd=
@@ -235,8 +235,12 @@ match_shell() {
 		src=${rest%%"$tab"*}; [ -n "$src" ] || src=${rest#*"$tab"}
 		[ -n "$hook" ] && [ "$re" != "$rest" ] || continue
 		if [ "$scope" = full ]; then
+			full_cmd=${builtin_cmd:-$cmd}
+			if [ "$hook" = remote-pipe ] && [[ $full_cmd == *'|'*python* ]]; then
+				full_cmd=$(printf '%s\n' "$full_cmd" | python3 -I "$route/../../hooks/json-pipeline.py") || full_cmd=${builtin_cmd:-$cmd}
+			fi
 			if [ -n "$builtin_cmd" ]; then
-				n=$(printf '%s\n' "$builtin_cmd" | JSTACK_FULL_PATTERN="$re" awk '
+				n=$(printf '%s\n' "$full_cmd" | JSTACK_FULL_PATTERN="$re" awk '
 					match($0, ENVIRON["JSTACK_FULL_PATTERN"]) {
 						prefix = substr($0, 1, RSTART)
 						print 1 + gsub(/&&|\|\||[;|]/, "", prefix)
@@ -244,7 +248,7 @@ match_shell() {
 					}')
 				[ -n "$n" ] || continue
 			else
-				printf '%s\n' "$cmd" | grep -Eq -- "$re" || continue
+				printf '%s\n' "$full_cmd" | grep -Eq -- "$re" || continue
 				n=1
 			fi
 		else
@@ -312,7 +316,7 @@ match_edit() {
 }
 
 main() {
-	local input evt tool cmd kind= reason project_event=
+	local input evt tool cmd kind= reason project_event= hook_cwd
 	input=$(cat)
 	evt=$(jstack_json_str hook_event_name "$input")
 	case $evt in
@@ -364,11 +368,17 @@ main() {
 			emit_result "$reason" deny
 			return 0
 		fi
-		match_shell "$cmd"
-		return 0
 	fi
-	match_edit
+	[ "${1:-}" != --stage-only ] || return 0
+	hook_cwd=$(jstack_json_str cwd "$input")
+	local JSTACK_REPO=${JSTACK_REPO:-${CURSOR_PROJECT_DIR:-${CLAUDE_PROJECT_DIR:-${hook_cwd:-$PWD}}}}
+	jstack_must_stop_enabled || return 0
+	if [ "$kind" = shell ]; then
+		match_shell "$cmd"
+	else
+		match_edit
+	fi
 }
 
-main
+main "$@"
 exit 0

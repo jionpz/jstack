@@ -44,7 +44,8 @@
 | `domain_docs.glossary` | string | `GLOSSARY.md` | `flow:archive`、`spec:domain-modeling` | 领域词表位置 |
 | `domain_docs.adr` | string | `docs/adr` | 同上 | ADR 目录 |
 | `domain_docs.conventions` | string | `docs/agents/conventions` | `flow:archive`、poteto-mode 的委派 | 项目约定库；缺目录时归档阶段跳过并说明 |
-| `must_stop` | `{action, hook?, regex?, path_regex?, allow_path_regex?}[]` | `[]` | `route`、`prompt.sh`、`guard.sh` | 追加项。`action` 是给人看的一句话；带 `regex`（ERE）的条目由 guard 按 shell 命令拦截，带 `path_regex`（ERE）的条目按编辑工具的路径和补丁目标拦截，`allow_path_regex` 可从路径规则中放行例外；`hook` 是稳定标识，便于 reason 和日志引用。没有匹配字段的条目只能靠 route 自己识别 |
+| `must_stop_enabled` | boolean | `false` | 安装器、`route`、`prompt.sh`、`guard.sh` | 开启后应用内置清单和项目追加项。Claude Code、Cursor 和 Codex 修改此字段后运行项目级 `refresh` 更新接线 |
+| `must_stop` | `{action, hook?, regex?, path_regex?, allow_path_regex?}[]` | `[]` | `route`、`prompt.sh`、`guard.sh` | `must_stop_enabled` 开启时追加的规则。`action` 是给人看的提示。`regex` 和 `path_regex` 分别匹配命令和编辑或补丁目标，使用 ERE。`allow_path_regex` 定义路径例外。`hook` 是日志中的稳定标识。无匹配字段的条目由 route 判断 |
 | `stages_file` | string \| null | `null` | `stage.sh`、`locate.sh`、`prompt.sh`、`route` | 整表替换的路径，相对仓库根；表格格式与插件的 `stages.md` 完全相同。必须含 `execute`，至少要有一个阶段。route 生成路线时丢掉表里没有的阶段 |
 | `verify.command` | string \| null | `null` | Stop、`stage.sh verify`、`stage.sh end`、`prompt.sh` | 受信任的项目验证命令，由仓库根目录执行并记录实际结果 |
 | `verify.timeout_s` | positive number | `600` | 验证执行器 | 验证进程的超时秒数 |
@@ -89,6 +90,7 @@
 {
   "tracker": { "type": "local", "local_dir": "docs/agents/tickets" },
   "domain_docs": { "glossary": "docs/GLOSSARY.md", "adr": "docs/adr" },
+  "must_stop_enabled": true,
   "must_stop": [
     {
       "action": "运行 ./deploy.sh、kubectl apply 或 docker push",

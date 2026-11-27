@@ -91,6 +91,20 @@ Pi 的项目接线默认不声明子 agent 扩展包。需要该功能时，用 
 
 > 环境要求：Git、Bash，以及相应的 AI 编程工具。部分安装或运行功能还需要 `jq`、`rg`、`gh`、`bun` 等依赖。当前仓库的静态 CI 覆盖 macOS 和 Linux；其他平台应先自行验证。
 
+### 可选的 must-stop 审批
+
+must-stop 默认关闭。更新已有项目时，`refresh` 会移除 JStack 之前安装的命令和文件审批接线。已有 `must_stop` 规则保存在配置里，只有显式开启后才生效。使用用户级插件的项目可以通过 `./jstack refresh --user` 更新支持的本机安装。
+
+需要开启时，把以下字段合并到目标项目的 `.jstack/config.json`，然后运行 `./jstack refresh --repo /path/to/project`。项目尚未安装 JStack 时，设置字段后运行项目级 `install`。Claude Code、Cursor 和 Codex 的 must-stop 审批通过项目级安装注册。Pi 和 OMP 的扩展直接读取项目配置。设为 `false` 或删除该字段后再刷新即可关闭。
+
+```json
+{
+  "must_stop_enabled": true
+}
+```
+
+阶段提示、验证门禁和 PR-ready 流程照常运行。各 harness 继续执行自己的权限策略。 [配置字段](docs/agents/jstack-config.md)
+
 ## 一项任务如何推进？
 
 JStack 把「应该做什么」和「由哪个 skill 完成」分开管理。`route` 先识别任务规模，再按照阶段定义安排执行者。

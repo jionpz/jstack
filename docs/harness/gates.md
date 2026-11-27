@@ -1,6 +1,6 @@
 # Harness 门禁能力
 
-flow 的三个门禁（阶段提示、验证门禁、红线守卫）共用 `src/flow/hooks/` 中的判定逻辑。各 harness 用自己的事件调用同一个门禁脚本，状态文件和会话 id 规则也共用 `lib.sh`。
+flow 的阶段提示、验证门禁和可选的 must-stop 守卫共用 `src/flow/hooks/` 和 `lib.sh`。仓库设置 `must_stop_enabled: true` 才启用审批。Claude Code、Cursor 和 Codex 通过项目级安装或刷新注册审批，Pi 和 OMP 扩展在运行时读取配置。Claude Code 默认保留只检查子 agent 阶段状态写入的 Bash hook。
 
 本文件记录每个 harness 能承载哪些门禁、怎么接、哪些地方降级。Codex 的三个门禁也已接：项目级安装把 hooks 写进 `.codex/hooks.json`；它的 hooks 默认要信任后才执行，非交互运行要加 `--dangerously-bypass-hook-trust`。Workloop 的会话 id 已接，但平台没有 Stop hook，门禁只能降级为 agent 自检，见“降级”第 7 条。
 
@@ -11,7 +11,7 @@ flow 的三个门禁（阶段提示、验证门禁、红线守卫）共用 `src/
 | 发布支持 | 一等 | 尽力而为 | 一等 | 尽力而为 | 尽力而为 |
 | 阶段提示（UserPromptSubmit） | 支持（原生 hooks） | 需适配（`beforeSubmitPrompt` → `additional_context`） | 需适配（`before_agent_start` → 隐藏消息） | 需适配（`before_agent_start` → 隐藏消息） | 需适配（原生 `UserPromptSubmit` → `hookSpecificOutput.additionalContext`） |
 | 验证门禁（Stop） | 支持（原生 hooks，`stop_hook_active` 由 harness 维护） | 需适配（`stop` → `followup_message`，`loop_limit` 3） | 需适配（`agent_before_settle`，扩展自己限 3 次） | 需适配（`session_stop` → `decision: block`，`stop_hook_active` 由 harness 维护） | 需适配（原生 `Stop`，`stop_hook_active` 由 harness 维护） |
-| 红线守卫（PreToolUse） | 支持（shell 与编辑工具的原生 hooks，`permissionDecision: ask`） | 需适配（shell 走 `beforeShellExecution` → `permission: ask`；编辑工具走 `preToolUse` 并降级 `deny`） | 需适配（`tool_call(bash|write|edit)` → 确认框或 `block`） | 需适配（`tool_call(bash|write|edit)` → 确认框或 `block`） | 需适配（原生 `PreToolUse` 接 `Bash` 和 `apply_patch`；不支持 ask，降级为 deny） |
+| 可选的 must-stop 守卫 | 支持（shell 与编辑工具的原生 hooks，`permissionDecision: ask`） | 需适配（shell 走 `beforeShellExecution` → `permission: ask`；编辑工具走 `preToolUse` 并降级 `deny`） | 需适配（`tool_call(bash|write|edit)` → 确认框或 `block`） | 需适配（`tool_call(bash|write|edit)` → 确认框或 `block`） | 需适配（原生 `PreToolUse` 接 `Bash` 和 `apply_patch`；不支持 ask，降级为 deny） |
 
 “需适配”不是没实现：三个门禁在 Pi、OMP 和 Codex 上都已实现，只是需要各自的事件/协议翻译，并有下面的降级。
 
@@ -33,7 +33,7 @@ flow 的三个门禁（阶段提示、验证门禁、红线守卫）共用 `src/
 
 守卫用 `jq` 从 hook 事件中提取准确的命令文本。对单条 `rg`、`grep`、`cat` 或 `printf`，如果所有参数都是字面量，且选项与格式已知只用于搜索、读文件或打印，内置规则只匹配命令名。`rg sudo src/flow` 中的 `sudo` 因此可以作为普通搜索词使用。
 
-展开、重定向、管道、复合命令、未知选项和缺少 `jq` 的环境继续使用原来的分段匹配。仓库追加的 `must_stop.regex` 始终读取原分段，仍可要求确认特定搜索。静态检查以工具的标准行为为准，实际命令解析和权限由运行环境决定。
+`remote-pipe` 用 Python 3 识别字面量 `python3 -c` 中只读取和显示 JSON 的代码，包括多行的 `json.load(sys.stdin)`。直接执行标准输入、调用未知函数，或无法确认代码用途的情况继续匹配 `remote-pipe`。项目追加的 `must_stop.regex` 始终读取原始命令分段。实际命令解析和权限由运行环境决定。
 
 ## 会话 id
 

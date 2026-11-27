@@ -6,11 +6,11 @@ disable-model-invocation: true
 
 # Verify
 
-You verify the candidate the execute stage handed back. Author checks are input to execution, not acceptance. Use the task size and the ticket's acceptance criteria, and check the scope against `../route/must-stop.md` plus the repo config's `must_stop`.
+You verify the candidate the execute stage handed back. Author checks are input to execution, not acceptance. Use the task size and the ticket's acceptance criteria, and when `.jstack/config.json` sets `must_stop_enabled: true`, check the scope against `../route/must-stop.md` plus the repo config’s `must_stop`.
 
 - **XS, no must-stop item:** run the project's required verification in this session. Use `verify.command` when the repo config provides it; otherwise run the smallest check that demonstrates the requested behavior.
 - **S or M:** use one fresh bulk verifier.
-- **L, a ticket on an L path, or any change that touches a must-stop item:** use two independent fresh bulk verifiers. Disagreement, one failure, or a blocked report means verification is incomplete.
+- **L, a ticket on an L path, or any change covered by the enabled must-stop policy:** use two independent fresh bulk verifiers. Disagreement, one failure, or a blocked report means verification is incomplete.
 
 ## Interactive route
 
