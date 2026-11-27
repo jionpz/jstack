@@ -21,6 +21,8 @@ You own one task or one ticket from the first edit to the committed change. Work
 
 Do the core change yourself. Delegate only an independent piece that pays for its own context: a separate subsystem, a mechanical sweep across many files, or a read-only investigation. One subagent at a time, with file pointers and the success check. Review its diff before you land it. Never put a must-stop action in a brief: the guard cannot see the brief, and the subagent may run without the gates.
 
+For a worker command that needs throwaway files, run `python3 -I <flow>/skills/route/with-scratch.py -- <command> [args...]`. The command inherits the current working directory and receives a fresh directory as `TMPDIR` and `JSTACK_SCRATCH_DIR`. The helper removes that directory when the command exits, including on a nonzero exit. Write any results the parent needs outside the scratch directory.
+
 ## Decisions
 
 - A must-stop action waits for the user, whoever would run it. The list is `../route/must-stop.md` plus the repo config's `must_stop`.

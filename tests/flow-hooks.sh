@@ -179,7 +179,9 @@ injection_receipt() {
 		text=$(printf '%s' "$out" | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["hookSpecificOutput"]["additionalContext"])') ;;
 	esac
 	printf '%s' "$text" | grep -qF "jstack 提示门禁注入：session=$SID" &&
-		printf '%s' "$text" | grep -qF 'Stop/guard 未由此验证'
+		printf '%s' "$text" | grep -qF 'Stop/guard 未由此验证' &&
+		printf '%s' "$text" | grep -qF '工程任务先用 route' &&
+		printf '%s' "$text" | grep -qF '普通对话直接回复'
 }
 old_file_cleaned() {
 	mkdir -p "$JSTACK_STATE_DIR"
@@ -404,6 +406,12 @@ if command -v jq >/dev/null; then
 	t "jstack runs --show 能查到证据和默认决定" sh -c '
 		JSTACK_STATE_DIR="$3" "$1" runs --show "$4" --json |
 		jq -e "select((.evidence | any(. == \"verify ./verify-check -> ok\")) and (.defaults | any(. == \"按标题排序 -> 任务只要求排序\")))"' _ "$ROOT/jstack" "$RUN_REPO" "$RUN_STATE" "$RUN_ID"
+	t "jstack runs --decision 按默认决定筛选" sh -c '
+		JSTACK_STATE_DIR="$3" "$1" runs --repo "$2" --decision "按标题" --json |
+		jq -e --arg id "$4" "select(.run_id == \$id)"' _ "$ROOT/jstack" "$RUN_REPO" "$RUN_STATE" "$RUN_ID"
+	t "jstack runs --decision 不在证据里搜索" sh -c '
+		[ "$(JSTACK_STATE_DIR="$3" "$1" runs --repo "$2" --decision "verify-check")" = "没有匹配的运行记录" ]' \
+		_ "$ROOT/jstack" "$RUN_REPO" "$RUN_STATE"
 	RUN_SID=run-log-abandoned-0002
 	run_stage start --size M execute,verify >/dev/null
 	t "未 end 的任务在 jstack runs 中标为未完成" sh -c '
@@ -504,6 +512,20 @@ if command -v jq >/dev/null; then
 	both_shell_ask 'git grep sudo -- src/flow' 'Any `sudo`'
 	unset JSTACK_NO_JQ
 fi
+scratch_lifecycle() {
+	local scratch status=0
+	scratch=$(python3 -I "$(dirname "$ST")/with-scratch.py" -- sh -c '
+		[ "$TMPDIR" = "$JSTACK_SCRATCH_DIR" ] || exit 9
+		mkdir "$JSTACK_SCRATCH_DIR/nested" || exit 9
+		printf working >"$JSTACK_SCRATCH_DIR/nested/file" || exit 9
+		printf "%s\n" "$JSTACK_SCRATCH_DIR"
+		exit "$1"
+	' _ "$1") || status=$?
+	[ "$status" -eq "$1" ] && [ -n "$scratch" ] && [ ! -e "$scratch" ]
+}
+t "worker 临时目录在命令成功后清理" scratch_lifecycle 0
+t "worker 临时目录在命令失败后清理且保留退出码" scratch_lifecycle 37
+t "worker 管理的临时目录命令通过 shell 门禁" silent hook guard "$(bash_input 'python3 -I ./with-scratch.py -- ./run-tests')"
 t "guard.sh 在插件目录不完整时放行" sh -c 'printf "%s" "$1" | CLAUDE_PLUGIN_ROOT=$2 "$3" "$4" | grep -q . && exit 1 || exit 0' _ "$(bash_input 'rm -rf x')" "$T/nowhere" "$BASH" "$H/guard.sh"
 
 # 仓库级配置：.jstack/config.json 追加 must-stop、替换阶段表、注入提示。

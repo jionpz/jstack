@@ -14,6 +14,8 @@ Claude Code 有 `--scope project`，其余 harness 只有用户级安装；四�
 
 项目级 `--all` 为 Claude Code、Pi、OMP、Cursor 和 Codex 生成入口。`--harnesses` 可追加指定 harness，已安装范围以 lock 为准。用户级 `--all` 按本机可用的 harness 安装。维护者提交 `.jstack/vendor/`、lock 和原生入口后，协作者可在另一个路径的 clone 使用工作流，原生项目与 hook 信任仍由各 harness 管理。
 
+`jstack refresh` 沿用各项目 lock 中的 harness，可重复指定 `--repo`。所有项目先通过预检，再逐仓更新。`--user` 同时调用用户级 `install --all`。
+
 ### 2. vendor 布局：插件树进仓库，只链入口
 
 ```
@@ -45,6 +47,7 @@ Claude Code 有 `--scope project`，其余 harness 只有用户级安装；四�
   "jstack":  { "version": "0.1.0", "commit": "<jstack 仓库 commit>" },
   "vendor":  { "tree": "<内容哈希>", "integrity": "<包含路径、链接和执行权限的指纹>" },
   "upstream": { "pstack": "<commit>", "spec": "<commit>" },
+  "upstream_repositories": { "pstack": "https://github.com/cursor/plugins.git", "spec": "https://github.com/mattpocock/skills.git" },
   "plugins": { "pstack": { "version": "<版本>" }, "spec": { "version": "<版本>" }, "flow": { "version": "<版本>" } },
   "harnesses": {
     "claude-code": { "scope": "project", "records": [".claude/skills/route"] }
@@ -56,6 +59,8 @@ Claude Code 有 `--scope project`，其余 harness 只有用户级安装；四�
 ```
 
 `./jstack doctor` 核对 vendor 树哈希、插件版本和登记的原生接线。第二版 lock 记录链接目标、生成文件摘要和共享配置中的精确条目，供 `doctor` 和项目卸载核对。卸载前验证归属并保留用户管理的配置。初次从第一版 lock 升级时重跑项目级 install。
+
+从 Git checkout 安装时，lock 写入完整的 `jstack.commit`。`doctor` 在当前 JStack 安装源的本地 Git 历史中验证该提交，旧 lock 的短 SHA 也可验证。浅克隆或其他来源缺少该对象时会报告无法验证。上游仓库 URL 与 SHA 分别保存在 `upstream_repositories` 和 `upstream` 中。
 
 ### 4. 两级配置，单一来源
 
