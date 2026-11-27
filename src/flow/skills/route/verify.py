@@ -38,7 +38,7 @@ def settings(repo):
         timeout = 600
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("verify.timeout_s 必须是正数")
-    if any(item.get("regex") for item in config.get("must_stop") or []):
+    if config.get("must_stop_enabled") is True and any(item.get("regex") for item in config.get("must_stop") or []):
         if os.environ.get("JSTACK_NO_JQ") or shutil.which("jq") is None:
             raise ValueError("验证命令需要 jq 才能检查仓库的 must-stop 模式")
     return command, timeout

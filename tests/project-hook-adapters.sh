@@ -47,6 +47,8 @@ say "Project hook templates contain all three adapters"
 
 FLOW="$REPO/.jstack/vendor/plugins/flow"
 mkdir -p "$FLOW"
+printf '%s\n' '{"must_stop_enabled":true}' >"$REPO/.jstack/config.json"
+export JSTACK_REPO="$REPO"
 cp -R "$ROOT/plugins/flow/hooks" "$FLOW/"
 cp -R "$ROOT/plugins/flow/skills" "$FLOW/"
 SID=adapter-session
@@ -154,7 +156,11 @@ for path_entry in "${path_entries[@]}"; do
 done
 install_cursor_hooks "$REPO" 0
 cp "$REPO/.cursor/hooks.json" "$T/project-cursor-hooks.json"
-cp "$plugin/hooks/hooks.cursor.json" "$local_flow/hooks/"
+# Model an upgraded project opened while another harness still has the old hook registrations.
+jq '.hooks[][] |= (.command |= (split("${CURSOR_PROJECT_DIR}/.jstack/vendor/plugins/flow") | join("${CURSOR_PLUGIN_ROOT}")))' \
+	"$T/project-cursor-hooks.json" >"$local_flow/hooks/hooks.cursor.json"
+jq '.hooks[][].hooks[].command |= (split("${CLAUDE_PROJECT_DIR}/.jstack/vendor/plugins/flow/hooks/") | join("${CLAUDE_PLUGIN_ROOT}\"/hooks/") | sub("\\.sh\\\"$"; ".sh") | sub("claude-project"; "claude-plugin"))' \
+	"$REPO/.claude/settings.json" >"$T/legacy-claude-hooks.json"
 imported_flow="$local_home/.claude/plugins/cache/jstack/flow/test"
 mkdir -p "$imported_flow"
 cp -R "$plugin/hooks" "$plugin/skills" "$imported_flow/"
@@ -180,7 +186,7 @@ for replay_path in "$PATH" "$no_jq_bin"; do
 		user_native=$(jq -r --arg event "$event" '.hooks[$event][0].command' "$local_flow/hooks/hooks.cursor.json")
 		cache_import="CURSOR_PLUGIN_ROOT=\"$imported_flow\"; $user_native"
 		project_import=$(jq -r "$section.hooks[0].command" "$REPO/.claude/settings.json")
-		plugin_import=$(jq -r "$section.hooks[0].command" "$plugin/hooks/hooks.json")
+		plugin_import=$(jq -r "$section.hooks[0].command" "$T/legacy-claude-hooks.json")
 		replay_cursor "$payload" "$REPO" "$project_native" | jq -e "$response" >/dev/null ||
 			die "Project Cursor hook did not respond for $event"
 		[ -z "$(replay_cursor "$payload" "$REPO" "$user_native")" ] &&

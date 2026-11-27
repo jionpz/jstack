@@ -408,12 +408,17 @@ smoke_run() {
 # 本地仓库的 locate.sh 打印的提供者，smoke 用它核对各 harness 里 route 的输出。
 local_providers() { bash "$ROOT/plugins/flow/skills/route/locate.sh" | cut -f1; }
 
+smoke_enable_must_stop() {
+	mkdir -p "$1/.jstack" && printf '%s\n' '{"must_stop_enabled":true}' >"$1/.jstack/config.json"
+}
+
 # 在全新项目里运行；保留用户的模型凭据，入口和状态来自项目安装。
 # Pi 的非交互会话需要 --approve 才加载刚安装到临时项目的扩展和 agents。
 smoke_project() { # <pi|omp>
 	local h=$1 dir="$WORK/smoke/$1/project with spaces" out session state stage prompt text rc=0
 	mkdir -p "$dir"
 	dir=$(cd "$dir" && pwd -P) || return 1
+	smoke_enable_must_stop "$dir" || return 1
 	if ! install_project "$dir" 0 "$h" auto >"$WORK/smoke/$h/project-install.log" 2>&1; then
 		say "✗ $h: 项目级安装失败"
 		tail -10 "$WORK/smoke/$h/project-install.log" | sed 's/^/  /'
@@ -537,7 +542,8 @@ smoke_pi() {
 	stagedir="$dir/gate-state"
 	rm -rf "$stagedir"
 	prompt="This is a test of jstack's stage-gate hooks; nothing will be deleted. Do all of this in one turn and don't stop early: 1) Run bash: rm -rf /tmp/jstack-smoke-gate-nonexistent (the path does not exist). 2) Run bash: \"$ROOT/plugins/flow/skills/route/stage.sh\" start execute,verify. 3) Then stop. If step 1 was blocked by a hook, include GUARD-SEEN in your reply. If stopping was blocked by a hook that told you to record verification evidence, include GATE-SEEN in your reply. Do not record any evidence."
-	if smoke_run "Pi 门禁" "$out" env JSTACK_STATE_DIR="$stagedir" pi -p --no-session --no-context-files --mode json "$prompt"; then
+	smoke_enable_must_stop "$dir" || return 1
+	if smoke_run "Pi 门禁" "$out" env JSTACK_REPO="$dir" JSTACK_STATE_DIR="$stagedir" pi -p --no-session --no-context-files --mode json "$prompt"; then
 		text=$(jq -r 'select(.type=="message_end" and .message.role=="assistant") | .message.content[]?.text // empty' "$out" 2>/dev/null || true)
 		bad=0
 		grep -q 'GUARD-SEEN' <<<"$text" || {
@@ -636,7 +642,8 @@ smoke_omp() {
 		rc=1
 	else
 		prompt="This is a test of jstack's stage-gate hooks; nothing will be deleted. Do all of this in one turn and don't stop early: 1) Run bash: rm -rf /tmp/jstack-smoke-gate-nonexistent (the path does not exist). 2) Run bash: \"$ROOT/plugins/flow/skills/route/stage.sh\" start execute,verify. 3) Then stop. If step 1 was blocked by a hook, include GUARD-SEEN in your reply. If stopping was blocked by a hook that told you to record verification evidence, include GATE-SEEN in your reply. Do not record any evidence."
-		if smoke_run "OMP 门禁" "$out" env JSTACK_STATE_DIR="$stagedir" omp -p --no-session --mode json --auto-approve --tools=bash "$prompt"; then
+		smoke_enable_must_stop "$dir" || return 1
+		if smoke_run "OMP 门禁" "$out" env JSTACK_REPO="$dir" JSTACK_STATE_DIR="$stagedir" omp -p --no-session --mode json --auto-approve --tools=bash "$prompt"; then
 			text=$(jq -r 'select(.type=="message_end" and .message.role=="assistant") | .message.content[]?.text // empty' "$out" 2>/dev/null || true)
 			bad=0
 			grep -q 'GUARD-SEEN' <<<"$text" || {
@@ -695,7 +702,7 @@ const { loadPlugins } = require(loader);
     process.exit(1);
   }
   const h = by.get('flow')?.hooks?.config?.hooks || {};
-	const missingHooks = ['beforeShellExecution', 'preToolUse', 'beforeSubmitPrompt', 'stop'].filter(e => !Array.isArray(h[e]) || h[e].length === 0);
+	const missingHooks = ['beforeSubmitPrompt', 'stop'].filter(e => !Array.isArray(h[e]) || h[e].length === 0);
   if (missingHooks.length) {
     console.error(`Cursor loader: flow hooks 缺少 ${missingHooks.join(', ')}`);
     process.exit(1);
@@ -725,16 +732,17 @@ JS
 	say "✓ Cursor: pstack 是 Claude 树转换产物（无 adapter 提示，agent 用 is_background）"
 	# 按 Cursor 的 hook 协议喂输入，确认三个门禁脚本在安装副本里都能工作。
 	mkdir -p "$WORK/smoke/state"
+	smoke_enable_must_stop "$WORK/smoke" || return 1
 	printf 'path execute,verify\nstage execute\n' >"$WORK/smoke/state/cursor-smoke"
 	out="$WORK/smoke/cursor-hooks.txt"
 	if ! printf '{"conversation_id":"cursor-smoke","hook_event_name":"beforeShellExecution","command":"rm -rf build","cwd":"/tmp","sandbox":false}' |
-		JSTACK_STATE_DIR="$WORK/smoke/state" bash "$root/flow/hooks/guard.sh" >"$out" 2>/dev/null ||
+		JSTACK_REPO="$WORK/smoke" JSTACK_STATE_DIR="$WORK/smoke/state" bash "$root/flow/hooks/guard.sh" >"$out" 2>/dev/null ||
 		! grep -q '"permission":"ask"' "$out" || ! grep -qF 'jstack must-stop' "$out"; then
 		say "✗ Cursor: beforeShellExecution 没有对 rm -rf 返回 ask"
 		return 1
 	fi
 	if ! printf '{"conversation_id":"cursor-smoke","hook_event_name":"preToolUse","tool_name":"Write","tool_input":{"file_path":"/tmp/.env"}}' |
-		JSTACK_STATE_DIR="$WORK/smoke/state" bash "$root/flow/hooks/guard.sh" >"$out" 2>/dev/null ||
+		JSTACK_REPO="$WORK/smoke" JSTACK_STATE_DIR="$WORK/smoke/state" bash "$root/flow/hooks/guard.sh" >"$out" 2>/dev/null ||
 		! grep -q '"permission":"deny"' "$out" || ! grep -qF 'jstack must-stop' "$out"; then
 		say "✗ Cursor: preToolUse 没有拒绝写 .env"
 		return 1
@@ -774,6 +782,7 @@ smoke_codex() {
 	rm -rf "$dir"
 	mkdir -p "$dir"
 	git -C "$dir" init -q
+	smoke_enable_must_stop "$dir" || return 1
 	# 项目级安装（只装 Codex）：入口 skill 进 .agents/skills，poteto-agent / comment-sicko 转成 .codex/agents/*.toml。
 	if ! install_project "$dir" 0 codex auto >"$dir/install.log" 2>&1; then
 		say "✗ Codex 项目级安装失败："
@@ -874,6 +883,8 @@ smoke_claude_code() {
 	local user_settings="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
 	mkdir -p "$repo"
 	git -C "$repo" init -q || return 1
+	mkdir -p "$repo/.jstack" || return 1
+	printf '%s\n' '{"must_stop_enabled":true,"must_stop":[{"action":"jstack smoke probe","regex":"^printf JSTACK_SMOKE_GUARD$"}]}' >"$repo/.jstack/config.json" || return 1
 	if ! install_project "$repo" 0 claude-code auto >"$dir/install.log" 2>&1; then
 		say "✗ Claude Code 项目级安装失败"
 		tail -10 "$dir/install.log" | sed 's/^/  /'
@@ -884,7 +895,6 @@ smoke_claude_code() {
 	else
 		printf '{}\n' >"$dir/settings.json"
 	fi
-	printf '%s\n' '{"must_stop":[{"action":"jstack smoke probe","regex":"^printf JSTACK_SMOKE_GUARD$"}]}' >"$repo/.jstack/config.json"
 	session=$(python3 -I -c 'from uuid import uuid4; print(uuid4())') || return 1
 	(cd "$repo" && JSTACK_SESSION_ID="$session" JSTACK_STATE_DIR="$dir/state" \
 		.claude/skills/route/stage.sh start execute,verify) >"$dir/stage.log" || return 1
@@ -1050,6 +1060,7 @@ repo_config_errors() {
 		(if (.verify.command? != null) and ((.verify.command | type) != "string") then "verify.command 必须是字符串" else empty end),
 		(if (.verify.timeout_s? != null) and (((.verify.timeout_s | type) != "number") or (.verify.timeout_s <= 0)) then "verify.timeout_s 必须是正数" else empty end),
 		(if (.stages_file? != null) and ((.stages_file | type) != "string") then "stages_file 必须是字符串" else empty end),
+		(if has("must_stop_enabled") and ((.must_stop_enabled | type) != "boolean") then "must_stop_enabled 必须是布尔值" else empty end),
 		(if (.must_stop? != null) and ((.must_stop | type) != "array") then "must_stop 必须是数组" else empty end),
 		((.must_stop // [])[] | select((.action? // "") == "") | "must_stop 的每一项都要有非空 action")
 	' "$cfg") || rc=1
@@ -1115,6 +1126,7 @@ check_repo_config() {
 	cat >"$r/.jstack/config.json" <<'JSON'
 {
   "tracker": { "type": "local" },
+  "must_stop_enabled": true,
   "must_stop": [
     { "action": "运行 ./deploy.sh", "hook": "deploy", "regex": "(^|[[:space:]/])\\./deploy\\.sh([[:space:]]|$)" }
   ],
@@ -2078,25 +2090,26 @@ SH
 		[(.hooks.UserPromptSubmit // []), (.hooks.PreToolUse // []), (.hooks.Stop // [])]
 		| map(.[]? | .hooks[]?.command // "")
 		| map(select(contains($mark))) as $ours
-		| (($ours | length) == 4) and ([$ours[] | select(contains("hooks/hooks"))] | length) == 0
+		| (($ours | length) == 3) and ([$ours[] | select(contains("hooks/hooks"))] | length) == 0
+		  and ([$ours[] | select(endswith("/hooks/guard.sh\" --stage-only"))] | length == 1)
 	' "$r/.claude/settings.json" >/dev/null 2>&1; then
 		say "✗ .claude/settings.json 里的 flow hooks 不完整"
 		rc=1
 	fi
 	if ! jq -e '
 		(.version == 1) and
-		([.hooks[][].command // empty] | map(select(contains(".jstack/vendor/plugins/flow"))) | length == 4) and
+		([.hooks[][].command // empty] | map(select(contains(".jstack/vendor/plugins/flow"))) | length == 2) and
+		(.hooks | has("beforeShellExecution") or has("preToolUse") | not) and
 		([.hooks[][].command // empty] | map(select(contains("hooks/hooks"))) | length == 0)
 	' "$r/.cursor/hooks.json" >/dev/null 2>&1; then
 		say "✗ .cursor/hooks.json 里的 flow hooks 不完整"
 		rc=1
 	fi
 	if ! jq -e '
-		([.hooks[][] | .hooks[]?.command // empty] | map(select(contains(".jstack/vendor/plugins/flow"))) | length == 4) and
-		([.hooks[][] | .hooks[]?.command // empty] | map(select(contains("git rev-parse --show-toplevel"))) | length == 4) and
+		([.hooks[][] | .hooks[]?.command // empty] | map(select(contains(".jstack/vendor/plugins/flow"))) | length == 2) and
+		([.hooks[][] | .hooks[]?.command // empty] | map(select(contains("git rev-parse --show-toplevel"))) | length == 2) and
 		([.hooks[][] | .hooks[]?.command // empty] | map(select(contains("hooks/hooks"))) | length == 0) and
-		([.hooks.PreToolUse[].matcher] | index("Bash") != null) and
-		([.hooks.PreToolUse[].matcher] | index("apply_patch") != null)
+		(.hooks | has("PreToolUse") | not)
 	' "$r/.codex/hooks.json" >/dev/null 2>&1; then
 		say "✗ .codex/hooks.json 里的 flow hooks 没有从当前 Git 根目录解析 vendor"
 		rc=1
@@ -2463,6 +2476,27 @@ check_project_refresh() (
 	say "✓ 项目刷新：多仓预检、dry-run、修复缺失入口且不增补 harness"
 )
 
+check_must_stop_upgrade() (
+	local repo="$WORK/legacy-must-stop" cli="$ROOT/jstack"
+	mkdir -p "$repo/.jstack" "$repo/.cursor" && git -C "$repo" init -q || return
+	printf '%s\n' '{"version":1,"hooks":{"beforeShellExecution":[{"command":"printf independent-hook"}]}}' >"$repo/.cursor/hooks.json" || return
+	printf '%s\n' '{"must_stop_enabled":true,"must_stop":[{"action":"test rule","regex":"^printf test$"}]}' >"$repo/.jstack/config.json" || return
+	"$cli" install --scope project --harnesses claude-code,cursor,codex --repo "$repo" >/dev/null || return
+	jq -se 'all(.[]; .hooks.PreToolUse | length == 2)' "$repo/.claude/settings.json" "$repo/.codex/hooks.json" >/dev/null &&
+		jq -e '.hooks.preToolUse[0].command | endswith("/guard.sh")' "$repo/.cursor/hooks.json" >/dev/null || return
+	jq 'del(.must_stop_enabled)' "$repo/.jstack/config.json" >"$WORK/legacy-must-stop-config" &&
+		cp "$WORK/legacy-must-stop-config" "$repo/.jstack/config.json" || return
+	"$cli" refresh --repo "$repo" --dry-run >/dev/null &&
+		jq -e '.hooks.PreToolUse | length == 2' "$repo/.codex/hooks.json" >/dev/null || return
+	"$cli" refresh --repo "$repo" >/dev/null || return
+	jq -e '(.hooks.PreToolUse | length == 1) and (.hooks.PreToolUse[0].hooks[0].command | endswith(" --stage-only"))' "$repo/.claude/settings.json" >/dev/null &&
+		jq -e '.hooks | has("PreToolUse") | not' "$repo/.codex/hooks.json" >/dev/null &&
+		jq -e '.hooks | (has("preToolUse") | not) and (.beforeShellExecution == [{"command":"printf independent-hook"}])' "$repo/.cursor/hooks.json" >/dev/null &&
+		cmp "$WORK/legacy-must-stop-config" "$repo/.jstack/config.json" &&
+		"$cli" doctor --repo "$repo" >/dev/null || return
+	say "✓ must-stop：升级关闭旧审批，保留用户 hook 和项目规则"
+)
+
 # Cursor 版 pstack 由 plugins/pstack 转换生成。重跑一次转换，核对产物没有被手改；
 # 同时核对 rules.tsv 的每条规则都命中差异，转换改动的文件正好是规则命中的文件。
 check_pstack_cursor() {
@@ -2736,8 +2770,7 @@ cmd_check() {
 					hits="${hits:+$hits, }hooks 文件不存在"
 				elif ! jq -e '
 					(.version == 1) and
-					((.hooks.beforeShellExecution // []) | length == 1) and
-					((.hooks.preToolUse // []) | length == 1) and
+					(.hooks | has("beforeShellExecution") or has("preToolUse") | not) and
 					((.hooks.beforeSubmitPrompt // []) | length == 1) and
 					((.hooks.stop // []) | length == 1)
 				' "$OUT/$hooks_rel" >/dev/null 2>&1; then
@@ -2788,6 +2821,7 @@ cmd_check() {
 	check_omp_user || rc=1
 	check_install_project || rc=1
 	check_project_refresh || rc=1
+	check_must_stop_upgrade || rc=1
 	if bash "$ROOT/tests/project-clone.sh" >"$WORK/project-clone" 2>&1; then
 		say "✓ 项目级安装产物在干净 Git clone 中可用"
 	else

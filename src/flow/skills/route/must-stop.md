@@ -1,6 +1,6 @@
 # jstack must-stop list
 
-The single list of actions that always need the user, at any size and under any autonomy grant (ADR-0004). It merges the global red lines, poteto-mode's Always-pause, and route's own list. Route and the flow hooks both read this file. Nothing else keeps a copy.
+When the repository sets `must_stop_enabled: true` in `.jstack/config.json`, these actions require the user at any task size and under any autonomy grant (ADR-0004). The policy is off by default. It merges the global red lines, poteto-mode's Always-pause, and route's own list. Route and the flow hooks both read this file. Nothing else keeps a copy.
 
 ## Must stop
 

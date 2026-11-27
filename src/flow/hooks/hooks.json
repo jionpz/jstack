@@ -11,13 +11,7 @@
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "command": "JSTACK_CURSOR_HOOK_SOURCE=claude-plugin exec \"${CLAUDE_PLUGIN_ROOT}\"/hooks/guard.sh", "timeout": 10 }
-        ]
-      },
-      {
-        "matcher": "Write|Edit|MultiEdit|NotebookEdit",
-        "hooks": [
-          { "type": "command", "command": "JSTACK_CURSOR_HOOK_SOURCE=claude-plugin exec \"${CLAUDE_PLUGIN_ROOT}\"/hooks/guard.sh", "timeout": 10 }
+          { "type": "command", "command": "JSTACK_CURSOR_HOOK_SOURCE=claude-plugin exec \"${CLAUDE_PLUGIN_ROOT}\"/hooks/guard.sh --stage-only", "timeout": 10 }
         ]
       }
     ],

@@ -19,13 +19,13 @@ You own one task or one ticket from the first edit to the committed change. Work
 
 ## Delegation
 
-Do the core change yourself. Delegate only an independent piece that pays for its own context: a separate subsystem, a mechanical sweep across many files, or a read-only investigation. One subagent at a time, with file pointers and the success check. Review its diff before you land it. Never put a must-stop action in a brief: the guard cannot see the brief, and the subagent may run without the gates.
+Do the core change yourself. Delegate only an independent piece that pays for its own context: a separate subsystem, a mechanical sweep across many files, or a read-only investigation. One subagent at a time, with file pointers and the success check. Review its diff before you land it. When the repo enables must-stop, never put a listed action in a brief: the guard cannot see the brief, and the subagent may run without the gates.
 
 For a worker command that needs throwaway files, run `python3 -I <flow>/skills/route/with-scratch.py -- <command> [args...]`. The command inherits the current working directory and receives a fresh directory as `TMPDIR` and `JSTACK_SCRATCH_DIR`. The helper removes that directory when the command exits, including on a nonzero exit. Write any results the parent needs outside the scratch directory.
 
 ## Decisions
 
-- A must-stop action waits for the user, whoever would run it. The list is `../route/must-stop.md` plus the repo config's `must_stop`.
+- When the repo sets `must_stop_enabled: true` in `.jstack/config.json`, a must-stop action waits for the user, whoever would run it. The list is `../route/must-stop.md` plus the repo config's `must_stop`.
 - A decision the evidence cannot settle that is irreversible, product-facing, or a public API or schema change: ask once, with a recommendation.
 - Everything else: take the default you would recommend, record `../route/stage.sh default "<decision> -> <why>"`, and continue.
 

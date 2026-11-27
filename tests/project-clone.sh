@@ -81,6 +81,8 @@ with tempfile.TemporaryDirectory(prefix="jstack project clone ") as temporary:
 
     init = run(["git", "init", "-q", str(source)], env=env)
     check("initialize isolated source repository", init.returncode == 0, init.stderr)
+    (source / ".jstack").mkdir()
+    (source / ".jstack/config.json").write_text('{"must_stop_enabled": true}\n', encoding="utf-8")
     install = run(
         [
             str(repo_root / "jstack"),

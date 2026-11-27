@@ -67,7 +67,7 @@ Claude Code 有 `--scope project`，其余 harness 只有用户级安装；四�
 | 层 | 文件 | 只放 | 不放 |
 |---|---|---|---|
 | 用户级 | `~/.jstack/config.json` | 跨仓库不变项：模型分层（premium / bulk / 角色覆盖）、预算与并发上限、通知字段（留给 #13） | 任何仓库相关内容 |
-| 仓库级 | `<repo>/.jstack/config.json` | 随仓库变化项：tracker、领域文档位置、must-stop 追加、阶段表文件、验证命令 | 模型名、provider、凭据 |
+| 仓库级 | `<repo>/.jstack/config.json` | 随仓库变化项：tracker、领域文档位置、must-stop 开关及规则、阶段表文件、验证命令 | 模型名、provider、凭据 |
 
 - 格式统一为 JSON：`jq` 已是运行时依赖，不引入 YAML 解析器。
 - 读取顺序：仓库级覆盖用户级；缺省值写在字段表里。仓库根由 `.jstack/config.json` 向上发现，`JSTACK_REPO` 可覆盖（测试用）。
@@ -94,7 +94,7 @@ flow 的三个 hook（阶段注入、Stop 证据、must-stop guard）目前有 C
 |---|---|
 | tracker 类型 / 本地目录 / 标签 | 仓库级 `tracker` |
 | 领域文档：GLOSSARY、ADR、约定库位置 | 仓库级 `domain_docs` |
-| must-stop 追加项与新增命令模式 | 仓库级 `must_stop[]` |
+| must-stop 开关与追加规则 | 仓库级 `must_stop_enabled` 和 `must_stop[]` |
 | 阶段表（整表替换：换提供者、加阶段、删阶段） | 仓库级 `stages_file` |
 | 项目验证命令 | 仓库级 `verify` |
 | 模型分层与角色映射 | 用户级 `models` |
