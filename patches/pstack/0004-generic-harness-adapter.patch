@@ -1,5 +1,5 @@
 diff --git a/README.md b/README.md
-index ab1de52..2d6236c 100644
+index 8bb7400..615ff6b 100644
 --- a/README.md
 +++ b/README.md
 @@ -27,7 +27,7 @@ in claude code:
@@ -12,7 +12,7 @@ index ab1de52..2d6236c 100644
  claude code installs a generated copy of pstack, including this readme and the guide, from [`harness/pstack/`](https://github.com/cursor/plugins/tree/main/harness/pstack) at the repository root. after you change pstack, run `node scripts/generate-pstack-harness-trees.mjs` from the repository root and commit the result. ci fails while the generated copy is out of date.
  
 diff --git a/docs/guide/01-setup.md b/docs/guide/01-setup.md
-index 2c2ef34..629a03e 100644
+index c581355..a713b42 100644
 --- a/docs/guide/01-setup.md
 +++ b/docs/guide/01-setup.md
 @@ -12,7 +12,7 @@ In a Cursor chat, run:
@@ -26,7 +26,7 @@ index 2c2ef34..629a03e 100644
  
 diff --git a/docs/harness/agents.md b/docs/harness/agents.md
 new file mode 100644
-index 0000000..f60079b
+index 0000000..f8d9a6b
 --- /dev/null
 +++ b/docs/harness/agents.md
 @@ -0,0 +1,264 @@
@@ -56,7 +56,7 @@ index 0000000..f60079b
 +| --- | --- |
 +| `Task` | `Agent` |
 +| `AskQuestion` | `AskUserQuestion`. In `-p` mode it is absent, so ask in plain text. |
-+| Open a todolist | Use `TodoWrite` if the session offers it. Otherwise keep the list in your reply and update it at each phase. |
++| Open a todolist, or copy steps into the todolist tool | Use `TodoWrite` if the session offers it. Otherwise keep the list in your reply and update it at each phase. |
 +| Run another pstack skill (`/name` or "the **name** skill") | `Read` `<pstack>/skills/<name>/SKILL.md` and follow it. The `Skill` tool refuses most pstack skills. When you tell the user to type it, write `/pstack:<name>`. |
 +| `Grep`, `Glob` | `Bash` with `rg` when the session has no `Grep` or `Glob`. |
 +
@@ -81,7 +81,7 @@ index 0000000..f60079b
 +| --- | --- |
 +| `claude-<family>-<version>-<effort>[-fast]`, such as `claude-opus-5-5-xhigh` | `model: "opus"` and `effort: "xhigh"`. `model` takes only `opus`, `sonnet`, `haiku`, `fable`. Drop `-fast`. |
 +| A `grok-*`, `gpt-*`, or other non-Claude slug | Omit `model` so the agent runs on the session model, and say so. |
-+| `auto` or `inherit-parent` | Omit `model`. |
++| `auto` or `inherit-parent` | Omit `model`. jstack's `poteto-agent` has no fixed model in its frontmatter. |
 +| The `pstack-models.mdc` rule, `~/.cursor/rules/pstack-models.mdc` | `~/.claude/rules/pstack-models.md`. Claude Code loads it into every new session, so its role lines are already in context. If they are not, read the file. If the file or the role's line is missing, use the skill's default slug. |
 +| A role value `<model> <effort>`, such as `opus high` | `model: "opus"` and `effort: "high"`. |
 +
@@ -90,7 +90,7 @@ index 0000000..f60079b
 +Claude Code loads every `.md` file in `~/.claude/rules/` into each new session, so `setup-pstack` writes its rule there. Follow its steps with these changes:
 +
 +- Detect. The detected models are the `model` values that the `Agent` tool schema lists, each with an effort from its `effort` values. Write a real model as `<model> <effort>`, such as `opus xhigh`. The effort is the last token, so the budget step works as written.
-+- Defaults. Map each default slug with the rows above: `claude-opus-5-5-xhigh` is `opus xhigh`, and `grok-4.7-xhigh-fast` is `inherit-parent`.
++- Defaults. Map the skill's current default slugs with the Models table. Use `inherit-parent` for non-Claude slugs.
 +- Write. Write `~/.claude/rules/pstack-models.md` with no frontmatter, then the comment lines, the `# budget` line, and one line per role from step 5. Overwrite the whole file. Never put the role lines in `CLAUDE.md` or `AGENTS.md`.
 +
 +### Paths
@@ -295,10 +295,10 @@ index 0000000..f60079b
 +
 +When a step needs a Cursor-only feature, put one line in your reply, `Skipped in OMP: <step>. <reason>.`, then go on to the next step. Do not stop, ask, or retry. When a later step needs what the skipped step made, such as a URL or a key, leave a placeholder and name it in the line.
 diff --git a/docs/harness/claude-code.md b/docs/harness/claude-code.md
-index 7440e83..3615762 100644
+index 53fe7fd..3615762 100644
 --- a/docs/harness/claude-code.md
 +++ b/docs/harness/claude-code.md
-@@ -1,67 +1 @@
+@@ -1,68 +1 @@
 -# pstack in Claude Code
 -
 -pstack skills use Cursor names. In Claude Code, read this file once per session, then map each Cursor name in a skill with the tables below. `<pstack>` means the folder that holds `skills/` and `docs/`. If a Cursor field has no row, drop it and say so. Never pass a field or value the tool schema rejects.
@@ -309,7 +309,7 @@ index 7440e83..3615762 100644
 -| --- | --- |
 -| `Task` | `Agent` |
 -| `AskQuestion` | `AskUserQuestion`. In `-p` mode it is absent, so ask in plain text. |
--| Open a todolist | Use `TodoWrite` if the session offers it. Otherwise keep the list in your reply and update it at each phase. |
+-| Open a todolist, or copy steps into the todolist tool | Use `TodoWrite` if the session offers it. Otherwise keep the list in your reply and update it at each phase. |
 -| Run another pstack skill (`/name` or "the **name** skill") | `Read` `<pstack>/skills/<name>/SKILL.md` and follow it. The `Skill` tool refuses most pstack skills. When you tell the user to type it, write `/pstack:<name>`. |
 -| `Grep`, `Glob` | `Bash` with `rg` when the session has no `Grep` or `Glob`. |
 -
@@ -319,6 +319,7 @@ index 7440e83..3615762 100644
 -| --- | --- |
 -| `subagent_type: generalPurpose` | `subagent_type: "general-purpose"` |
 -| `poteto-agent`, `comment-sicko` | `pstack:poteto-agent`, `pstack:comment-sicko` |
+-| The `model:` line in `poteto-agent`'s file | It holds a Cursor slug. Pass `model` and `effort` on every `Agent` call that spawns `pstack:poteto-agent`, mapped with the Models table, so that slug never reaches the API. |
 -| `readonly: true` | `subagent_type: "Explore"`. It keeps `Bash`, so the brief also says "do not edit files", and you check `git status` afterward. |
 -| `readonly: false` | `general-purpose`. It keeps the session's MCP servers. |
 -| `environment: "cloud"` | `isolation: "worktree"`. Name the branch or commit the worker checks out. |
@@ -333,7 +334,7 @@ index 7440e83..3615762 100644
 -| Cursor | Claude Code |
 -| --- | --- |
 -| `claude-<family>-<version>-<effort>[-fast]`, such as `claude-opus-5-5-xhigh` | `model: "opus"` and `effort: "xhigh"`. `model` takes only `opus`, `sonnet`, `haiku`, `fable`. Drop `-fast`. |
--| A `grok-*`, `gpt-*`, or other non-Claude slug | Omit `model` so the agent runs on the session model, and say so. |
+-| A `gemini-*` or other non-Claude slug | Omit `model` so the agent runs on the session model, and say so. |
 -| `auto` or `inherit-parent` | Omit `model`. |
 -| The `pstack-models.mdc` rule, `~/.cursor/rules/pstack-models.mdc` | `~/.claude/rules/pstack-models.md`. Claude Code loads it into every new session, so its role lines are already in context. If they are not, read the file. If the file or the role's line is missing, use the skill's default slug. |
 -| A role value `<model> <effort>`, such as `opus high` | `model: "opus"` and `effort: "high"`. |
@@ -343,7 +344,7 @@ index 7440e83..3615762 100644
 -Claude Code loads every `.md` file in `~/.claude/rules/` into each new session, so `setup-pstack` writes its rule there. Follow its steps with these changes:
 -
 -- Detect. The detected models are the `model` values that the `Agent` tool schema lists, each with an effort from its `effort` values. Write a real model as `<model> <effort>`, such as `opus xhigh`. The effort is the last token, so the budget step works as written.
--- Defaults. Map each default slug with the rows above: `claude-opus-5-5-xhigh` is `opus xhigh`, and `grok-4.7-xhigh-fast` is `inherit-parent`.
+-- Defaults. Map each default slug with the rows above: `claude-opus-5-5-xhigh-fast` is `opus xhigh`, `claude-opus-5-5-high-fast` is `opus high`, `claude-fable-5-2-high` is `fable high`, and `gemini-4-neon-xhigh` is `inherit-parent`.
 -- Write. Write `~/.claude/rules/pstack-models.md` with no frontmatter, then the comment lines, the `# budget` line, and one line per role from step 5. Overwrite the whole file. Never put the role lines in `CLAUDE.md` or `AGENTS.md`.
 -
 -## Paths
@@ -368,7 +369,7 @@ index 7440e83..3615762 100644
 -| A built-in PR tool | Use the forge command that the step gives, such as `gh pr create`. That is not a skip, so write no line. |
 +Moved to [agents.md](./agents.md#claude-code). Read its Claude Code section.
 diff --git a/skills/architect/SKILL.md b/skills/architect/SKILL.md
-index 0cd5921..29cfce9 100644
+index 338d2fc..3b5e7ae 100644
 --- a/skills/architect/SKILL.md
 +++ b/skills/architect/SKILL.md
 @@ -6,7 +6,7 @@ disable-model-invocation: true
@@ -378,10 +379,10 @@ index 0cd5921..29cfce9 100644
 -In Claude Code, read [the Claude Code adapter](../../docs/harness/claude-code.md) once per session before you follow this skill. It maps the Cursor names in pstack skills to Claude Code.
 +If you are not in Cursor, read [the harness adapter](../../docs/harness/agents.md) once per session before you follow this skill. It maps the Cursor names in pstack skills to your harness.
  
- Sketch types, function signatures, class shapes, and module boundaries with `not implemented` bodies and pseudocode. Synthesize across multiple model perspectives, then fill in code against the chosen sketch.
+ Before writing code, trace every system the change touches, then sketch two different shapes for it (types, signatures, module boundaries) and pick the one where each piece of state has one owner, each task has one way to do it, and callers need to know least. Redesign instead of patching if workarounds repeat.
  
 diff --git a/skills/arena/SKILL.md b/skills/arena/SKILL.md
-index 0daa7c5..5c97ba4 100644
+index 17d19f7..e5638c8 100644
 --- a/skills/arena/SKILL.md
 +++ b/skills/arena/SKILL.md
 @@ -6,7 +6,7 @@ disable-model-invocation: true
@@ -394,7 +395,7 @@ index 0daa7c5..5c97ba4 100644
  Open a todolist with one entry per phase (Frame, Fan out, Cross-judge, Pick, Graft, Verify) before launching anything.
  
 diff --git a/skills/automate-me/SKILL.md b/skills/automate-me/SKILL.md
-index a76caab..0d8836e 100644
+index 6ec2bc9..3b94be3 100644
 --- a/skills/automate-me/SKILL.md
 +++ b/skills/automate-me/SKILL.md
 @@ -6,7 +6,7 @@ disable-model-invocation: true
@@ -433,7 +434,7 @@ index 553e53e..6f0e8f5 100644
  Every serious project needs a scripted way to drive the real app and prove behavior: launch it, exercise a feature the way a user would, and capture evidence. This skill generates that as a project-local skill (`.cursor/skills/verify-<app>/`) tailored to the repo. You write the generator's output for the next agent, not for a human: it will be read cold, mid-task, by an agent that has never seen the app.
  
 diff --git a/skills/figure-it-out/SKILL.md b/skills/figure-it-out/SKILL.md
-index d628d48..5373625 100644
+index a18126c..9cebbb9 100644
 --- a/skills/figure-it-out/SKILL.md
 +++ b/skills/figure-it-out/SKILL.md
 @@ -6,7 +6,7 @@ disable-model-invocation: true
@@ -446,7 +447,7 @@ index d628d48..5373625 100644
  When the task matches no playbook, design one. The deliverable before any code is the workflow itself: a sequence of phases that scales rigor to the task, runs the scientific method, and leaves a decision trail a human can audit after stepping away.
  
 diff --git a/skills/how/SKILL.md b/skills/how/SKILL.md
-index b378f87..15922a6 100644
+index d7458ef..c3e973f 100644
 --- a/skills/how/SKILL.md
 +++ b/skills/how/SKILL.md
 @@ -6,7 +6,7 @@ disable-model-invocation: true
@@ -456,7 +457,7 @@ index b378f87..15922a6 100644
 -In Claude Code, read [the Claude Code adapter](../../docs/harness/claude-code.md) once per session before you follow this skill. It maps the Cursor names in pstack skills to Claude Code.
 +If you are not in Cursor, read [the harness adapter](../../docs/harness/agents.md) once per session before you follow this skill. It maps the Cursor names in pstack skills to your harness.
  
- Explore the codebase to answer "how does X work?" questions. Produce architectural explanations at the level of a senior engineer onboarding onto a subsystem, enough to build a working mental model, not so much that it reads like annotated source code.
+ Explore the codebase to answer "how does X work?" questions.
  
 diff --git a/skills/interrogate/SKILL.md b/skills/interrogate/SKILL.md
 index 3e70013..c3ddc8c 100644
@@ -511,7 +512,7 @@ index 7f05b05..0a6e01a 100644
  Build a page the user clicks. A server on this computer POSTs JSON to a webhook routine. The bot wakes with that JSON. Keep the sender key on the server. Do not put the sender key in the browser, in chat, or in this skill.
  
 diff --git a/skills/no-comments/SKILL.md b/skills/no-comments/SKILL.md
-index 3b7e32e..eb8ed37 100644
+index 25196e1..f4913dc 100644
 --- a/skills/no-comments/SKILL.md
 +++ b/skills/no-comments/SKILL.md
 @@ -6,7 +6,7 @@ disable-model-invocation: true
@@ -524,7 +525,7 @@ index 3b7e32e..eb8ed37 100644
  Spawn Comment Sicko. Act on accepted findings.
  
 diff --git a/skills/poteto-help/SKILL.md b/skills/poteto-help/SKILL.md
-index eb0be95..867911d 100644
+index d170b5f..11d9ec9 100644
 --- a/skills/poteto-help/SKILL.md
 +++ b/skills/poteto-help/SKILL.md
 @@ -6,7 +6,7 @@ disable-model-invocation: true
@@ -543,10 +544,10 @@ index eb0be95..867911d 100644
 -pstack is built for Cursor, and it also installs in Claude Code with `/plugin marketplace add cursor/plugins`, then `/plugin install pstack@cursor-plugins`. There, each command takes a `pstack:` prefix, such as `/pstack:poteto-mode`. The [Claude Code adapter](../../docs/harness/claude-code.md) maps the Cursor names, and a step that needs a Cursor-only feature, such as Bugbot or Automations, is skipped with a one-line note.
 +pstack is built for Cursor, and it also installs in Claude Code with `/plugin marketplace add cursor/plugins`, then `/plugin install pstack@cursor-plugins`. There, each command takes a `pstack:` prefix, such as `/pstack:poteto-mode`. The [harness adapter](../../docs/harness/agents.md) maps the Cursor names, and a step that needs a Cursor-only feature, such as Bugbot or Automations, is skipped with a one-line note.
  
- Other tools can read the skills, because they use the Agent Skills format. But most workflow skills, including `/poteto-mode`, `/how`, `/why`, and `/teach`, spawn Cursor subagents with per-role models, and Custom Modes and `/loop` are Cursor features, so those parts may not work there.
+ Other tools can read the skills, because they use the Agent Skills format. But most workflow skills, including `/poteto-mode`, `/how`, and `/teach`, spawn Cursor subagents, some with per-role models, and Custom Modes and `/loop` are Cursor features, so those parts may not work there.
  
 diff --git a/skills/poteto-mode/SKILL.md b/skills/poteto-mode/SKILL.md
-index 3fb1e55..7df59d2 100644
+index 94e8895..e2a9c49 100644
 --- a/skills/poteto-mode/SKILL.md
 +++ b/skills/poteto-mode/SKILL.md
 @@ -8,7 +8,7 @@ color: yellow
@@ -558,21 +559,8 @@ index 3fb1e55..7df59d2 100644
  
  Bundled skills live at `../<name>/SKILL.md` from this file, so put this file's absolute path in every `poteto-agent` prompt.
  
-diff --git a/skills/principle-prove-it-works/SKILL.md b/skills/principle-prove-it-works/SKILL.md
-index 31df67d..1f1b282 100644
---- a/skills/principle-prove-it-works/SKILL.md
-+++ b/skills/principle-prove-it-works/SKILL.md
-@@ -6,7 +6,7 @@ disable-model-invocation: true
- 
- # Prove It Works
- 
--In Claude Code, read [the Claude Code adapter](../../docs/harness/claude-code.md) once per session before you follow this skill. It maps the Cursor names in pstack skills to Claude Code.
-+If you are not in Cursor, read [the harness adapter](../../docs/harness/agents.md) once per session before you follow this skill. It maps the Cursor names in pstack skills to your harness.
- 
- Verify every task output by checking the real thing directly. Do not infer from proxies, self-reports, or "it compiles."
- 
 diff --git a/skills/recall/SKILL.md b/skills/recall/SKILL.md
-index a82ea1b..9902ecb 100644
+index 960a047..6946fb4 100644
 --- a/skills/recall/SKILL.md
 +++ b/skills/recall/SKILL.md
 @@ -6,7 +6,7 @@ disable-model-invocation: true
@@ -585,7 +573,7 @@ index a82ea1b..9902ecb 100644
  **Before you start or resume work, you rebuild the user's recent working context and hand back a tight capsule of where things stand now and what to do next.**
  
 diff --git a/skills/reflect/SKILL.md b/skills/reflect/SKILL.md
-index dcb6c91..86d951c 100644
+index a2f1b1a..8196c8f 100644
 --- a/skills/reflect/SKILL.md
 +++ b/skills/reflect/SKILL.md
 @@ -6,7 +6,7 @@ disable-model-invocation: true
@@ -595,10 +583,10 @@ index dcb6c91..86d951c 100644
 -In Claude Code, read [the Claude Code adapter](../../docs/harness/claude-code.md) once per session before you follow this skill. It maps the Cursor names in pstack skills to Claude Code.
 +If you are not in Cursor, read [the harness adapter](../../docs/harness/agents.md) once per session before you follow this skill. It maps the Cursor names in pstack skills to your harness.
  
- Mine the current conversation for durable learnings, then route them into skill edits.
+ Mine this conversation for durable learnings and route each to an edit on an existing skill.
  
 diff --git a/skills/setup-pstack/SKILL.md b/skills/setup-pstack/SKILL.md
-index c7a1f7f..bd3d8ce 100644
+index bace801..2e87502 100644
 --- a/skills/setup-pstack/SKILL.md
 +++ b/skills/setup-pstack/SKILL.md
 @@ -5,7 +5,7 @@ description: Configure which models pstack uses per role and at what reasoning b
@@ -611,7 +599,7 @@ index c7a1f7f..bd3d8ce 100644
  Write `~/.cursor/rules/pstack-models.mdc`, an always-applied rule that sets pstack's model per role.
  
 diff --git a/skills/show-me-your-work/SKILL.md b/skills/show-me-your-work/SKILL.md
-index 52765f0..08e4f08 100644
+index 387fe57..b5de5f9 100644
 --- a/skills/show-me-your-work/SKILL.md
 +++ b/skills/show-me-your-work/SKILL.md
 @@ -6,7 +6,7 @@ disable-model-invocation: true
@@ -624,7 +612,7 @@ index 52765f0..08e4f08 100644
  Keep one canonical log.
  
 diff --git a/skills/swarm/SKILL.md b/skills/swarm/SKILL.md
-index c285769..42ebfe2 100644
+index 0848ef8..5f45ff4 100644
 --- a/skills/swarm/SKILL.md
 +++ b/skills/swarm/SKILL.md
 @@ -6,7 +6,7 @@ disable-model-invocation: true
@@ -637,7 +625,7 @@ index c285769..42ebfe2 100644
  ## Start
  
 diff --git a/skills/teach/SKILL.md b/skills/teach/SKILL.md
-index 44a108b..bb0ca75 100644
+index a784607..056262d 100644
 --- a/skills/teach/SKILL.md
 +++ b/skills/teach/SKILL.md
 @@ -6,7 +6,7 @@ disable-model-invocation: true
@@ -650,7 +638,7 @@ index 44a108b..bb0ca75 100644
  **You explain what a thing is, how it works, and why it's built that way, in one plain account at the person's pace. The goal is that they understand it, not that you change anything.**
  
 diff --git a/skills/technical-writing/SKILL.md b/skills/technical-writing/SKILL.md
-index 903d7d6..319f486 100644
+index c4079df..3324294 100644
 --- a/skills/technical-writing/SKILL.md
 +++ b/skills/technical-writing/SKILL.md
 @@ -6,7 +6,7 @@ disable-model-invocation: true
@@ -660,18 +648,5 @@ index 903d7d6..319f486 100644
 -In Claude Code, read [the Claude Code adapter](../../docs/harness/claude-code.md) once per session before you follow this skill. It maps the Cursor names in pstack skills to Claude Code.
 +If you are not in Cursor, read [the harness adapter](../../docs/harness/agents.md) once per session before you follow this skill. It maps the Cursor names in pstack skills to your harness.
  
- Write so a tired engineer understands on the first read. Apply all four layers.
- 
-diff --git a/skills/why/SKILL.md b/skills/why/SKILL.md
-index 4747bc5..598732e 100644
---- a/skills/why/SKILL.md
-+++ b/skills/why/SKILL.md
-@@ -6,7 +6,7 @@ disable-model-invocation: true
- 
- # Why
- 
--In Claude Code, read [the Claude Code adapter](../../docs/harness/claude-code.md) once per session before you follow this skill. It maps the Cursor names in pstack skills to Claude Code.
-+If you are not in Cursor, read [the harness adapter](../../docs/harness/agents.md) once per session before you follow this skill. It maps the Cursor names in pstack skills to your harness.
- 
- Investigate the motivation and intent behind code. The companion `how` skill answers what the code does and how it works. `why` answers what forces led to its shape.
+ Write so a tired engineer understands on the first read.
  
