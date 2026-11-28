@@ -1,7 +1,7 @@
 // Pi 的阶段门禁：把 Pi 的扩展事件翻译成 flow 的 Claude 风格 hook。
 // - before_agent_start -> prompt.sh：每轮注入当前阶段，清掉 ask。
 // - agent_before_settle -> stop.sh：缺验证证据时请求一次续跑，把理由作为自定义消息发给模型。
-// - tool_call(bash) -> guard.sh：must-stop 命中时，交互模式用确认框，非交互模式直接拦下。
+// - tool_call(bash|write|edit) -> guard.sh：must-stop 命中时，交互模式用确认框，非交互模式直接拦下。
 // 判定逻辑在 hooks/*.sh；这里只做协议翻译。Pi package 通过根 package.json 的 pi.extensions 加载本文件。
 
 import { flowRoot, isSubagent, jsonField, lastAssistantText, runHook, sessionId } from "./common.ts";
@@ -56,14 +56,34 @@ export default function (pi: any) {
 	});
 
 	pi.on("tool_call", async (event: any, ctx: any) => {
-		if (event?.toolName !== "bash") return;
-		const command = event?.input?.command;
-		if (typeof command !== "string" || !command) return;
+		const tool = event?.toolName;
+		const input = event?.input;
+		let hookTool = "";
+		let hookInput: Record<string, unknown> = {};
+		if (tool === "bash") {
+			const command = input?.command;
+			if (typeof command !== "string" || !command) return;
+			// In a delegated session, prevent accidental writes to the parent's stage record.
+			// An arbitrary shell wrapper could still evade this check; this is not a sandbox.
+			if (isSubagent(ctx) && /stage\.sh[^;&|]*(?:start|enter|evidence|verify|review|land|default|ask|end|pending|settled)\b/.test(command)) {
+				return { block: true, reason: "jstack: 子代理只能返回结果，不能修改主会话阶段记录" };
+			}
+			hookTool = "Bash";
+			hookInput = { command };
+		} else if (tool === "write" || tool === "edit") {
+			const filePath = input?.path;
+			if (typeof filePath !== "string" || !filePath) return;
+			hookTool = tool === "write" ? "Write" : "Edit";
+			hookInput = { file_path: filePath };
+		} else {
+			return;
+		}
 		const hook = runHook(root, "guard", {
 			session_id: sessionId(ctx),
+			cwd: ctx?.cwd,
 			hook_event_name: "PreToolUse",
-			tool_name: "Bash",
-			tool_input: { command },
+			tool_name: hookTool,
+			tool_input: hookInput,
 		});
 		if (!hook.ok) return;
 		const reason = jsonField(hook.out, "permissionDecisionReason");

@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -n \"${CURSOR_VERSION:-}\" ] && command -v jq >/dev/null 2>&1 && jq -e --arg command '\"${CURSOR_PROJECT_DIR}/.jstack/vendor/plugins/flow\"/hooks/prompt.sh' '(.hooks.beforeSubmitPrompt // []) | any(.command == $command and .timeout == 10)' \"${CURSOR_PROJECT_DIR:-${CLAUDE_PROJECT_DIR:-.}}/.cursor/hooks.json\" >/dev/null 2>&1; then exit 0; fi; exec \"${CLAUDE_PROJECT_DIR}/.jstack/vendor/plugins/flow/hooks/prompt.sh\"",
+            "command": "JSTACK_CURSOR_HOOK_SOURCE=claude-project exec \"${CLAUDE_PROJECT_DIR}/.jstack/vendor/plugins/flow/hooks/prompt.sh\"",
             "timeout": 10
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -n \"${CURSOR_VERSION:-}\" ] && command -v jq >/dev/null 2>&1 && jq -e --arg command '\"${CURSOR_PROJECT_DIR}/.jstack/vendor/plugins/flow\"/hooks/guard.sh' '(.hooks.beforeShellExecution // []) | any(.command == $command and .timeout == 10)' \"${CURSOR_PROJECT_DIR:-${CLAUDE_PROJECT_DIR:-.}}/.cursor/hooks.json\" >/dev/null 2>&1; then exit 0; fi; exec \"${CLAUDE_PROJECT_DIR}/.jstack/vendor/plugins/flow/hooks/guard.sh\"",
+            "command": "JSTACK_CURSOR_HOOK_SOURCE=claude-project exec \"${CLAUDE_PROJECT_DIR}/.jstack/vendor/plugins/flow/hooks/guard.sh\" --stage-only",
             "timeout": 10
           }
         ]
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -n \"${CURSOR_VERSION:-}\" ] && command -v jq >/dev/null 2>&1 && jq -e --arg command '\"${CURSOR_PROJECT_DIR}/.jstack/vendor/plugins/flow\"/hooks/stop.sh' '(.hooks.stop // []) | any(.command == $command and .timeout == 10 and .loop_limit == 3)' \"${CURSOR_PROJECT_DIR:-${CLAUDE_PROJECT_DIR:-.}}/.cursor/hooks.json\" >/dev/null 2>&1; then exit 0; fi; exec \"${CLAUDE_PROJECT_DIR}/.jstack/vendor/plugins/flow/hooks/stop.sh\"",
+            "command": "JSTACK_CURSOR_HOOK_SOURCE=claude-project exec \"${CLAUDE_PROJECT_DIR}/.jstack/vendor/plugins/flow/hooks/stop.sh\"",
             "timeout": 10
           }
         ]
